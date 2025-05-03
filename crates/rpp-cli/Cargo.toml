@@ -1,0 +1,9 @@
+[package]
+name = "rpp"
+description = "The CLI for rpp"
+
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
