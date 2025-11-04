@@ -4,3 +4,6 @@ plugins {
 
 rootProject.name = "rpp"
 include("api:core")
+include("api:minestom")
+include("api:spigot")
+include("examples:minestom")

@@ -1,4 +1,3 @@
 package dev.oglass.rpp.core;
 
-public class Rpp {
-}
+public class Rpp {}
