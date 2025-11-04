@@ -1,8 +1,7 @@
 [workspace]
 members = [
-    "crates/rpp-lib",
-    "crates/rpp-cli",
-    "crates/rpp-plugin-api",
+    "crates/rpp",
+    "crates/rpp-cli"
 ]
 resolver = "2"
 
