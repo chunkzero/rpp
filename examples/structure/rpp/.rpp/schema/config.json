@@ -1,0 +1,75 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Rpp Configuration Schema",
+  "type": "object",
+  "required": ["server", "repositories", "plugins"],
+  "properties": {
+    "server": {
+      "type": "object",
+      "required": ["host", "port"],
+      "properties": {
+        "host": { "type": "string", "format": "ipv4", "default": "127.0.0.1" },
+        "port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535,
+          "default": 6767
+        }
+      },
+      "additionalProperties": false
+    },
+    "repositories": {
+      "type": "object",
+      "patternProperties": {
+        "^[a-zA-Z_][a-zA-Z0-9_-]*$": {
+          "oneOf": [
+            { "type": "string", "format": "uri" },
+            {
+              "type": "object",
+              "required": ["url"],
+              "properties": {
+                "url": { "type": "string", "format": "uri" },
+                "auth": { "type": "string" }
+              },
+              "additionalProperties": true
+            }
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "minProperties": 1
+    },
+    "plugins": {
+      "type": "array",
+      "items": {
+        "oneOf": [
+          { "type": "string" },
+          {
+            "type": "object",
+            "required": ["repository", "id", "version"],
+            "properties": {
+              "repository": {
+                "type": "string",
+                "description": "Identifier of a repository defined in `repositories`"
+              },
+              "id": { "type": "string" },
+              "version": { "type": "string" }
+            },
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "required": ["id", "dir", "command", "output"],
+            "properties": {
+              "id": { "type": "string" },
+              "dir": { "type": "string" },
+              "command": { "type": "string" },
+              "output": { "type": "string" }
+            },
+            "additionalProperties": false
+          }
+        ]
+      }
+    }
+  }
+}

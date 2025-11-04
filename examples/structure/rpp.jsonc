@@ -1,0 +1,13 @@
+{
+  "$schema": "rpp/.rpp/schema/config.json",
+  "root": "rpp",
+  "server": {
+    "host": "127.0.0.1",
+    "port": 6741,
+  },
+  "packs": ["./packs/example"],
+  "repositories": {
+    "main": "https://github.com/rpp-cli/plugins",
+  },
+  "plugins": ["main/example:0.1.0", "local/example:0.1.0"],
+}
