@@ -1,0 +1,3 @@
+[package]
+id = "rpp"
+version = "$RPP_VERSION"

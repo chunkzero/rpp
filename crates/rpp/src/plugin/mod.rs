@@ -31,7 +31,9 @@ pub struct LoadedPlugin {
     pub description: String,
 }
 
-static SEMVER_REGEX: Lazy<Regex> = Lazy::new(|| {
+pub static ID_REGEX: Lazy<Regex> = Lazy::new(|| Regex::new(r#"^[a-zA-Z0-9_-]+$"#).unwrap());
+
+pub static SEMVER_REGEX: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r#"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\.(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?(?:\+([0-9a-zA-Z-]+(?:\.[0-9a-zA-Z-]+)*))?$"#).unwrap()
 });
 

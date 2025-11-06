@@ -1,7 +1,7 @@
 pub mod build;
-pub mod lua;
 pub mod pack;
 pub mod plugin;
+pub mod resources;
 
 pub use mlua;
 
