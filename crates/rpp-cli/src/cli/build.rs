@@ -1,11 +1,11 @@
+use crate::cli::DefaultArgs;
 use clap::Args;
 use tracing::info;
-use crate::cli::DefaultArgs;
 
 #[derive(Args, Debug, Clone)]
 pub struct BuildCommand {
     #[clap(flatten)]
-    pub default_args: DefaultArgs
+    pub default_args: DefaultArgs,
 }
 
 impl BuildCommand {

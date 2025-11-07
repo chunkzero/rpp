@@ -1,0 +1,9 @@
+{
+  "rpp": {
+    "id": "{{ id }}",
+  },
+  "pack": {
+    "pack_format": "69.0",
+    "description": "My first rpp resource pack",
+  },
+}

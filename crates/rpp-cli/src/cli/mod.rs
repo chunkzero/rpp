@@ -1,17 +1,21 @@
 mod build;
-mod plugin;
 mod init;
+mod plugin;
 
-use std::path::PathBuf;
-use clap::{Args, Parser, Subcommand};
 use crate::cli::build::BuildCommand;
 use crate::cli::init::init;
 use crate::cli::plugin::PluginCommand;
+use clap::{Args, Parser, Subcommand};
+use std::path::PathBuf;
 
 /// A toolchain to build & test Minecraft resource packs.
 #[derive(Parser, Debug, Clone)]
 #[command(version, about, long_about = None)]
 pub struct Cli {
+    /// The path to the configuration file
+    #[arg(short, long = "config", default_value = "rpp.toml")]
+    config_path: String,
+
     #[command(subcommand)]
     pub command: Command,
 }
@@ -42,9 +46,7 @@ impl Command {
             Command::Init => init(),
             Command::Build(command) => command.run(),
             Command::Plugin { command } => command.run(),
-            Command::Serve { .. } => {
-                Err(anyhow::anyhow!("Serve command not implemented"))
-            }
+            Command::Serve { .. } => Err(anyhow::anyhow!("Serve command not implemented")),
         }
     }
 }
