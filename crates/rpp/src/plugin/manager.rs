@@ -83,26 +83,15 @@ impl PluginManager {
         let config: PluginConfig = if path.is_dir() {
             source_dir = path;
 
-            // look for jsonc config
-            let config = source_dir.join("plugin.jsonc");
+            // look for toml config
+            let config = source_dir.join("plugin.toml");
 
             let text = fs::read_to_string(&config)?;
 
-            let value = jsonc_parser::parse_to_serde_value(&text, &Default::default())
-                .map_err(|err| {
-                    crate::Error::PluginError(format!(
-                        "Failed to parse plugin config: {}",
-                        err.kind()
-                    ))
-                })?
-                .ok_or(crate::Error::PluginError(String::from(
-                    "Plugin config was None",
-                )))?;
-
-            serde_json::from_value(value).map_err(|err| {
+            toml::from_str(&text).map_err(|err| {
                 crate::Error::PluginError(format!(
-                    "Failed to parse plugin config: {:?}",
-                    err.classify()
+                    "Failed to parse plugin config: {}",
+                    err.message()
                 ))
             })?
         } else {
@@ -113,23 +102,12 @@ impl PluginManager {
                 )))?
                 .into();
 
-            let text = fs::read_to_string(&path)?;
+            let text = fs::read_to_string(&source_dir)?;
 
-            let value = jsonc_parser::parse_to_serde_value(&text, &Default::default())
-                .map_err(|err| {
-                    crate::Error::PluginError(format!(
-                        "Failed to parse plugin config: {}",
-                        err.kind()
-                    ))
-                })?
-                .ok_or(crate::Error::PluginError(String::from(
-                    "Plugin config was None",
-                )))?;
-
-            serde_json::from_value(value).map_err(|err| {
+            toml::from_str(&text).map_err(|err| {
                 crate::Error::PluginError(format!(
-                    "Failed to parse plugin config: {:?}",
-                    err.classify()
+                    "Failed to parse plugin config: {}",
+                    err.message()
                 ))
             })?
         };
