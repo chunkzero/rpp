@@ -14,7 +14,7 @@ use std::path::PathBuf;
 pub struct Cli {
     /// The path to the configuration file
     #[arg(short, long = "config", default_value = "rpp.toml")]
-    config_path: String,
+    pub config_path: String,
 
     #[command(subcommand)]
     pub command: Command,
@@ -41,11 +41,11 @@ pub enum Command {
 }
 
 impl Command {
-    pub fn run(self) -> anyhow::Result<()> {
+    pub fn run(self, config_path: PathBuf) -> anyhow::Result<()> {
         match self {
             Command::Init => init(),
             Command::Build(command) => command.run(),
-            Command::Plugin { command } => command.run(),
+            Command::Plugin { command } => command.run(config_path),
             Command::Serve { .. } => Err(anyhow::anyhow!("Serve command not implemented")),
         }
     }

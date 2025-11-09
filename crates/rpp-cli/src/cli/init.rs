@@ -2,15 +2,14 @@ use askama::Template;
 use dialoguer::theme::ColorfulTheme;
 use rpp::plugin::ID_REGEX;
 
-use crate::{
-    template::{PackJsoncTemplate, RppConfigTemplate},
-    DEFAULT_CONFIG_PATH,
-};
+use crate::template::{PackJsoncTemplate, RppConfigTemplate};
 use std::{
     fs::{self, File},
     io::Write,
     path::PathBuf,
 };
+
+static CONFIG_PATH: &str = "rpp.toml";
 
 pub(super) fn init() -> anyhow::Result<()> {
     let theme = ColorfulTheme::default();
@@ -35,7 +34,7 @@ pub(super) fn init() -> anyhow::Result<()> {
 }
 
 fn should_abort_existing_project(theme: &ColorfulTheme) -> anyhow::Result<bool> {
-    if !PathBuf::from(DEFAULT_CONFIG_PATH).exists() {
+    if !PathBuf::from(CONFIG_PATH).exists() {
         return Ok(false);
     }
 
@@ -160,7 +159,7 @@ fn create_project_structure(
     pack_id: Option<&str>,
     theme: &ColorfulTheme,
 ) -> anyhow::Result<()> {
-    let config_path = root.join(DEFAULT_CONFIG_PATH);
+    let config_path = root.join(CONFIG_PATH);
 
     if config_path.exists() {
         let overwrite = dialoguer::Confirm::with_theme(theme)

@@ -14,12 +14,12 @@ use crate::plugin::{environment::create_plugin_environment, manager::Globals};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct PluginConfig {
-    id: String,
-    version: String,
+    pub id: String,
+    pub version: String,
     #[serde(default)]
-    description: String,
+    pub description: String,
     #[serde(default)]
-    include: Vec<String>,
+    pub include: Vec<String>,
 }
 
 #[derive(Debug)]
