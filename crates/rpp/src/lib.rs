@@ -1,6 +1,8 @@
-pub mod build;
+pub mod context;
+pub mod file;
 pub mod pack;
 pub mod plugin;
+pub mod processor;
 pub mod resources;
 
 pub use mlua;
@@ -30,12 +32,29 @@ pub enum Error {
     Lua(#[from] mlua::Error),
     #[error(transparent)]
     Io(#[from] std::io::Error),
+    #[error(transparent)]
+    Regex(#[from] regex::Error),
+    #[error(transparent)]
+    Ignore(#[from] ignore::Error),
+    #[error(transparent)]
+    Json(#[from] serde_json::Error),
+    #[error(transparent)]
+    Jsonc(#[from] jsonc_parser::errors::ParseError),
 
     #[error("Invalid version string.")]
     InvalidVersion,
 
     #[error("Plugin error: {0}")]
-    PluginError(String),
+    Plugin(String),
+
+    #[error("Error processing: {0}")]
+    Process(String),
+
+    #[error("Error creating FileMeta: {0}")]
+    FileMeta(String),
+
+    #[error("{0}")]
+    Custom(String),
 }
 
 unsafe impl Send for Error {}

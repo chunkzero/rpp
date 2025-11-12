@@ -61,7 +61,7 @@ impl PluginManager {
         let path = container_dir.into();
 
         if !path.is_dir() {
-            return Err(crate::Error::PluginError(String::from(
+            return Err(crate::Error::Plugin(String::from(
                 "Plugin container directory was not a directory",
             )));
         };
@@ -89,15 +89,12 @@ impl PluginManager {
             let text = fs::read_to_string(&config)?;
 
             toml::from_str(&text).map_err(|err| {
-                crate::Error::PluginError(format!(
-                    "Failed to parse plugin config: {}",
-                    err.message()
-                ))
+                crate::Error::Plugin(format!("Failed to parse plugin config: {}", err.message()))
             })?
         } else {
             source_dir = path
                 .parent()
-                .ok_or(crate::Error::PluginError(String::from(
+                .ok_or(crate::Error::Plugin(String::from(
                     "Plugin config had no parent",
                 )))?
                 .into();
@@ -105,10 +102,7 @@ impl PluginManager {
             let text = fs::read_to_string(&source_dir)?;
 
             toml::from_str(&text).map_err(|err| {
-                crate::Error::PluginError(format!(
-                    "Failed to parse plugin config: {}",
-                    err.message()
-                ))
+                crate::Error::Plugin(format!("Failed to parse plugin config: {}", err.message()))
             })?
         };
 
@@ -137,9 +131,7 @@ impl PluginManager {
         let mut plugins = self.loaded_plugins.write().expect("RwLock was poisoned");
 
         if let Some(existing) = plugins.insert(plugin.id.clone(), plugin) {
-            if cfg!(feature = "tracing") {
-                tracing::warn!("Plugin with ID {} was already loaded, unloading (not implemented yet, undef behavior will happen)", existing.id);
-            };
+            println!("Plugin with ID {} was already loaded, unloading (not implemented yet, undef behavior will happen)", existing.id);
         }
 
         drop(plugins);

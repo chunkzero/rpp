@@ -2,12 +2,6 @@
 
 ---@alias ProcessFn<T> fun(meta: FileMeta, data: T, actions: Actions)
 
----@class FileMeta
----@field name string
----@field extension string
----@filed path file
----@field size integer
-
 ---@class Actions
 ---@field data_type dataType
 
