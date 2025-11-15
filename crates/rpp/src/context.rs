@@ -1,20 +1,15 @@
-use std::{borrow::Cow, rc::Rc};
-
-use crate::{pack::Pack, processor::ProcessorType};
+use crate::{pack::Pack, processor::ProcessorManager};
 
 #[derive(Debug)]
 pub struct BuildContext<'a> {
     pub pack: Pack,
 
-    processors: &'a [ProcessorType],
+    manager: &'a ProcessorManager,
 }
 
 impl<'a> BuildContext<'a> {
-    pub fn new(pack: Pack) -> Self {
-        Self {
-            pack,
-            processors: &[],
-        }
+    pub fn new(pack: Pack, manager: &'a ProcessorManager) -> Self {
+        Self { pack, manager }
     }
 
     pub fn process_file() {}

@@ -5,25 +5,33 @@ pub mod plugin;
 pub mod processor;
 pub mod resources;
 
+use std::collections::HashMap;
+
 pub use mlua;
+
+use crate::pack::Pack;
 
 #[derive(Debug)]
 pub struct Rpp {
     pub lua: mlua::Lua,
     pub plugin_manager: plugin::PluginManager,
+    pub packs: HashMap<String, Pack>,
 }
 
 impl Rpp {
-    pub fn new() -> Result<Self> {
+    pub fn new() -> Self {
         let lua = mlua::Lua::new();
 
         let plugin_manager = plugin::PluginManager::new(lua.clone());
 
-        Ok(Rpp {
+        Rpp {
             lua,
             plugin_manager,
-        })
+            packs: Default::default(),
+        }
     }
+
+    pub fn build_pack() {}
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -41,7 +49,7 @@ pub enum Error {
     #[error(transparent)]
     Jsonc(#[from] jsonc_parser::errors::ParseError),
 
-    #[error("Invalid version string.")]
+    #[error("Invalid version string")]
     InvalidVersion,
 
     #[error("Plugin error: {0}")]

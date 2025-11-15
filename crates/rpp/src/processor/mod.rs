@@ -3,7 +3,7 @@ use crate::processor::filter::Filter;
 pub mod filter;
 mod manager;
 
-pub struct RawFile<'a>(&'a [u8]);
+pub use manager::ProcessorManager;
 
 #[derive(Debug)]
 pub struct ProcessorType {
