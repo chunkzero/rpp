@@ -1,38 +1,23 @@
-pub mod context;
-pub mod file;
+pub mod build;
 pub mod pack;
-pub mod plugin;
-pub mod processor;
 pub mod resources;
+pub(crate) mod util;
+
+#[cfg(feature = "lua")]
+pub mod lua;
+#[cfg(feature = "lua")]
+pub use mlua;
 
 use std::collections::HashMap;
 
-pub use mlua;
+use crate::{build::processor::Processor, pack::Pack};
 
-use crate::pack::Pack;
-
-#[derive(Debug)]
-pub struct Rpp {
-    pub lua: mlua::Lua,
-    pub plugin_manager: plugin::PluginManager,
-    pub packs: HashMap<String, Pack>,
+pub struct ResourcePackProcessor {
+    packs: HashMap<String, Pack>,
+    processors: HashMap<String, Box<dyn Processor>>,
 }
 
-impl Rpp {
-    pub fn new() -> Self {
-        let lua = mlua::Lua::new();
-
-        let plugin_manager = plugin::PluginManager::new(lua.clone());
-
-        Rpp {
-            lua,
-            plugin_manager,
-            packs: Default::default(),
-        }
-    }
-
-    pub fn build_pack() {}
-}
+impl ResourcePackProcessor {}
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -48,10 +33,15 @@ pub enum Error {
     Json(#[from] serde_json::Error),
     #[error(transparent)]
     Jsonc(#[from] jsonc_parser::errors::ParseError),
+    #[error(transparent)]
+    TomlSer(#[from] toml::ser::Error),
+    #[error(transparent)]
+    TomlDe(#[from] toml::de::Error),
 
     #[error("Invalid version string")]
     InvalidVersion,
 
+    #[cfg(feature = "lua")]
     #[error("Plugin error: {0}")]
     Plugin(String),
 
