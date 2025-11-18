@@ -1,23 +1,11 @@
-pub mod build;
+pub mod compile;
 pub mod pack;
-pub mod resources;
 pub(crate) mod util;
 
 #[cfg(feature = "lua")]
 pub mod lua;
 #[cfg(feature = "lua")]
 pub use mlua;
-
-use std::collections::HashMap;
-
-use crate::{build::processor::Processor, pack::Pack};
-
-pub struct ResourcePackProcessor {
-    packs: HashMap<String, Pack>,
-    processors: HashMap<String, Box<dyn Processor>>,
-}
-
-impl ResourcePackProcessor {}
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
