@@ -1,5 +1,6 @@
 pub mod compile;
-pub mod pack;
+
+mod rpp;
 pub(crate) mod util;
 
 #[cfg(feature = "lua")]
@@ -7,10 +8,14 @@ pub mod lua;
 #[cfg(feature = "lua")]
 pub use mlua;
 
+pub use rpp::*;
+
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    #[cfg(feature = "lua")]
     #[error(transparent)]
     Lua(#[from] mlua::Error),
+
     #[error(transparent)]
     Io(#[from] std::io::Error),
     #[error(transparent)]
@@ -25,6 +30,10 @@ pub enum Error {
     TomlSer(#[from] toml::ser::Error),
     #[error(transparent)]
     TomlDe(#[from] toml::de::Error),
+    #[error(transparent)]
+    BincodeEncode(#[from] bincode::error::EncodeError),
+    #[error(transparent)]
+    BincodeDecode(#[from] bincode::error::DecodeError),
 
     #[error("Invalid version string")]
     InvalidVersion,

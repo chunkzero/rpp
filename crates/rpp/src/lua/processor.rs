@@ -1,33 +1,33 @@
-use std::sync::Arc;
+use std::collections::HashMap;
 
-use crate::compile::processor::Processor;
+use crate::compile::event::EventHandler;
 
 pub struct LuaProcessor {
-    lua: mlua::Lua,
+    lua: parking_lot::RwLock<HashMap<usize, mlua::Lua>>,
 }
 
-impl Processor for LuaProcessor {
-    fn description(&self) -> String {
+unsafe impl Sync for LuaProcessor {}
+unsafe impl Send for LuaProcessor {}
+
+impl EventHandler for LuaProcessor {
+    fn id(&self) -> String {
         todo!()
     }
 
-    fn process(
+    fn handle_event(
         &self,
-        context: &mut crate::compile::processor::FileProcessContext,
+        thread_id: usize,
+        event: crate::compile::event::BuildEvent,
     ) -> crate::Result<()> {
+        let lua = match self.lua.read().get(&thread_id) {
+            Some(lua) => lua.clone(),
+            None => {
+                let lua = mlua::Lua::new();
+                self.lua.write().insert(thread_id, lua.clone());
+                lua
+            }
+        };
+
         todo!()
-    }
-}
-
-impl Processor for Arc<LuaProcessor> {
-    fn description(&self) -> String {
-        LuaProcessor::description(self)
-    }
-
-    fn process(
-        &self,
-        context: &mut crate::compile::processor::FileProcessContext,
-    ) -> crate::Result<()> {
-        LuaProcessor::process(self, context)
     }
 }
