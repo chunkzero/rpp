@@ -4,6 +4,9 @@ use serde::{Deserialize, Serialize};
 
 pub mod environment;
 pub mod api;
+mod error;
+
+pub use error::PluginError;
 
 pub struct PluginLoader {
     lua: mlua::Lua,

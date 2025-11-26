@@ -10,11 +10,21 @@ pub use mlua;
 
 pub use rpp::*;
 
+#[cfg(feature = "lua")]
+use crate::lua::plugin::PluginError;
+
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    #[error(transparent)]
+    Compile(#[from] compile::CompileError),
+
     #[cfg(feature = "lua")]
     #[error(transparent)]
     Lua(#[from] mlua::Error),
+
+    #[cfg(feature = "lua")]
+    #[error(transparent)]
+    Plugin(#[from] PluginError),
 
     #[error(transparent)]
     Io(#[from] std::io::Error),
@@ -30,20 +40,9 @@ pub enum Error {
     TomlSer(#[from] toml::ser::Error),
     #[error(transparent)]
     TomlDe(#[from] toml::de::Error),
-    #[error(transparent)]
-    BincodeEncode(#[from] bincode::error::EncodeError),
-    #[error(transparent)]
-    BincodeDecode(#[from] bincode::error::DecodeError),
 
     #[error("Invalid version string")]
     InvalidVersion,
-
-    #[cfg(feature = "lua")]
-    #[error("Plugin error: {0}")]
-    Plugin(String),
-
-    #[error("Error processing: {0}")]
-    Process(String),
 
     #[error("Error creating FileMeta: {0}")]
     FileMeta(String),

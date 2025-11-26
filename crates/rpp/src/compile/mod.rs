@@ -4,8 +4,11 @@ use crate::compile::cache::Cache;
 
 pub mod cache;
 pub mod context;
+mod error;
 pub mod event;
 mod worker;
+
+pub use error::CompileError;
 
 pub struct PackCompiler {
     pool: worker::WorkerPool,
@@ -24,8 +27,16 @@ impl PackCompiler {
         let cache_path = cache_dir.join("cache.rppstate");
 
         let cache: Cache = if cache_path.is_file() {
-            let file = File::open(cache_path)?;
-            bincode::decode_from_reader(BufReader::new(file), bincode_config())?
+            let file = File::open(&cache_path).map_err(|source| CompileError::CacheRead {
+                path: cache_path.clone(),
+                source,
+            })?;
+            bincode::decode_from_reader(BufReader::new(file), bincode_config()).map_err(
+                |source| CompileError::CacheDecode {
+                    path: cache_path.clone(),
+                    source,
+                },
+            )?
         } else {
             Cache::default()
         };
@@ -71,7 +82,7 @@ impl PackCompiler {
         let mut to_process = Vec::<(PathBuf, String, u64, u64)>::new();
 
         for entry in walk {
-            let entry = entry?;
+            let entry = entry.map_err(|source| CompileError::Walk { path: None, source })?;
 
             match entry.file_type() {
                 Some(file_type) => {
@@ -82,16 +93,22 @@ impl PackCompiler {
                 None => continue,
             }
 
-            let path = entry.path().to_string_lossy();
-            let metadata = entry.metadata()?;
+            let entry_path = entry.path().to_path_buf();
+            let path = entry_path.to_string_lossy().into_owned();
+            let metadata = entry_path
+                .metadata()
+                .map_err(|source| CompileError::Metadata {
+                    path: entry_path.clone(),
+                    source,
+                })?;
             let mtime: u64 = mtime(&metadata);
             let size = metadata.len();
 
-            if match cache.get(path.as_ref()) {
+            if match cache.get(&path) {
                 Some(entry) => entry.fingerprint.size != size || entry.fingerprint.mtime != mtime,
                 None => true,
             } {
-                to_process.push((entry.path().into(), path.into(), mtime, size));
+                to_process.push((entry_path, path, mtime, size));
             };
         }
 
