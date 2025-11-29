@@ -6,18 +6,21 @@ use crate::compile::worker;
 
 #[derive(Debug, Error)]
 pub enum CompileError {
-    #[error("Failed to read cache file {path}: {source}")]
-    CacheRead {
-        path: PathBuf,
-        #[source]
-        source: std::io::Error,
-    },
+    #[error("Error building PackCompiler: {0}")]
+    Builder(#[source] Box<dyn std::error::Error>),
 
     #[error("Error in EventHandler ({id}): {source}")]
     EventHandler {
         id: String,
         #[source]
         source: Box<dyn std::error::Error>,
+    },
+
+    #[error("Failed to read cache file {path}: {source}")]
+    CacheRead {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
     },
 
     #[error("Failed to decode cache state from {path}: {source}")]
