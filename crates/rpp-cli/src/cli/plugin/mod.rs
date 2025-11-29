@@ -59,7 +59,9 @@ fn handle_list(config_path: PathBuf) -> anyhow::Result<()> {
         println!("Create one with `rpp plugin create`");
     } else {
         println!("Found {} plugin(s):", config.rpp.plugins.len());
-
+        // As I previously mentioned, don't be afraid of long variable names. Someone who knows programming terms but not necesarilly the project
+        // should be able to instantly recognize what you're trying to say. You could say "element" but something more descriptive like "plugin"
+        // would probably be better.
         for ele in config.rpp.plugins {
             match ele {
                 crate::config::PluginDef::Local { id } => {

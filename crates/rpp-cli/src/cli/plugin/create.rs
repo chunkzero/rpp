@@ -56,7 +56,7 @@ pub fn handle_create(config_path: PathBuf) -> anyhow::Result<()> {
     update_rpp_config(&config_path, PluginDef::Local { id })?;
 
     create_plugin_structure(&root_dir, &plugin_info)?;
-
+    // If you want an extra line, just do \n. No need call empty println!.
     println!();
     println!("Successfully created plugin '{}'!", plugin_info.id);
     println!("Read the documentation at https://rpp.oglass.dev/docs/plugin");
@@ -99,6 +99,7 @@ fn collect_remaining_plugin_info(theme: &ColorfulTheme, id: String) -> anyhow::R
         .trim()
         .to_string();
 
+    // Why is this a vector instead of a slice?
     let preset_options = vec![
         PluginPreset::Blank.as_str(),
         PluginPreset::LanguageGenerator.as_str(),
@@ -122,6 +123,12 @@ fn collect_remaining_plugin_info(theme: &ColorfulTheme, id: String) -> anyhow::R
 }
 
 fn create_plugin_structure(root_dir: &PathBuf, plugin_info: &PluginInfo) -> anyhow::Result<()> {
+    // These similar names are confusing :).
+    // Also if you don't use plugins_dir anywhere else, you could do:
+    // let plugin_dir = {
+    //     let plugins_dir = root_dir.join("plugins");
+    //     plugins_dir.join(&plugin_info.id);
+    // };
     let plugins_dir = root_dir.join("plugins");
     let plugin_dir = plugins_dir.join(&plugin_info.id);
 

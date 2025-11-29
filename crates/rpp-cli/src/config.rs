@@ -33,6 +33,7 @@ pub enum PluginDef {
     },
 }
 
+// Could impl FromString trait and Display trait, like how you did with serialize and deserialize
 impl PluginDef {
     // TODO: replace anyhow with crate err
     pub fn from_string(value: &str) -> anyhow::Result<Self> {
@@ -72,7 +73,7 @@ impl Serialize for PluginDef {
         serializer.serialize_str(&self.as_string())
     }
 }
-
+// I tend to use 'a for everything (unless there is more than one) but this isn't neceasrily bad.
 impl<'de> Deserialize<'de> for PluginDef {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where

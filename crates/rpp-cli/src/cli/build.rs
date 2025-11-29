@@ -9,6 +9,7 @@ pub struct BuildCommand {
 }
 
 impl BuildCommand {
+    // Does this need to be result?
     pub fn run(self) -> anyhow::Result<()> {
         info!("Building");
         Ok(())

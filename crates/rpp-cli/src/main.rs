@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use clap::Parser;
 
 use crate::cli::Cli;
-
+// I would put this in a seperate lib.rs file
 mod cli;
 mod config;
 mod server;

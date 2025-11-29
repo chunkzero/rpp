@@ -7,13 +7,14 @@ pub enum PluginPreset {
 }
 
 impl PluginPreset {
+    // I'd implement Display trait here.
     pub fn as_str(&self) -> &'static str {
         match self {
             PluginPreset::Blank => "Blank",
             PluginPreset::LanguageGenerator => "Language Generator",
         }
     }
-
+    // This could implement TryFrom. 
     pub fn from_index(index: usize) -> Option<Self> {
         match index {
             0 => Some(PluginPreset::Blank),

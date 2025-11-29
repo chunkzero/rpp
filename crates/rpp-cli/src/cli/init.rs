@@ -11,6 +11,8 @@ use std::{
 
 static CONFIG_PATH: &str = "rpp.toml";
 
+// I think the function name could be more descriptive. Something like "cli_init" could be better.
+// If it's a method off of a struct that init is fine (although I usually do "new"), but it could be ambigous what you're initializing.
 pub(super) fn init() -> anyhow::Result<()> {
     let theme = ColorfulTheme::default();
 
@@ -34,6 +36,8 @@ pub(super) fn init() -> anyhow::Result<()> {
 }
 
 fn should_abort_existing_project(theme: &ColorfulTheme) -> anyhow::Result<bool> {
+    // My mentor really doesn't like explicit returns in Rust, I personally don't mind them but just something to think abt.
+    // He'd tell me to make an else {} block after this so it's all implicit.
     if !PathBuf::from(CONFIG_PATH).exists() {
         return Ok(false);
     }
@@ -89,6 +93,8 @@ fn get_pack_configuration(theme: &ColorfulTheme) -> anyhow::Result<Option<String
             if input.trim().is_empty() {
                 return Err("Pack ID cannot be empty");
             }
+            // You could make this "else if" so that the above code doesn't need an explicit return.
+            // I'll stop mentioning explicit returns but it occurs elsewhere too.
             if ID_REGEX.is_match(input.trim()) {
                 Ok(())
             } else {

@@ -12,6 +12,8 @@ repository.workspace = true
 name = "rpp"
 path = "src/main.rs"
 
+# I find organizing these (such as having tokio and tokio-stream together) makes it much readable,
+# but that's just my preference. 
 [dependencies]
 clap = { version = "4.5.37", features = ["derive"] }
 tracing = "0.1.41"

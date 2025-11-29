@@ -40,7 +40,7 @@ impl PluginManager {
 
         Self::new_with_globals(lua, globals)
     }
-
+    // Why is this fn public? Are you going to use it later?
     pub fn new_with_globals(lua: Lua, globals: Globals) -> Self {
         Self {
             lua,
@@ -61,7 +61,7 @@ impl PluginManager {
             })
             .collect()
     }
-
+    // Tihs function and the next have variable similar names. I find similar named functions and variables can be hard to read and potentially lead to mistakes.
     pub fn load_plugins(&self, container_dir: impl Into<PathBuf>) -> crate::Result<()> {
         let path = container_dir.into();
 

@@ -30,7 +30,7 @@ impl PluginEnvironmentBuilder {
 
         Ok(table)
     }
-
+    // Similar fn names again.
     pub fn with_global(self, key: &str, value: impl mlua::IntoLua) -> crate::Result<Self> {
         self.env.set(key, value)?;
         Ok(self)
@@ -96,6 +96,7 @@ pub struct Require {
     env: mlua::Table,
 
     loaded: HashMap<String, mlua::Value>,
+    // I'll be honest I'm not taking the time to understand every aspect of your code base so this is just food for thought: Whenever possible, you want to use generics instead of dyn traits. This saves the program from having to make a vtable and saves you from having to worry about dyn compatibility. Not sure if you need it here, but generally it's typically return types that sometimes need to use dyn traits.  
     loaders: Vec<Box<dyn ChunkLoader>>,
 }
 

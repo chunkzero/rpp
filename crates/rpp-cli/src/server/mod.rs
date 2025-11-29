@@ -30,6 +30,8 @@ pub fn serve_cli() -> Result<()> {
 }
 
 async fn serve_async() -> Result<()> {
+    // I would say in general to NOT be scared of longer variables.
+    // I've seen variables at my work that are like whole sentences.
     let addr = SocketAddr::from(([127, 0, 0, 1], 3000));
     let listener = TcpListener::bind(addr).await?;
     tracing::info!("Serving viz server");
@@ -42,7 +44,7 @@ async fn serve_async() -> Result<()> {
             file_change_tx: file_change_tx.clone(),
         }))),
     );
-
+    // Yessir I love using select :).
     tokio::select! {
         _ = serve(listener, app) => {}
         _ = file_change_tx.closed() => {}
@@ -56,6 +58,8 @@ async fn index(_: Request) -> Result<Response, viz::Error> {
 }
 
 async fn sse(req: Request) -> Result<impl IntoResponse, viz::Error> {
+    // It seems like you usually capitalize your comments (which I like) but this one isn't capitalized.
+    // Just like most things in coding, consistancy is the most important thing.
     // check request `Accept` header
     if !matches!(req.header::<_, String>(ACCEPT), Some(ts) if ts == mime::TEXT_EVENT_STREAM.as_ref())
     {
