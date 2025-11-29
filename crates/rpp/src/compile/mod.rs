@@ -2,6 +2,7 @@ use std::{fs::File, io::BufReader, path::PathBuf, time::SystemTime};
 
 use crate::compile::cache::Cache;
 
+pub mod builder;
 pub mod cache;
 pub mod context;
 mod error;
@@ -19,11 +20,15 @@ pub struct PackCompiler {
 }
 
 impl PackCompiler {
+    pub fn builder() -> builder::PackCompilerBuilder {
+        Default::default()
+    }
+
     pub fn new(
-        event_handler_providers: Vec<worker::EventHandlerProvider>,
+        event_handler_providers: Vec<Box<dyn worker::EventHandlerProvider>>,
         pack: PathBuf,
         cache_dir: PathBuf,
-    ) -> crate::Result<Self> {
+    ) -> Result<Self, CompileError> {
         let cache_path = cache_dir.join("cache.rppstate");
 
         let cache: Cache = if cache_path.is_file() {

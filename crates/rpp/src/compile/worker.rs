@@ -9,7 +9,7 @@ use crate::compile::cache::{Fingerprint, SourceState};
 use crate::compile::context::{BuildContext, SimpleBuildContext};
 use crate::compile::event::{BuildEvent, EventHandler};
 
-pub type EventHandlerProvider = Box<dyn (Fn() -> Box<dyn EventHandler>) + Send + Sync>;
+pub trait EventHandlerProvider: Fn() -> Box<dyn EventHandler> + Send + Sync {}
 
 pub struct Job {
     pub path: std::path::PathBuf,
@@ -24,83 +24,77 @@ pub struct JobResult {
 }
 
 pub struct WorkerPool {
-    event_handler_providers: Arc<Vec<EventHandlerProvider>>,
-    _workers: Mutex<Vec<Worker>>,
+    event_handler_providers: Arc<Vec<Box<dyn EventHandlerProvider>>>,
+    workers: Mutex<Vec<JoinHandle<()>>>,
     job_tx: Sender<Option<Job>>,
     result_rx: Receiver<JobResult>,
     max_workers: usize,
 }
 
-struct Worker {
-    join_handle: JoinHandle<()>,
-}
-
 impl WorkerPool {
-    pub fn new(event_handlers: Vec<EventHandlerProvider>, max_workers: usize) -> Self {
+    pub fn new(event_handlers: Vec<Box<dyn EventHandlerProvider>>, max_workers: usize) -> Self {
         let (job_tx, job_rx) = crossbeam_channel::unbounded::<Option<Job>>();
         let (result_tx, _result_rx) = crossbeam_channel::unbounded::<JobResult>();
 
         let event_handler_providers = Arc::new(event_handlers);
-        let mut workers = Vec::new();
+        let workers = (0..max_workers)
+            .map(|_| {
+                let providers = Arc::clone(&event_handler_providers);
+                let job_rx = job_rx.clone();
+                let result_tx = result_tx.clone();
 
-        for thread_id in 0..max_workers {
-            let providers = Arc::clone(&event_handler_providers);
-            let job_rx = job_rx.clone();
-            let result_tx = result_tx.clone();
+                std::thread::spawn(move || {
+                    let handlers: Vec<Box<dyn EventHandler>> =
+                        providers.iter().map(|p| p()).collect();
 
-            let join_handle = std::thread::spawn(move || {
-                let handlers: Vec<Box<dyn EventHandler>> = providers.iter().map(|p| p()).collect();
-
-                while let Ok(Some(job)) = job_rx.recv() {
-                    let mut context = SimpleBuildContext {
-                        path: job.path_str.clone(),
-                        mtime: job.mtime,
-                        size: job.size,
-                        hash: 0,
-                        dependencies: Vec::new(),
-                        outputs: Vec::new(),
-                    };
-
-                    for handler in &handlers {
-                        let _ = handler.handle_event(thread_id, BuildEvent::Begin(&context));
-                    }
-
-                    if let Ok(contents) = std::fs::read(&job.path) {
-                        context.set_hash(XxHash3_64::oneshot(&contents));
+                    while let Ok(Some(job)) = job_rx.recv() {
+                        let mut context = SimpleBuildContext {
+                            path: job.path_str.clone(),
+                            mtime: job.mtime,
+                            size: job.size,
+                            hash: 0,
+                            dependencies: Vec::new(),
+                            outputs: Vec::new(),
+                        };
 
                         for handler in &handlers {
-                            let _ =
-                                handler.handle_event(thread_id, BuildEvent::ProcessFile(&context));
+                            let _ = handler.handle_event(BuildEvent::Begin(&context));
                         }
-                    }
 
-                    for handler in &handlers {
-                        let _ = handler.handle_event(thread_id, BuildEvent::End(&context));
-                    }
+                        if let Ok(contents) = std::fs::read(&job.path) {
+                            context.set_hash(XxHash3_64::oneshot(&contents));
 
-                    let result = JobResult {
-                        path: job.path_str,
-                        state: SourceState {
-                            fingerprint: Fingerprint {
-                                mtime: context.mtime(),
-                                size: context.size(),
-                                hash: context.hash(),
+                            for handler in &handlers {
+                                let _ = handler.handle_event(BuildEvent::ProcessFile(&context));
+                            }
+                        }
+
+                        for handler in &handlers {
+                            let _ = handler.handle_event(BuildEvent::End(&context));
+                        }
+
+                        let result = JobResult {
+                            path: job.path_str,
+                            state: SourceState {
+                                fingerprint: Fingerprint {
+                                    mtime: context.mtime(),
+                                    size: context.size(),
+                                    hash: context.hash(),
+                                },
+                                dependencies: context.dependencies().to_vec(),
+                                outputs: context.outputs().to_vec(),
                             },
-                            dependencies: context.dependencies().to_vec(),
-                            outputs: context.outputs().to_vec(),
-                        },
-                    };
+                        };
 
-                    let _ = result_tx.send(result);
-                }
-            });
-
-            workers.push(Worker { join_handle });
-        }
+                        let _ = result_tx.send(result);
+                    }
+                })
+            })
+            .collect();
 
         Self {
             event_handler_providers,
-            _workers: Mutex::new(workers),
+            workers: Mutex::new(workers),
             job_tx,
             result_rx: _result_rx,
             max_workers,

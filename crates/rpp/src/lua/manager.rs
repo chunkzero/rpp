@@ -1,11 +1,16 @@
 use std::{collections::HashMap, fs, path::PathBuf, sync::RwLock};
 
-use mlua::Lua;
+use std::{collections::HashMap, fs, path::PathBuf, sync::RwLock};
+
+use mlua::{Lua, Value};
 use serde::{Deserialize, Serialize};
+use thiserror::Error;
 
 use crate::plugin::{LoadedPlugin, PluginConfig};
+use crate::Error as RppError;
 
-pub(crate) type Globals = HashMap<String, mlua::Value>;
+pub(crate) type Globals = HashMap<String, Value>;
+type LuaManagerResult<T> = std::result::Result<T, LuaManagerError>;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct PluginInfo {
@@ -26,7 +31,7 @@ impl PluginManager {
     pub fn new(lua: Lua) -> Self {
         let globals = lua
             .globals()
-            .pairs::<String, mlua::Value>()
+            .pairs::<String, Value>()
             .filter_map(|ele| ele.ok())
             .filter(|(k, _)| {
                 !["_G", "package", "coroutine", "require", "module"].contains(&k.as_str())
@@ -61,50 +66,69 @@ impl PluginManager {
         let path = container_dir.into();
 
         if !path.is_dir() {
-            return Err(crate::Error::Plugin(String::from(
-                "Plugin container directory was not a directory",
-            )));
-        };
+            return Err(LuaManagerError::ContainerNotDirectory { path }.into());
+        }
 
-        let dir = path.read_dir()?;
-        for ele in dir {
-            let child = ele?;
-            self.load_plugin(child.path())?;
+        let dir = path
+            .read_dir()
+            .map_err(|source| LuaManagerError::DirectoryRead {
+                path: path.clone(),
+                source,
+            })?;
+
+        for entry in dir {
+            let child = entry.map_err(|source| LuaManagerError::DirectoryEntry {
+                path: path.clone(),
+                source,
+            })?;
+            self.load_plugin(child.path()).map_err(Into::into)?;
         }
 
         Ok(())
     }
 
-    fn load_plugin(&self, plugin_dir: impl Into<PathBuf>) -> crate::Result<()> {
+    fn load_plugin(&self, plugin_dir: impl Into<PathBuf>) -> LuaManagerResult<()> {
         let path = plugin_dir.into();
 
-        let source_dir: PathBuf;
-
-        let config: PluginConfig = if path.is_dir() {
-            source_dir = path;
-
-            // look for toml config
-            let config = source_dir.join("plugin.toml");
-
-            let text = fs::read_to_string(&config)?;
-
-            toml::from_str(&text).map_err(|err| {
-                crate::Error::Plugin(format!("Failed to parse plugin config: {}", err.message()))
-            })?
+        let (source_dir, config_path) = if path.is_dir() {
+            let dir = path.clone();
+            (dir, dir.join("plugin.toml"))
         } else {
-            source_dir = path
+            let parent = path
                 .parent()
-                .ok_or(crate::Error::Plugin(String::from(
-                    "Plugin config had no parent",
-                )))?
-                .into();
-
-            let text = fs::read_to_string(&source_dir)?;
-
-            toml::from_str(&text).map_err(|err| {
-                crate::Error::Plugin(format!("Failed to parse plugin config: {}", err.message()))
-            })?
+                .ok_or(LuaManagerError::PluginConfigMissingParent { path: path.clone() })?
+                .to_path_buf();
+            (parent, path.clone())
         };
+
+        let text = fs::read_to_string(&config_path).map_err(|source| {
+            LuaManagerError::PluginConfigRead {
+                path: config_path.clone(),
+                source,
+            }
+        })?;
+
+        let config = toml::from_str::<PluginConfig>(&text).map_err(|source| {
+            LuaManagerError::PluginConfigParse {
+                path: config_path.clone(),
+                source,
+            }
+        })?;
+
+        let canonical_source = source_dir.canonicalize().map_err(|source| {
+            LuaManagerError::PluginPathCanonicalize {
+                path: source_dir.clone(),
+                source,
+            }
+        })?;
+
+        let source = canonical_source
+            .as_os_str()
+            .to_str()
+            .ok_or(LuaManagerError::PluginPathInvalidUtf8 {
+                path: canonical_source.clone(),
+            })?
+            .to_owned();
 
         let plugin = LoadedPlugin::new(
             self.lua.clone(),
@@ -112,26 +136,32 @@ impl PluginManager {
             config.version,
             config.description,
             "",
-            &(format!(
+            &format!(
                 "{source}{separator}?.lua;{source}{separator}?{separator}init.lua",
-                source = source_dir
-                    .canonicalize()
-                    .unwrap()
-                    .as_os_str()
-                    .to_str()
-                    .unwrap(),
+                source = source,
                 separator = std::path::MAIN_SEPARATOR
-            )),
+            ),
             &self.globals,
-        )?;
+        )
+        .map_err(|source| LuaManagerError::PluginLoad {
+            path: source_dir.clone(),
+            source: Box::new(source),
+        })?;
 
-        // TODO: configurable source dir and whatnot
-        plugin.init(source_dir.join("init.lua"))?;
+        plugin
+            .init(source_dir.join("init.lua"))
+            .map_err(|source| LuaManagerError::PluginLoad {
+                path: source_dir.clone(),
+                source: Box::new(source),
+            })?;
 
         let mut plugins = self.loaded_plugins.write().expect("RwLock was poisoned");
 
         if let Some(existing) = plugins.insert(plugin.id.clone(), plugin) {
-            println!("Plugin with ID {} was already loaded, unloading (not implemented yet, undef behavior will happen)", existing.id);
+            println!(
+                "Plugin with ID {} was already loaded, unloading (not implemented yet, undef behavior will happen)",
+                existing.id
+            );
         }
 
         drop(plugins);

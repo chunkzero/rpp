@@ -11,7 +11,7 @@ pub enum BuildEvent<'a> {
 pub trait EventHandler {
     fn id(&self) -> String;
 
-    fn handle_event(&self, thread_id: usize, event: BuildEvent) -> crate::Result<()>;
+    fn handle_event(&self, event: BuildEvent) -> crate::Result<()>;
 }
 
 impl<T, P> EventHandler for P
@@ -23,7 +23,7 @@ where
         T::id(self)
     }
 
-    fn handle_event(&self, thread_id: usize, event: BuildEvent) -> crate::Result<()> {
-        T::handle_event(self, thread_id, event)
+    fn handle_event(&self, event: BuildEvent) -> crate::Result<()> {
+        T::handle_event(self, event)
     }
 }

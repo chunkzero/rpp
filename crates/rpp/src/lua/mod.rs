@@ -1,6 +1,9 @@
 pub mod core;
+mod error;
+pub mod handler;
 pub mod plugin;
-pub mod processor;
+
+pub use error::PluginError;
 
 #[derive(Debug)]
 pub struct RppLua {
