@@ -1,17 +1,21 @@
-use std::path::PathBuf;
-
 use clap::Parser;
-
-use crate::cli::Cli;
+use tracing_subscriber::EnvFilter;
 
 mod cli;
-mod config;
-mod server;
-mod template;
+mod dev_server;
 
-fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt::init();
+use cli::{Cli, Commands};
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    tracing_subscriber::fmt()
+        .with_env_filter(EnvFilter::from_default_env())
+        .init();
 
     let cli = Cli::parse();
-    cli.command.run(PathBuf::from(cli.config_path))
+
+    match cli.command {
+        Commands::Build(cmd) => cmd.run(),
+        Commands::Serve(cmd) => cmd.run().await,
+    }
 }

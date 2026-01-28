@@ -15,7 +15,7 @@ path = "src/main.rs"
 [dependencies]
 clap = { version = "4.5.37", features = ["derive"] }
 tracing = "0.1.41"
-tracing-subscriber = "0.3.19"
+tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
 tokio = { version = "1.44.2", features = ["full"] }
 anyhow = "1.0.98"
 async-stream = "0.3.6"
@@ -35,3 +35,8 @@ askama = "0.14.0"
 toml_edit = "0.23.7"
 toml = "0.9.8"
 pathdiff = "0.2.3"
+mime_guess = "2.0"
+notify = "7.0"
+bytes = "1.5"
+http-body-util = "0.1"
+mlua = { version = "0.11.6", features = ["luajit52", "vendored", "send"] }

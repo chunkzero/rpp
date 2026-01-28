@@ -1,16 +1,122 @@
-use crate::cli::DefaultArgs;
 use clap::Args;
-use tracing::info;
+use rpp::build::BuildEngine;
+use rpp::plugin::LuaProcessor;
+use std::path::PathBuf;
 
-#[derive(Args, Debug, Clone)]
+#[derive(Args)]
 pub struct BuildCommand {
-    #[clap(flatten)]
-    pub default_args: DefaultArgs,
+    /// Source directory
+    #[arg(default_value = ".")]
+    pub source: PathBuf,
+
+    /// Output directory
+    #[arg(short, long)]
+    pub output: Option<PathBuf>,
+
+    /// Clean before build
+    #[arg(long)]
+    pub clean: bool,
+
+    /// Number of worker threads
+    #[arg(short = 'j', long)]
+    pub jobs: Option<usize>,
 }
 
 impl BuildCommand {
-    pub fn run(self) -> anyhow::Result<()> {
-        info!("Building");
+    pub fn run(&self) -> anyhow::Result<()> {
+        let source = self.source.canonicalize()?;
+        let output = self.output.clone().unwrap_or_else(|| source.join("dist"));
+
+        let mut builder = BuildEngine::builder()
+            .source_dir(&source)
+            .output_dir(&output);
+
+        if let Some(jobs) = self.jobs {
+            builder = builder.num_workers(jobs);
+        }
+
+        let mut engine = builder.build()?;
+
+        // Load Lua plugins from plugins/ directory
+        let plugin_dir = source.join("plugins");
+        if plugin_dir.exists() {
+            tracing::info!("Loading plugins from {}...", plugin_dir.display());
+            load_lua_plugins(&mut engine, &plugin_dir)?;
+        }
+
+        if self.clean {
+            tracing::info!("Cleaning output directory...");
+            engine.clean()?;
+        }
+
+        tracing::info!("Building {}...", source.display());
+        let result = engine.build()?;
+
+        tracing::info!(
+            "Build complete: {} processed, {} cached, {} generated, {} cancelled ({:.2?})",
+            result.files_processed,
+            result.files_cached,
+            result.files_generated,
+            result.files_cancelled,
+            result.duration
+        );
+
         Ok(())
     }
+}
+
+fn load_lua_plugins(engine: &mut BuildEngine, plugin_dir: &PathBuf) -> anyhow::Result<()> {
+    use std::fs;
+
+    for entry in fs::read_dir(plugin_dir)? {
+        let entry = entry?;
+        let path = entry.path();
+
+        // Only load .lua files
+        if path.extension().and_then(|s| s.to_str()) != Some("lua") {
+            continue;
+        }
+
+        let filename = path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("unknown");
+
+        tracing::info!("  Loading plugin: {}", filename);
+
+        let source = fs::read_to_string(&path)?;
+
+        // Parse plugin metadata from Lua source
+        let (name, version, patterns, priority) = parse_plugin_metadata(&source)?;
+
+        tracing::info!(
+            "    {} v{} (priority: {}, patterns: {:?})",
+            name,
+            version,
+            priority,
+            patterns
+        );
+
+        // Create LuaProcessor with parsed metadata
+        let processor = LuaProcessor::new(name.clone(), version, patterns, priority, source);
+
+        engine.register_processor(processor);
+        tracing::info!("    ✓ Registered: {}", name);
+    }
+
+    Ok(())
+}
+
+fn parse_plugin_metadata(source: &str) -> anyhow::Result<(String, String, Vec<String>, i32)> {
+    use mlua::Lua;
+
+    let lua = Lua::new();
+    let plugin_table: mlua::Table = lua.load(source).eval()?;
+
+    let name: String = plugin_table.get("name")?;
+    let version: String = plugin_table.get("version")?;
+    let patterns: Vec<String> = plugin_table.get("patterns")?;
+    let priority: i32 = plugin_table.get("priority").unwrap_or(100);
+
+    Ok((name, version, patterns, priority))
 }
