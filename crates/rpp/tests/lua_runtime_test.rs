@@ -197,3 +197,289 @@ fn test_lua_processor() {
         _ => panic!("Expected Continue result"),
     }
 }
+
+#[cfg(feature = "lua")]
+#[test]
+fn test_lua_chain_processing() {
+    use rpp::lua::LuaRuntime;
+
+    let mut runtime = LuaRuntime::new().expect("Failed to create runtime");
+
+    let plugin1 = r#"
+        return {
+            process = function(ctx, input)
+                return {
+                    action = "continue",
+                    content = input.content .. "-p1",
+                    path = input.path
+                }
+            end
+        }
+    "#;
+
+    let plugin2 = r#"
+        return {
+            process = function(ctx, input)
+                return {
+                    action = "continue",
+                    content = input.content .. "-p2",
+                    path = input.path
+                }
+            end
+        }
+    "#;
+
+    runtime
+        .load_plugin_versioned("p1", "1.0.0", plugin1)
+        .expect("Failed to load plugin1");
+    runtime
+        .load_plugin_versioned("p2", "1.0.0", plugin2)
+        .expect("Failed to load plugin2");
+
+    let result = runtime
+        .process_chain(
+            "test.txt",
+            b"data",
+            &[
+                ("p1".to_string(), "1.0.0".to_string()),
+                ("p2".to_string(), "1.0.0".to_string()),
+            ],
+        )
+        .expect("Failed to process chain");
+
+    assert!(!result.cancelled);
+    assert_eq!(result.skipped_at, None);
+    assert_eq!(result.content, b"data-p1-p2");
+    assert_eq!(result.transformations.len(), 2);
+    assert_eq!(result.transformations[0].0, "p1");
+    assert_eq!(result.transformations[1].0, "p2");
+}
+
+#[cfg(feature = "lua")]
+#[test]
+fn test_plugin_isolation() {
+    use rpp::lua::LuaRuntime;
+
+    let mut runtime = LuaRuntime::new().expect("Failed to create runtime");
+
+    // Plugin 1 sets a variable in its own environment
+    let plugin1 = r#"
+        shared_value = "plugin1"
+        return {
+            process = function(ctx, input)
+                return {
+                    action = "continue",
+                    content = shared_value or "nil",
+                    path = input.path
+                }
+            end
+        }
+    "#;
+
+    // Plugin 2 tries to access plugin1's variable (should fail)
+    let plugin2 = r#"
+        return {
+            process = function(ctx, input)
+                -- shared_value should be nil in this plugin's environment
+                local status = (shared_value == nil) and "isolated" or "leaked"
+                return {
+                    action = "continue",
+                    content = status,
+                    path = input.path
+                }
+            end
+        }
+    "#;
+
+    runtime
+        .load_plugin_versioned("p1", "1.0.0", plugin1)
+        .expect("Failed to load plugin1");
+    runtime
+        .load_plugin_versioned("p2", "1.0.0", plugin2)
+        .expect("Failed to load plugin2");
+
+    // First verify plugin1 can see its own variable
+    let result1 = runtime
+        .process_chain("test.txt", b"data", &[("p1".to_string(), "1.0.0".to_string())])
+        .expect("Failed to process p1");
+    assert_eq!(result1.content, b"plugin1");
+
+    // Then verify plugin2 cannot see plugin1's variable
+    let result2 = runtime
+        .process_chain("test.txt", b"data", &[("p2".to_string(), "1.0.0".to_string())])
+        .expect("Failed to process p2");
+    assert_eq!(result2.content, b"isolated");
+}
+
+#[cfg(feature = "lua")]
+#[test]
+fn test_versioned_plugin_loading() {
+    use rpp::lua::LuaRuntime;
+
+    let mut runtime = LuaRuntime::new().expect("Failed to create runtime");
+
+    let plugin_v1 = r#"
+        return {
+            process = function(ctx, input)
+                return {
+                    action = "continue",
+                    content = "v1",
+                    path = input.path
+                }
+            end
+        }
+    "#;
+
+    let plugin_v2 = r#"
+        return {
+            process = function(ctx, input)
+                return {
+                    action = "continue",
+                    content = "v2",
+                    path = input.path
+                }
+            end
+        }
+    "#;
+
+    runtime
+        .load_plugin_versioned("test", "1.0.0", plugin_v1)
+        .expect("Failed to load v1");
+    runtime
+        .load_plugin_versioned("test", "2.0.0", plugin_v2)
+        .expect("Failed to load v2");
+
+    assert!(runtime.has_plugin("test", "1.0.0"));
+    assert!(runtime.has_plugin("test", "2.0.0"));
+
+    // Process with v1
+    let result1 = runtime
+        .process_chain("test.txt", b"data", &[("test".to_string(), "1.0.0".to_string())])
+        .expect("Failed with v1");
+    assert_eq!(result1.content, b"v1");
+
+    // Process with v2
+    let result2 = runtime
+        .process_chain("test.txt", b"data", &[("test".to_string(), "2.0.0".to_string())])
+        .expect("Failed with v2");
+    assert_eq!(result2.content, b"v2");
+}
+
+#[cfg(feature = "lua")]
+#[test]
+fn test_chain_skip_action() {
+    use rpp::lua::LuaRuntime;
+
+    let mut runtime = LuaRuntime::new().expect("Failed to create runtime");
+
+    let plugin1 = r#"
+        return {
+            process = function(ctx, input)
+                return {
+                    action = "continue",
+                    content = input.content .. "-p1",
+                    path = input.path
+                }
+            end
+        }
+    "#;
+
+    let plugin2 = r#"
+        return {
+            process = function(ctx, input)
+                return {
+                    action = "skip"
+                }
+            end
+        }
+    "#;
+
+    let plugin3 = r#"
+        return {
+            process = function(ctx, input)
+                return {
+                    action = "continue",
+                    content = input.content .. "-p3",
+                    path = input.path
+                }
+            end
+        }
+    "#;
+
+    runtime
+        .load_plugin_versioned("p1", "1.0.0", plugin1)
+        .expect("Failed to load plugin1");
+    runtime
+        .load_plugin_versioned("p2", "1.0.0", plugin2)
+        .expect("Failed to load plugin2");
+    runtime
+        .load_plugin_versioned("p3", "1.0.0", plugin3)
+        .expect("Failed to load plugin3");
+
+    let result = runtime
+        .process_chain(
+            "test.txt",
+            b"data",
+            &[
+                ("p1".to_string(), "1.0.0".to_string()),
+                ("p2".to_string(), "1.0.0".to_string()),
+                ("p3".to_string(), "1.0.0".to_string()),
+            ],
+        )
+        .expect("Failed to process chain");
+
+    assert_eq!(result.skipped_at, Some(1)); // Skipped at plugin2
+    assert_eq!(result.content, b"data-p1"); // Only p1 processed
+    assert_eq!(result.transformations.len(), 1); // Only p1 recorded
+}
+
+#[cfg(feature = "lua")]
+#[test]
+fn test_chain_cancel_action() {
+    use rpp::lua::LuaRuntime;
+
+    let mut runtime = LuaRuntime::new().expect("Failed to create runtime");
+
+    let plugin1 = r#"
+        return {
+            process = function(ctx, input)
+                return {
+                    action = "continue",
+                    content = input.content .. "-p1",
+                    path = input.path
+                }
+            end
+        }
+    "#;
+
+    let plugin2 = r#"
+        return {
+            process = function(ctx, input)
+                return {
+                    action = "cancel"
+                }
+            end
+        }
+    "#;
+
+    runtime
+        .load_plugin_versioned("p1", "1.0.0", plugin1)
+        .expect("Failed to load plugin1");
+    runtime
+        .load_plugin_versioned("p2", "1.0.0", plugin2)
+        .expect("Failed to load plugin2");
+
+    let result = runtime
+        .process_chain(
+            "test.txt",
+            b"data",
+            &[
+                ("p1".to_string(), "1.0.0".to_string()),
+                ("p2".to_string(), "1.0.0".to_string()),
+            ],
+        )
+        .expect("Failed to process chain");
+
+    assert!(result.cancelled);
+    assert_eq!(result.output_path, None);
+}

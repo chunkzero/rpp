@@ -1,5 +1,3 @@
-use std::cell::RefCell;
-use std::collections::HashMap;
 use std::path::PathBuf;
 
 use crate::build::BuildError;
@@ -7,12 +5,6 @@ use crate::lua::{LuaProcessResult, LuaRuntime};
 use crate::sandbox::SandboxContext;
 
 use super::{Plugin, ProcessResult, ProcessingContext, ProcessorPlugin};
-
-// Thread-local cache of Lua runtimes (one per worker thread)
-// Key: (plugin_name, plugin_version)
-thread_local! {
-    static RUNTIME_CACHE: RefCell<HashMap<(String, String), LuaRuntime>> = RefCell::new(HashMap::new());
-}
 
 /// A processor plugin loaded from Lua source.
 pub struct LuaProcessor {
@@ -39,6 +31,10 @@ impl LuaProcessor {
             source,
         }
     }
+
+    pub fn source(&self) -> &str {
+        &self.source
+    }
 }
 
 impl Plugin for LuaProcessor {
@@ -47,6 +43,9 @@ impl Plugin for LuaProcessor {
     }
     fn version(&self) -> &str {
         &self.version
+    }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
     }
 }
 
@@ -59,35 +58,25 @@ impl ProcessorPlugin for LuaProcessor {
     }
 
     fn process(&self, ctx: &ProcessingContext) -> Result<ProcessResult, BuildError> {
-        // Get or create runtime from thread-local cache
-        let key = (self.name.clone(), self.version.clone());
+        // Fallback for non-chain processing (kept for compatibility)
+        // This won't be called in the optimized path
+        let mut runtime = LuaRuntime::new()?;
+        runtime.load_plugin_versioned(&self.name, &self.version, &self.source)?;
 
-        let result = RUNTIME_CACHE.with(|cache| {
-            let mut cache = cache.borrow_mut();
+        let sandbox = SandboxContext::new(
+            ctx.source_path
+                .parent()
+                .unwrap_or(ctx.source_path)
+                .to_path_buf(),
+            PathBuf::from("."),
+        );
 
-            // Get existing runtime or create new one
-            if !cache.contains_key(&key) {
-                let runtime = LuaRuntime::from_source(&self.name, &self.source)?;
-                cache.insert(key.clone(), runtime);
-            }
-
-            let runtime = cache.get(&key).unwrap();
-
-            let sandbox = SandboxContext::new(
-                ctx.source_path
-                    .parent()
-                    .unwrap_or(ctx.source_path)
-                    .to_path_buf(),
-                PathBuf::from("."),
-            );
-
-            runtime.call_processor(
-                &self.name,
-                &ctx.path.to_string_lossy(),
-                ctx.content,
-                &sandbox,
-            )
-        })?;
+        let result = runtime.call_processor(
+            &self.name,
+            &ctx.path.to_string_lossy(),
+            ctx.content,
+            &sandbox,
+        )?;
 
         match result {
             LuaProcessResult::Continue { content, path } => Ok(ProcessResult::Continue {

@@ -118,6 +118,10 @@ mod tests {
         fn version(&self) -> &str {
             "1.0.0"
         }
+
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
     }
 
     impl ProcessorPlugin for TestProcessor {

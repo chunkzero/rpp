@@ -10,6 +10,7 @@ use axum::{
 use tower_http::services::ServeDir;
 
 use rpp::build::BuildEngine;
+use rpp::worker::pool;
 
 mod sse;
 mod watcher;
@@ -91,7 +92,11 @@ impl DevServer {
                         }
                         WatchEvent::PluginChanged(path) => {
                             if self.config.hot_reload {
-                                tracing::debug!("Plugin changed: {}", path.display());
+                                tracing::info!("Plugin changed: {}", path.display());
+
+                                // Invalidate all worker runtime caches
+                                pool::invalidate_lua_runtimes();
+
                                 needs_full_reload = true;
                             }
                         }

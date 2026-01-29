@@ -21,4 +21,7 @@ pub trait Plugin: Send + Sync {
 
     /// Semantic version string (e.g., "1.2.3").
     fn version(&self) -> &str;
+
+    /// Downcast support for identifying plugin types.
+    fn as_any(&self) -> &dyn std::any::Any;
 }

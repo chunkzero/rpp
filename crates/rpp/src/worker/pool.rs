@@ -1,12 +1,63 @@
 use crossbeam_channel::{unbounded, Receiver, Sender};
+use std::cell::RefCell;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use twox_hash::XxHash3_64;
 
 use crate::build::{BuildError, ProcessedFile, Transformation};
-use crate::plugin::{ProcessResult, ProcessingContext};
+use crate::lua::LuaRuntime;
+use crate::plugin::{Plugin, ProcessResult, ProcessingContext};
+
+#[cfg(feature = "lua")]
+use crate::plugin::LuaProcessor;
 
 use super::job::{ProcessingJob, ProcessingResult};
+
+// Private generation counter for hot reload
+static PLUGIN_RELOAD_GENERATION: AtomicU64 = AtomicU64::new(0);
+
+// Public API for invalidation
+pub fn invalidate_lua_runtimes() {
+    PLUGIN_RELOAD_GENERATION.fetch_add(1, Ordering::SeqCst);
+}
+
+struct RuntimeState {
+    runtime: LuaRuntime,
+    generation: u64,
+}
+
+thread_local! {
+    static WORKER_RUNTIME: RefCell<Option<RuntimeState>> = RefCell::new(None);
+}
+
+fn with_runtime<F, R>(f: F) -> R
+where
+    F: FnOnce(&mut LuaRuntime) -> R,
+{
+    let current_gen = PLUGIN_RELOAD_GENERATION.load(Ordering::SeqCst);
+
+    WORKER_RUNTIME.with(|cell| {
+        let mut opt = cell.borrow_mut();
+
+        // Check if runtime needs recreation
+        let needs_refresh = match opt.as_ref() {
+            Some(state) => state.generation != current_gen,
+            None => true,
+        };
+
+        if needs_refresh {
+            let runtime = LuaRuntime::new().expect("Failed to create worker Lua runtime");
+            *opt = Some(RuntimeState {
+                runtime,
+                generation: current_gen,
+            });
+        }
+
+        let state = opt.as_mut().unwrap();
+        f(&mut state.runtime)
+    })
+}
 
 /// Pool of worker threads for parallel file processing.
 pub struct WorkerPool {
@@ -60,7 +111,103 @@ impl WorkerPool {
         let mut output_path = job.file.relative_path.clone();
         let mut transformations = Vec::new();
 
-        for processor in &job.processors {
+        // Group consecutive Lua processors into batches, preserving order
+        let mut i = 0;
+        while i < job.processors.len() {
+            let processor = &job.processors[i];
+
+            #[cfg(feature = "lua")]
+            {
+                // Check if this is a Lua processor
+                if let Some(lua_proc) = processor.as_any().downcast_ref::<LuaProcessor>() {
+                    // Found Lua processor - collect consecutive batch
+                    let mut lua_batch = vec![(
+                        lua_proc.name().to_string(),
+                        lua_proc.version().to_string(),
+                        lua_proc.source().to_string(),
+                    )];
+
+                    i += 1;
+                    while i < job.processors.len() {
+                        if let Some(next_lua) =
+                            job.processors[i].as_any().downcast_ref::<LuaProcessor>()
+                        {
+                            lua_batch.push((
+                                next_lua.name().to_string(),
+                                next_lua.version().to_string(),
+                                next_lua.source().to_string(),
+                            ));
+                            i += 1;
+                        } else {
+                            break; // Hit non-Lua processor, stop batch
+                        }
+                    }
+
+                    // Process Lua batch efficiently
+                    let chain_result = with_runtime(|runtime| {
+                        // Ensure all plugins loaded
+                        for (name, version, source) in &lua_batch {
+                            runtime.load_plugin_versioned(name, version, source)?;
+                        }
+
+                        // Process entire batch in one Lua call
+                        let processor_ids: Vec<_> = lua_batch
+                            .iter()
+                            .map(|(name, version, _)| (name.clone(), version.clone()))
+                            .collect();
+
+                        runtime.process_chain(
+                            &job.file.relative_path.to_string_lossy(),
+                            &content,
+                            &processor_ids,
+                        )
+                    });
+
+                    match chain_result {
+                        Ok(result) if result.cancelled => {
+                            return ProcessingResult::Cancelled {
+                                path: job.file.source_path,
+                            };
+                        }
+                        Ok(result) if result.skipped_at.is_some() => {
+                            // Skip means stop processing entirely
+                            return ProcessingResult::Processed(ProcessedFile {
+                                source_path: job.file.source_path,
+                                output_path,
+                                content,
+                                transformations,
+                                dependencies: Vec::new(),
+                            });
+                        }
+                        Ok(result) => {
+                            // Record transformations with per-step hashes
+                            for (name, version, input_hash, output_hash) in result.transformations {
+                                transformations.push(Transformation {
+                                    processor: name,
+                                    version,
+                                    input_hash,
+                                    output_hash,
+                                });
+                            }
+
+                            content = result.content;
+                            if let Some(p) = result.output_path {
+                                output_path = std::path::PathBuf::from(p);
+                            }
+                        }
+                        Err(e) => {
+                            return ProcessingResult::Error {
+                                path: job.file.source_path,
+                                error: e,
+                            };
+                        }
+                    }
+
+                    continue; // Continue with next processor after batch
+                }
+            }
+
+            // Non-Lua processor - process normally
             let input_hash = XxHash3_64::oneshot(&content);
 
             let ctx = ProcessingContext {
@@ -90,8 +237,14 @@ impl WorkerPool {
                     }
                 }
                 Ok(ProcessResult::Skip) => {
-                    // Skip this processor, continue with next
-                    continue;
+                    // Skip means stop processing this file entirely
+                    return ProcessingResult::Processed(ProcessedFile {
+                        source_path: job.file.source_path,
+                        output_path,
+                        content,
+                        transformations,
+                        dependencies: Vec::new(),
+                    });
                 }
                 Ok(ProcessResult::Cancel) => {
                     return ProcessingResult::Cancelled {
@@ -105,6 +258,8 @@ impl WorkerPool {
                     };
                 }
             }
+
+            i += 1;
         }
 
         ProcessingResult::Processed(ProcessedFile {
@@ -172,6 +327,10 @@ mod tests {
 
         fn version(&self) -> &str {
             &self.version
+        }
+
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
         }
     }
 
