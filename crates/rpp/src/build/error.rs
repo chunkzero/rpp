@@ -27,6 +27,13 @@ pub enum BuildError {
         message: String,
     },
 
+    #[error("Processing failed for {path}: {source}")]
+    ProcessingFailed {
+        path: PathBuf,
+        #[source]
+        source: Box<BuildError>,
+    },
+
     #[error("Generator '{generator}' failed: {message}")]
     GeneratorFailed { generator: String, message: String },
 

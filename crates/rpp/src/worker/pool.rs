@@ -112,6 +112,7 @@ impl WorkerPool {
             output_path,
             content,
             transformations,
+            dependencies: Vec::new(), // TODO: Capture from SandboxContext when file API is exposed
         })
     }
 

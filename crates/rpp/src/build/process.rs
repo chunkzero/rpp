@@ -71,10 +71,13 @@ impl ProcessPhase {
 
         pool.shutdown();
 
-        // Report first error
+        // Report first error with path context
         if !errors.is_empty() {
-            let (_, error) = errors.into_iter().next().unwrap();
-            return Err(error);
+            let (path, error) = errors.into_iter().next().unwrap();
+            return Err(BuildError::ProcessingFailed {
+                path,
+                source: Box::new(error),
+            });
         }
 
         Ok(ProcessPhaseResult {

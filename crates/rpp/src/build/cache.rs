@@ -141,7 +141,7 @@ impl BuildCache {
                 output_path: processed.output_path.clone(),
                 output_content: processed.content.clone(),
                 transformations,
-                dependencies: Vec::new(),
+                dependencies: processed.dependencies.clone(),
             },
         );
     }

@@ -20,7 +20,7 @@ impl FileWatcher {
                 if let Some(path) = event.paths.first() {
                     let watch_event = if path.extension().map(|e| e == "lua").unwrap_or(false) {
                         WatchEvent::PluginChanged(path.clone())
-                    } else if path.file_name().and_then(|n| n.to_str()).map(|n| n == "rpp.toml" || n == "rpp.jsonc").unwrap_or(false) {
+                    } else if path.file_name().and_then(|n| n.to_str()).map(|n| n == "rpp.jsonc").unwrap_or(false) {
                         WatchEvent::ConfigChanged
                     } else {
                         match event.kind {
