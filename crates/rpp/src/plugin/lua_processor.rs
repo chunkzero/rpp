@@ -1,3 +1,5 @@
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 use crate::build::BuildError;
@@ -5,6 +7,12 @@ use crate::lua::{LuaProcessResult, LuaRuntime};
 use crate::sandbox::SandboxContext;
 
 use super::{Plugin, ProcessResult, ProcessingContext, ProcessorPlugin};
+
+// Thread-local cache of Lua runtimes (one per worker thread)
+// Key: (plugin_name, plugin_version)
+thread_local! {
+    static RUNTIME_CACHE: RefCell<HashMap<(String, String), LuaRuntime>> = RefCell::new(HashMap::new());
+}
 
 /// A processor plugin loaded from Lua source.
 pub struct LuaProcessor {
@@ -51,23 +59,35 @@ impl ProcessorPlugin for LuaProcessor {
     }
 
     fn process(&self, ctx: &ProcessingContext) -> Result<ProcessResult, BuildError> {
-        // Create runtime per call (will be cached by worker pool thread-local storage)
-        let runtime = LuaRuntime::from_source(&self.name, &self.source)?;
+        // Get or create runtime from thread-local cache
+        let key = (self.name.clone(), self.version.clone());
 
-        let sandbox = SandboxContext::new(
-            ctx.source_path
-                .parent()
-                .unwrap_or(ctx.source_path)
-                .to_path_buf(),
-            PathBuf::from("."),
-        );
+        let result = RUNTIME_CACHE.with(|cache| {
+            let mut cache = cache.borrow_mut();
 
-        let result = runtime.call_processor(
-            &self.name,
-            &ctx.path.to_string_lossy(),
-            ctx.content,
-            &sandbox,
-        )?;
+            // Get existing runtime or create new one
+            if !cache.contains_key(&key) {
+                let runtime = LuaRuntime::from_source(&self.name, &self.source)?;
+                cache.insert(key.clone(), runtime);
+            }
+
+            let runtime = cache.get(&key).unwrap();
+
+            let sandbox = SandboxContext::new(
+                ctx.source_path
+                    .parent()
+                    .unwrap_or(ctx.source_path)
+                    .to_path_buf(),
+                PathBuf::from("."),
+            );
+
+            runtime.call_processor(
+                &self.name,
+                &ctx.path.to_string_lossy(),
+                ctx.content,
+                &sandbox,
+            )
+        })?;
 
         match result {
             LuaProcessResult::Continue { content, path } => Ok(ProcessResult::Continue {
