@@ -60,8 +60,6 @@ impl WorkerPool {
         let mut output_path = job.file.relative_path.clone();
         let mut transformations = Vec::new();
 
-        let config = toml::Value::Table(toml::map::Map::new());
-
         for processor in &job.processors {
             let input_hash = XxHash3_64::oneshot(&content);
 
@@ -69,7 +67,7 @@ impl WorkerPool {
                 path: &job.file.relative_path,
                 content: &content,
                 source_path: &job.file.source_path,
-                config: &config,
+                config: &job.config,
             };
 
             match processor.process(&ctx) {
@@ -215,6 +213,7 @@ mod tests {
         let job = ProcessingJob {
             file,
             processors: vec![processor],
+            config: toml::Value::Table(toml::map::Map::new()),
         };
 
         pool.submit(job).unwrap();
@@ -257,6 +256,7 @@ mod tests {
             let job = ProcessingJob {
                 file,
                 processors: vec![Arc::clone(&processor)],
+                config: toml::Value::Table(toml::map::Map::new()),
             };
 
             pool.submit(job).unwrap();

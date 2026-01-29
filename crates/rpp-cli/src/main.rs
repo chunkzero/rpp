@@ -3,6 +3,7 @@ use tracing_subscriber::EnvFilter;
 
 mod cli;
 mod dev_server;
+mod lua_defs;
 
 use cli::{Cli, Commands};
 
@@ -16,6 +17,7 @@ async fn main() -> anyhow::Result<()> {
 
     match cli.command {
         Commands::Build(cmd) => cmd.run(),
-        Commands::Serve(cmd) => cmd.run().await,
+        Commands::Dev(cmd) => cmd.run().await,
+        Commands::Init(cmd) => cmd.run(),
     }
 }

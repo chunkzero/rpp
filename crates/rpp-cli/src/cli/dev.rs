@@ -5,7 +5,7 @@ use rpp::RppConfig;
 use std::path::PathBuf;
 
 #[derive(Args)]
-pub struct ServeCommand {
+pub struct DevCommand {
     /// Source directory (defaults to config or "src")
     #[arg(short, long)]
     pub source: Option<PathBuf>,
@@ -31,7 +31,7 @@ pub struct ServeCommand {
     pub hot_reload: Option<bool>,
 }
 
-impl ServeCommand {
+impl DevCommand {
     pub async fn run(&self) -> anyhow::Result<()> {
         // Load config if exists
         let config = RppConfig::load_from_current_dir()?;

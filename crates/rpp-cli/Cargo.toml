@@ -22,7 +22,9 @@ async-stream = "0.3.6"
 futures-util = "0.3.31"
 http = "1.3.1"
 tokio-stream = { version = "0.1.17", features = ["full"] }
-viz = { version = "0.10.0", features = ["default", "sse"] }
+axum = { version = "0.7", features = ["http2"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["fs", "cors"] }
 mime = "0.3.17"
 rpp = { path = "../rpp" }
 serde = { version = "1.0.219", features = ["derive"] }

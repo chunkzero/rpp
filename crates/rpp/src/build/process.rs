@@ -21,6 +21,7 @@ impl ProcessPhase {
         &self,
         index: FileIndex,
         registry: &Arc<PluginRegistry>,
+        config: &toml::Value,
     ) -> Result<ProcessPhaseResult, BuildError> {
         let pool = WorkerPool::new(self.num_workers);
 
@@ -34,7 +35,11 @@ impl ProcessPhase {
             let source_path = file.source_path.clone();
             // Store a clone of the FileEntry for cache updates
             file_entries.insert(source_path, file.clone());
-            let job = ProcessingJob { file, processors };
+            let job = ProcessingJob {
+                file,
+                processors,
+                config: config.clone(),
+            };
             pool.submit(job)?;
             submitted += 1;
         }
@@ -149,8 +154,9 @@ mod tests {
             cached: vec![],
         };
 
+        let config = toml::Value::Table(toml::map::Map::new());
         let phase = ProcessPhase::new(2);
-        let result = phase.run(index, &registry).unwrap();
+        let result = phase.run(index, &registry, &config).unwrap();
 
         assert_eq!(result.processed.len(), 1);
         assert_eq!(result.processed[0].content, b"hello-processed");
@@ -185,8 +191,9 @@ mod tests {
             cached: vec![],
         };
 
+        let config = toml::Value::Table(toml::map::Map::new());
         let phase = ProcessPhase::new(2);
-        let result = phase.run(index, &registry).unwrap();
+        let result = phase.run(index, &registry, &config).unwrap();
 
         assert_eq!(result.processed.len(), 5);
         assert_eq!(result.cancelled_count, 0);
@@ -208,8 +215,9 @@ mod tests {
             cached: cached.clone(),
         };
 
+        let config = toml::Value::Table(toml::map::Map::new());
         let phase = ProcessPhase::new(2);
-        let result = phase.run(index, &registry).unwrap();
+        let result = phase.run(index, &registry, &config).unwrap();
 
         assert_eq!(result.processed.len(), 0);
         assert_eq!(result.cached.len(), 1);

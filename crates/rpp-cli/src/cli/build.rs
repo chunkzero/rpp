@@ -62,6 +62,13 @@ impl BuildCommand {
 
         let mut engine = builder.build()?;
 
+        // Generate LuaLS definitions if they don't exist
+        let lua_defs_path = PathBuf::from(".rpp/lua");
+        if !lua_defs_path.exists() {
+            tracing::info!("Generating LuaLS definitions...");
+            crate::lua_defs::generate_lua_definitions(&lua_defs_path)?;
+        }
+
         // Load Lua plugins from plugins/ directory in pack root (not source dir)
         let plugin_dir = PathBuf::from("plugins");
         if plugin_dir.exists() {
@@ -125,7 +132,7 @@ fn load_lua_plugins(engine: &mut BuildEngine, plugin_dir: &PathBuf) -> anyhow::R
         // Create LuaProcessor with parsed metadata
         let processor = LuaProcessor::new(name.clone(), version, patterns, priority, source);
 
-        engine.register_processor(processor);
+        engine.register_processor(processor)?;
         tracing::info!("    ✓ Registered: {}", name);
     }
 
@@ -133,15 +140,20 @@ fn load_lua_plugins(engine: &mut BuildEngine, plugin_dir: &PathBuf) -> anyhow::R
 }
 
 fn parse_plugin_metadata(source: &str) -> anyhow::Result<(String, String, Vec<String>, i32)> {
-    use mlua::Lua;
+    // Use sandboxed Lua runtime for parsing metadata
+    let runtime = rpp::lua::LuaRuntime::new()?;
 
-    let lua = Lua::new();
-    let plugin_table: mlua::Table = lua.load(source).eval()?;
+    // Create a safe parsing function using the sandboxed Lua instance
+    let (name, version, patterns, priority) = runtime.with_lua(|lua| {
+        let plugin_table: mlua::Table = lua.load(source).eval()?;
 
-    let name: String = plugin_table.get("name")?;
-    let version: String = plugin_table.get("version")?;
-    let patterns: Vec<String> = plugin_table.get("patterns")?;
-    let priority: i32 = plugin_table.get("priority").unwrap_or(100);
+        let name: String = plugin_table.get("name")?;
+        let version: String = plugin_table.get("version")?;
+        let patterns: Vec<String> = plugin_table.get("patterns")?;
+        let priority: i32 = plugin_table.get("priority").unwrap_or(100);
+
+        Ok::<_, mlua::Error>((name, version, patterns, priority))
+    })?;
 
     Ok((name, version, patterns, priority))
 }

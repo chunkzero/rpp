@@ -45,7 +45,7 @@ impl BuildEngine {
 
         // Phase 2: Process
         let process = ProcessPhase::new(self.num_workers);
-        let process_result = process.run(index, &self.registry)?;
+        let process_result = process.run(index, &self.registry, &self.config)?;
 
         // Update cache with processed files
         for file in process_result.processed.iter() {
@@ -86,23 +86,25 @@ impl BuildEngine {
     }
 
     /// Register a processor plugin.
-    pub fn register_processor<P>(&mut self, plugin: P)
+    pub fn register_processor<P>(&mut self, plugin: P) -> Result<(), BuildError>
     where
         P: crate::plugin::ProcessorPlugin + 'static,
     {
         Arc::get_mut(&mut self.registry)
-            .expect("Cannot modify registry after build starts")
+            .ok_or(BuildError::RegistryLocked)?
             .register_processor(Arc::new(plugin));
+        Ok(())
     }
 
     /// Register a generator plugin.
-    pub fn register_generator<G>(&mut self, plugin: G)
+    pub fn register_generator<G>(&mut self, plugin: G) -> Result<(), BuildError>
     where
         G: crate::plugin::GeneratorPlugin + 'static,
     {
         Arc::get_mut(&mut self.registry)
-            .expect("Cannot modify registry after build starts")
+            .ok_or(BuildError::RegistryLocked)?
             .register_generator(Arc::new(plugin));
+        Ok(())
     }
 
     /// Get a reference to the plugin registry.

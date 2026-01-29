@@ -1,6 +1,6 @@
 use ignore::WalkBuilder;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::UNIX_EPOCH;
 use twox_hash::XxHash3_64;
 
@@ -49,8 +49,30 @@ impl DiscoveryPhase {
                 .unwrap_or(path)
                 .to_path_buf();
 
-            // Compute fingerprint
-            let fingerprint = self.compute_fingerprint(path)?;
+            // Read file once
+            let content = fs::read(path).map_err(|e| BuildError::FileRead {
+                path: path.to_path_buf(),
+                source: e,
+            })?;
+
+            // Compute fingerprint from content buffer
+            let metadata = fs::metadata(path).map_err(|e| BuildError::FileRead {
+                path: path.to_path_buf(),
+                source: e,
+            })?;
+
+            let mtime = metadata
+                .modified()
+                .ok()
+                .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+
+            let fingerprint = Fingerprint {
+                mtime,
+                size: metadata.len(),
+                hash: XxHash3_64::oneshot(&content),
+            };
 
             // Check if we can use cached version
             if cache.is_valid(&relative_path, &fingerprint, registry) {
@@ -64,12 +86,7 @@ impl DiscoveryPhase {
                 }
             }
 
-            // Need to process this file - load content
-            let content = fs::read(path).map_err(|e| BuildError::FileRead {
-                path: path.to_path_buf(),
-                source: e,
-            })?;
-
+            // Add file to processing queue (content already loaded)
             index.entries.push(FileEntry {
                 source_path: path.to_path_buf(),
                 relative_path,
@@ -79,30 +96,5 @@ impl DiscoveryPhase {
         }
 
         Ok(index)
-    }
-
-    fn compute_fingerprint(&self, path: &Path) -> Result<Fingerprint, BuildError> {
-        let metadata = fs::metadata(path).map_err(|e| BuildError::FileRead {
-            path: path.to_path_buf(),
-            source: e,
-        })?;
-
-        let mtime = metadata
-            .modified()
-            .ok()
-            .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
-
-        let size = metadata.len();
-
-        // Compute content hash
-        let content = fs::read(path).map_err(|e| BuildError::FileRead {
-            path: path.to_path_buf(),
-            source: e,
-        })?;
-        let hash = XxHash3_64::oneshot(&content);
-
-        Ok(Fingerprint { mtime, size, hash })
     }
 }

@@ -38,4 +38,7 @@ pub enum BuildError {
 
     #[error("Plugin error: {0}")]
     Plugin(String),
+
+    #[error("Cannot modify registry after it has been shared")]
+    RegistryLocked,
 }

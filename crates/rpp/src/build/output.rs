@@ -130,12 +130,13 @@ impl OutputWriter {
                         source: std::io::Error::new(std::io::ErrorKind::Other, e),
                     })?;
 
-                let contents = fs::read(&path).map_err(|e| BuildError::FileRead {
+                // Stream file contents instead of reading entire file into memory
+                let mut file = File::open(&path).map_err(|e| BuildError::FileRead {
                     path: path.clone(),
                     source: e,
                 })?;
 
-                zip.write_all(&contents).map_err(|e| BuildError::FileWrite {
+                std::io::copy(&mut file, zip).map_err(|e| BuildError::FileWrite {
                     path: path.clone(),
                     source: e,
                 })?;

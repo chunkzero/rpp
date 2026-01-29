@@ -1,6 +1,12 @@
+use std::convert::Infallible;
 use std::sync::Arc;
 use tokio::sync::broadcast;
-use viz::{Response, Result};
+use tokio_stream::{Stream, StreamExt};
+use tokio_stream::wrappers::BroadcastStream;
+use axum::{
+    extract::State,
+    response::sse::{Event, KeepAlive, Sse},
+};
 
 pub enum ReloadEvent {
     FullReload,
@@ -19,13 +25,13 @@ impl SseBroadcaster {
 
     pub async fn broadcast(&self, event: ReloadEvent) {
         let msg = match event {
-            ReloadEvent::FullReload => "event: reload\ndata: full\n\n".to_string(),
+            ReloadEvent::FullReload => "full".to_string(),
             ReloadEvent::FileChanged { paths } => {
                 let paths_str: Vec<_> = paths
                     .iter()
                     .map(|p| p.to_string_lossy().to_string())
                     .collect();
-                format!("event: reload\ndata: {}\n\n", paths_str.join(","))
+                paths_str.join(",")
             }
         };
         let _ = self.tx.send(msg);
@@ -36,15 +42,15 @@ impl SseBroadcaster {
     }
 }
 
-pub async fn sse_handler(broadcaster: Arc<SseBroadcaster>) -> Result<Response> {
-    use tokio_stream::wrappers::BroadcastStream;
-
+pub async fn sse_handler(
+    State(broadcaster): State<Arc<SseBroadcaster>>,
+) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
     let rx = broadcaster.subscribe();
-    let stream = BroadcastStream::new(rx);
+    let stream = BroadcastStream::new(rx)
+        .filter_map(|msg| match msg {
+            Ok(text) => Some(Ok(Event::default().event("reload").data(text))),
+            Err(_) => None,
+        });
 
-    Ok(Response::builder()
-        .header("Content-Type", "text/event-stream")
-        .header("Cache-Control", "no-cache")
-        .header("Connection", "keep-alive")
-        .body(viz::Body::from_stream(stream))?)
+    Sse::new(stream).keep_alive(KeepAlive::default())
 }

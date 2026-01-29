@@ -10,6 +10,8 @@ pub struct ProcessingJob {
     pub file: FileEntry,
     /// Processors to apply (in priority order)
     pub processors: Vec<Arc<dyn ProcessorPlugin>>,
+    /// Build configuration
+    pub config: toml::Value,
 }
 
 /// Result of processing a job.

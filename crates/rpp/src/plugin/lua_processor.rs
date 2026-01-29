@@ -1,5 +1,4 @@
 use std::path::PathBuf;
-use std::sync::Mutex;
 
 use crate::build::BuildError;
 use crate::lua::{LuaProcessResult, LuaRuntime};
@@ -14,7 +13,6 @@ pub struct LuaProcessor {
     patterns: Vec<String>,
     priority: i32,
     source: String,
-    runtime: Mutex<Option<LuaRuntime>>,
 }
 
 impl LuaProcessor {
@@ -31,18 +29,7 @@ impl LuaProcessor {
             patterns,
             priority,
             source,
-            runtime: Mutex::new(None),
         }
-    }
-
-    fn ensure_runtime(&self) -> Result<(), BuildError> {
-        let mut guard = self.runtime.lock().unwrap();
-        if guard.is_none() {
-            let mut rt = LuaRuntime::new()?;
-            rt.load_plugin(&self.name, &self.source)?;
-            *guard = Some(rt);
-        }
-        Ok(())
     }
 }
 
@@ -64,7 +51,8 @@ impl ProcessorPlugin for LuaProcessor {
     }
 
     fn process(&self, ctx: &ProcessingContext) -> Result<ProcessResult, BuildError> {
-        self.ensure_runtime()?;
+        // Create runtime per call (will be cached by worker pool thread-local storage)
+        let runtime = LuaRuntime::from_source(&self.name, &self.source)?;
 
         let sandbox = SandboxContext::new(
             ctx.source_path
@@ -73,9 +61,6 @@ impl ProcessorPlugin for LuaProcessor {
                 .to_path_buf(),
             PathBuf::from("."),
         );
-
-        let guard = self.runtime.lock().unwrap();
-        let runtime = guard.as_ref().unwrap();
 
         let result = runtime.call_processor(
             &self.name,

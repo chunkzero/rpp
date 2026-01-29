@@ -1,8 +1,10 @@
 mod build;
-mod serve;
+mod dev;
+mod init;
 
 pub use build::BuildCommand;
-pub use serve::ServeCommand;
+pub use dev::DevCommand;
+pub use init::InitCommand;
 
 use clap::{Parser, Subcommand};
 
@@ -19,5 +21,7 @@ pub enum Commands {
     /// Build a resource pack
     Build(BuildCommand),
     /// Start development server with hot reload
-    Serve(ServeCommand),
+    Dev(DevCommand),
+    /// Initialize a new RPP project
+    Init(InitCommand),
 }

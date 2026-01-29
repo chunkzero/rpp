@@ -1,7 +1,13 @@
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::mpsc;
-use viz::Router;
+use axum::{
+    Router,
+    routing::get,
+};
+use tower_http::services::ServeDir;
 
 use rpp::build::BuildEngine;
 
@@ -56,84 +62,84 @@ impl DevServer {
         let broadcaster = Arc::new(SseBroadcaster::new());
 
         // Set up HTTP routes
-        let output_dir = self.config.output_dir.clone();
-        let broadcaster_clone = Arc::clone(&broadcaster);
-
         let app = Router::new()
-            .get("/events", move |_| {
-                let bc = Arc::clone(&broadcaster_clone);
-                async move { sse::sse_handler(bc).await }
-            })
-            .get("/*path", move |req| {
-                let dir = output_dir.clone();
-                async move { serve_static(req, dir).await }
-            });
+            .route("/events", get(sse::sse_handler))
+            .nest_service("/", ServeDir::new(&self.config.output_dir))
+            .with_state(Arc::clone(&broadcaster));
 
         // Start HTTP server
         let addr = format!("{}:{}", self.config.host, self.config.port);
         tracing::info!("Starting dev server at http://{}", addr);
 
-        let server = tokio::spawn(async move {
-            let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
-            viz::serve(listener, app).await
+        let listener = tokio::net::TcpListener::bind(&addr).await?;
+        tokio::spawn(async move {
+            axum::serve(listener, app).await
         });
 
-        // Watch for file changes
-        while let Some(event) = watch_rx.recv().await {
-            match event {
-                WatchEvent::SourceChanged(path) => {
-                    tracing::info!("File changed: {}", path.display());
+        // Watch for file changes with debouncing
+        const DEBOUNCE_MS: u64 = 100;
+        let mut pending_changes: HashSet<PathBuf> = HashSet::new();
+        let mut needs_full_reload = false;
 
-                    match self.build_engine.build() {
-                        Ok(result) => {
-                            tracing::info!("Rebuilt {} files", result.files_processed);
-                            broadcaster
-                                .broadcast(sse::ReloadEvent::FileChanged { paths: vec![path] })
-                                .await;
+        loop {
+            tokio::select! {
+                Some(event) = watch_rx.recv() => {
+                    match event {
+                        WatchEvent::SourceChanged(path) => {
+                            tracing::debug!("File changed: {}", path.display());
+                            pending_changes.insert(path);
                         }
-                        Err(e) => {
-                            tracing::error!("Build failed: {}", e);
+                        WatchEvent::PluginChanged(path) => {
+                            if self.config.hot_reload {
+                                tracing::debug!("Plugin changed: {}", path.display());
+                                needs_full_reload = true;
+                            }
+                        }
+                        WatchEvent::ConfigChanged => {
+                            tracing::debug!("Config changed");
+                            needs_full_reload = true;
                         }
                     }
-                }
-                WatchEvent::PluginChanged(path) => {
-                    if self.config.hot_reload {
-                        tracing::info!("Plugin changed: {}", path.display());
+
+                    // Start debounce timer after receiving any event
+                    tokio::time::sleep(Duration::from_millis(DEBOUNCE_MS)).await;
+
+                    // Drain any additional events that arrived during debounce
+                    while let Ok(event) = watch_rx.try_recv() {
+                        match event {
+                            WatchEvent::SourceChanged(path) => {
+                                pending_changes.insert(path);
+                            }
+                            WatchEvent::PluginChanged(_) | WatchEvent::ConfigChanged => {
+                                needs_full_reload = true;
+                            }
+                        }
+                    }
+
+                    // Perform rebuild with coalesced changes
+                    if needs_full_reload {
+                        tracing::info!("Config or plugin changed, triggering full reload");
                         broadcaster.broadcast(sse::ReloadEvent::FullReload).await;
+                        needs_full_reload = false;
+                        pending_changes.clear();
+                    } else if !pending_changes.is_empty() {
+                        let paths: Vec<_> = pending_changes.drain().collect();
+                        tracing::info!("Rebuilding {} changed file(s)", paths.len());
+
+                        match self.build_engine.build() {
+                            Ok(result) => {
+                                tracing::info!("Rebuilt {} files", result.files_processed);
+                                broadcaster
+                                    .broadcast(sse::ReloadEvent::FileChanged { paths })
+                                    .await;
+                            }
+                            Err(e) => {
+                                tracing::error!("Build failed: {}", e);
+                            }
+                        }
                     }
-                }
-                WatchEvent::ConfigChanged => {
-                    tracing::info!("Config changed, full rebuild required");
-                    broadcaster.broadcast(sse::ReloadEvent::FullReload).await;
                 }
             }
         }
-
-        server.await??;
-        Ok(())
-    }
-}
-
-async fn serve_static(req: viz::Request, output_dir: PathBuf) -> viz::Result<viz::Response> {
-    use http_body_util::Full;
-    use viz::{IntoResponse, RequestExt};
-
-    let path: String = req.param("path").unwrap_or_default();
-    let file_path = output_dir.join(path.trim_start_matches('/'));
-
-    if file_path.is_file() {
-        let content = tokio::fs::read(&file_path)
-            .await
-            .map_err(|e| viz::Error::boxed(e))?;
-
-        let mime = mime_guess::from_path(&file_path).first_or_octet_stream();
-
-        let body = viz::Body::Full(Full::new(bytes::Bytes::from(content)));
-
-        Ok(viz::Response::builder()
-            .header("Content-Type", mime.as_ref())
-            .body(body)?)
-    } else {
-        Err(viz::StatusCode::NOT_FOUND.into_error())
     }
 }

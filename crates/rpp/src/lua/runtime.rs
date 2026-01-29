@@ -6,7 +6,7 @@ use crate::sandbox::SandboxContext;
 
 /// Lua runtime wrapper for plugin execution.
 pub struct LuaRuntime {
-    lua: Lua,
+    pub(crate) lua: Lua,
     loaded_plugins: HashMap<String, mlua::RegistryKey>,
 }
 
@@ -33,6 +33,21 @@ impl LuaRuntime {
             lua,
             loaded_plugins: HashMap::new(),
         })
+    }
+
+    /// Execute a function with access to the sandboxed Lua instance.
+    pub fn with_lua<F, R>(&self, f: F) -> Result<R, mlua::Error>
+    where
+        F: FnOnce(&Lua) -> Result<R, mlua::Error>,
+    {
+        f(&self.lua)
+    }
+
+    /// Create a new runtime with a plugin already loaded.
+    pub fn from_source(name: &str, source: &str) -> Result<Self, BuildError> {
+        let mut runtime = Self::new()?;
+        runtime.load_plugin(name, source)?;
+        Ok(runtime)
     }
 
     /// Load a plugin from source code.
