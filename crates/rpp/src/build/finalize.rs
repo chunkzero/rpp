@@ -55,6 +55,10 @@ impl FinalizePhase {
             writer.write_cached(cached)?;
         }
 
+        // Create zip archive
+        let zip_path = self.output_dir.join("pack.zip");
+        writer.create_zip_archive(&zip_path)?;
+
         Ok(BuildResult {
             files_processed: process_result.processed.len(),
             files_cached: process_result.cached.len(),

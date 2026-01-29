@@ -1,17 +1,22 @@
 use clap::Args;
 use rpp::build::BuildEngine;
 use rpp::plugin::LuaProcessor;
+use rpp::RppConfig;
 use std::path::PathBuf;
 
 #[derive(Args)]
 pub struct BuildCommand {
-    /// Source directory
-    #[arg(default_value = ".")]
-    pub source: PathBuf,
+    /// Source directory (defaults to config or "src")
+    #[arg(short, long)]
+    pub source: Option<PathBuf>,
 
-    /// Output directory
+    /// Output directory (defaults to .rpp/build)
     #[arg(short, long)]
     pub output: Option<PathBuf>,
+
+    /// Cache directory (defaults to .rpp/cache)
+    #[arg(short, long)]
+    pub cache: Option<PathBuf>,
 
     /// Clean before build
     #[arg(long)]
@@ -24,12 +29,32 @@ pub struct BuildCommand {
 
 impl BuildCommand {
     pub fn run(&self) -> anyhow::Result<()> {
-        let source = self.source.canonicalize()?;
-        let output = self.output.clone().unwrap_or_else(|| source.join("dist"));
+        // Load config if exists
+        let config = RppConfig::load_from_current_dir()?;
 
-        let mut builder = BuildEngine::builder()
-            .source_dir(&source)
-            .output_dir(&output);
+        // Determine source directory: CLI arg > config > default "src"
+        let source = if let Some(ref s) = self.source {
+            s.clone()
+        } else if let Some(ref cfg) = config {
+            PathBuf::from(&cfg.source_dir)
+        } else {
+            PathBuf::from("src")
+        };
+
+        let source = source.canonicalize()?;
+
+        // Build the engine with appropriate defaults
+        let mut builder = BuildEngine::builder().source_dir(&source);
+
+        // Output directory: CLI arg > default (.rpp/build)
+        if let Some(ref output) = self.output {
+            builder = builder.output_dir(output);
+        }
+
+        // Cache directory: CLI arg > default (.rpp/cache)
+        if let Some(ref cache) = self.cache {
+            builder = builder.cache_dir(cache);
+        }
 
         if let Some(jobs) = self.jobs {
             builder = builder.num_workers(jobs);
@@ -37,8 +62,8 @@ impl BuildCommand {
 
         let mut engine = builder.build()?;
 
-        // Load Lua plugins from plugins/ directory
-        let plugin_dir = source.join("plugins");
+        // Load Lua plugins from plugins/ directory in pack root (not source dir)
+        let plugin_dir = PathBuf::from("plugins");
         if plugin_dir.exists() {
             tracing::info!("Loading plugins from {}...", plugin_dir.display());
             load_lua_plugins(&mut engine, &plugin_dir)?;

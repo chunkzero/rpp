@@ -110,7 +110,24 @@ Discovery → Process → Finalize → Cache Save
 
 ## Demo Pack Example
 
-Created `examples/demo_pack` with 3 working Lua plugins:
+Created `examples/demo_pack` with new directory structure:
+
+```
+demo_pack/
+├── rpp.jsonc                   # Pack configuration
+├── src/                        # Resource pack contents
+│   ├── pack.mcmeta
+│   └── assets/
+├── plugins/                    # RPP Lua plugins
+│   ├── json_minify.lua
+│   ├── hash_renamer.lua
+│   └── mcmeta_validator.lua
+└── .rpp/
+    ├── build/                  # Final build output
+    │   └── pack.zip           # Zip archive
+    └── cache/                  # Build cache
+        └── build.cache
+```
 
 ### 1. mcmeta_validator.lua (Priority: 10)
 - Validates `.mcmeta` animation metadata
@@ -149,14 +166,15 @@ Demo pack with 7 files:
 
 ### End-to-End
 ```bash
-# Build with plugins
-cargo run -p rpp-cli -- build examples/demo_pack
+# Build with plugins (from pack root)
+cd examples/demo_pack
+cargo run -p rpp-cli -- build
 
 # Clean build
-cargo run -p rpp-cli -- build examples/demo_pack --clean
+cargo run -p rpp-cli -- build --clean
 
 # Dev server
-cargo run -p rpp-cli -- serve examples/demo_pack
+cargo run -p rpp-cli -- serve
 ```
 
 ## Code Cleanup
@@ -218,39 +236,46 @@ cargo run -p rpp-cli -- serve examples/demo_pack
 
 ### Build Command
 ```bash
-# Simple build
-rpp build ./my_pack
+# Simple build (from pack root with rpp.jsonc)
+rpp build
+
+# With custom source directory
+rpp build --source ./custom_src
 
 # With custom output
-rpp build ./my_pack --output ./dist
+rpp build --output ./custom_output
 
 # With 8 workers
-rpp build ./my_pack -j 8
+rpp build -j 8
 
 # Clean and rebuild
-rpp build ./my_pack --clean
+rpp build --clean
 ```
 
 ### Dev Server
 ```bash
-# Start server
-rpp serve ./my_pack
+# Start server (uses config from rpp.jsonc)
+rpp serve
 
-# Custom port
-rpp serve ./my_pack --port 3000
+# Custom port (overrides config)
+rpp serve --port 3000
 
-# With hot reload
-rpp serve ./my_pack --hot-reload
+# Custom host
+rpp serve --host 0.0.0.0
 ```
 
 ### Programmatic API
 ```rust
 use rpp::build::BuildEngine;
-use rpp::plugin::LuaProcessor;
+use rpp::RppConfig;
+
+// Load config from rpp.jsonc
+let config = RppConfig::load("rpp.jsonc")?;
 
 let mut engine = BuildEngine::builder()
-    .source_dir("./my_pack")
-    .output_dir("./dist")
+    .source_dir(&config.source_dir)
+    .output_dir(".rpp/build")
+    .cache_dir(".rpp/cache")
     .num_workers(4)
     .build()?;
 
@@ -261,14 +286,22 @@ println!("Built {} files in {:?}",
     result.files_processed, result.duration);
 ```
 
+## Recent Enhancements
+
+### Directory Structure Update
+- ✅ Added `rpp.jsonc` configuration file support
+- ✅ New structure: `src/` for pack contents, `.rpp/build/` for output, `.rpp/cache/` for cache
+- ✅ Automatic zip archive creation at `.rpp/build/pack.zip`
+- ✅ CLI config loading with override support
+- ✅ Dev server integration with config
+
 ## Future Enhancements
 
 Potential additions not yet implemented:
 - Generator plugins (trait exists, not used yet)
 - File dependencies tracking (structure exists, not populated)
 - Filter and Validator plugin types
-- Config file (rpp.toml) support
-- Custom cache location
+- Plugin repositories
 - Parallel generator execution
 - More sandbox APIs (network, subprocess, etc.)
 
@@ -293,10 +326,17 @@ cargo check --workspace
 cargo test --workspace
 
 # Build demo pack
-cargo run -p rpp-cli -- build examples/demo_pack
+cd examples/demo_pack
+cargo run -p rpp-cli -- build
 
 # Start dev server
-cargo run -p rpp-cli -- serve examples/demo_pack
+cargo run -p rpp-cli -- serve
 ```
 
 All commands execute successfully with expected output.
+
+### Expected Build Output
+- Files discovered from `src/`
+- Processed files written to `.rpp/build/`
+- Zip archive created at `.rpp/build/pack.zip`
+- Cache saved at `.rpp/cache/build.cache`

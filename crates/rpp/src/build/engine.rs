@@ -128,13 +128,13 @@ impl BuildEngineBuilder {
         self
     }
 
-    /// Set the output directory (default: source_dir/dist).
+    /// Set the output directory (default: .rpp/build).
     pub fn output_dir<P: Into<PathBuf>>(mut self, path: P) -> Self {
         self.output_dir = Some(path.into());
         self
     }
 
-    /// Set the cache directory (default: source_dir/.rpp).
+    /// Set the cache directory (default: .rpp/cache).
     pub fn cache_dir<P: Into<PathBuf>>(mut self, path: P) -> Self {
         self.cache_dir = Some(path.into());
         self
@@ -158,9 +158,9 @@ impl BuildEngineBuilder {
             .source_dir
             .ok_or_else(|| BuildError::Plugin("source_dir is required".into()))?;
 
-        let output_dir = self.output_dir.unwrap_or_else(|| source_dir.join("dist"));
+        let output_dir = self.output_dir.unwrap_or_else(|| PathBuf::from(".rpp/build"));
 
-        let cache_dir = self.cache_dir.unwrap_or_else(|| source_dir.join(".rpp"));
+        let cache_dir = self.cache_dir.unwrap_or_else(|| PathBuf::from(".rpp/cache"));
 
         let cache_path = cache_dir.join("build.cache");
 
