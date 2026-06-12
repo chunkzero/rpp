@@ -4,11 +4,13 @@
 //! vendored Lua 5.4. The public entry point is [`LuaPluginFactory`], which
 //! implements [`crate::model::PluginFactory`].
 
+mod bootstrap;
 mod builtins;
 mod convert;
 mod ctx;
 mod factory;
 mod file;
+mod generator_ctx;
 mod instance;
 mod plugin_builder;
 mod sandbox;

@@ -1,6 +1,5 @@
 //! [`LuaPluginInstance`]: a live, per-worker Lua plugin (spec §4).
 
-use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -8,14 +7,15 @@ use mlua::{Function, Lua, Table, Value};
 use parking_lot::Mutex;
 
 use crate::error::{Error, Result};
+use crate::lua::bootstrap::eval_entry;
 use crate::lua::ctx::{base_ctx, PackInfo};
 use crate::lua::factory::LuaPluginFactory;
 use crate::lua::file::{FileHandle, FileState};
+use crate::lua::generator_ctx::call_generator;
 use crate::lua::plugin_builder::PluginBuilder;
-use crate::lua::sandbox::{install_limits, run_limited, Deadline, Sandbox};
+use crate::lua::sandbox::{run_limited, Deadline};
 use crate::lua::traceback;
 use crate::model::{BuildStats, GeneratorHost, PackFile, PluginFactory, ProcessOutcome};
-use crate::util::path::validate_relative;
 
 /// A live Lua plugin instance bound to a single thread.
 ///
@@ -32,6 +32,7 @@ pub struct LuaPluginInstance {
     on_start: Option<Function>,
     on_finish: Option<Function>,
     deadline: Deadline,
+    execution_limit: std::time::Duration,
     // Kept alive so the sandbox environment (and its closures) live as long as
     // the registered functions.
     _sandbox_env: Table,
@@ -40,31 +41,18 @@ pub struct LuaPluginInstance {
 impl LuaPluginInstance {
     /// Build a fresh instance from a factory.
     pub(crate) fn new(factory: LuaPluginFactory) -> Result<Self> {
-        let lua = Lua::new();
-        let deadline =
-            install_limits(&lua, factory.memory_limit()).map_err(|e| Error::PluginLoad {
-                plugin: factory.id().to_string(),
-                message: traceback::render(&e),
-            })?;
-
         let plugin_id = factory.id().to_string();
         let (entry_name, entry_source) = factory.entry();
+        let eval = eval_entry(
+            &plugin_id,
+            factory.root(),
+            entry_name,
+            entry_source,
+            factory.memory_limit(),
+            factory.execution_limit(),
+        )?;
 
-        let sandbox =
-            Sandbox::new(&lua, &plugin_id, factory.root()).map_err(|e| Error::PluginLoad {
-                plugin: plugin_id.clone(),
-                message: traceback::render(&e),
-            })?;
-
-        let value = run_limited(&deadline, || {
-            sandbox.exec(&lua, &format!("@{entry_name}"), entry_source)
-        })
-        .map_err(|e| Error::PluginLoad {
-            plugin: plugin_id.clone(),
-            message: traceback::render(&e),
-        })?;
-
-        let builder = extract_builder(&plugin_id, value)?;
+        let builder = extract_builder(&plugin_id, eval.value)?;
         let inner = builder.inner.lock();
 
         let mut processors = HashMap::new();
@@ -77,7 +65,7 @@ impl LuaPluginInstance {
         drop(inner);
 
         Ok(LuaPluginInstance {
-            lua,
+            lua: eval.lua,
             plugin_id,
             pack: factory.pack().clone(),
             options: factory.options().clone(),
@@ -85,8 +73,9 @@ impl LuaPluginInstance {
             generator,
             on_start,
             on_finish,
-            deadline,
-            _sandbox_env: sandbox.env,
+            deadline: eval.deadline,
+            execution_limit: factory.execution_limit(),
+            _sandbox_env: eval.sandbox.env,
         })
     }
 
@@ -121,7 +110,9 @@ impl crate::model::PluginInstance for LuaPluginInstance {
         )));
         let handle = FileHandle(state.clone());
 
-        let call: mlua::Result<()> = run_limited(&self.deadline, || handler.call((ctx, handle)));
+        let call: mlua::Result<()> = run_limited(&self.deadline, self.execution_limit, || {
+            handler.call((ctx, handle))
+        });
         if let Err(e) = call {
             return Err(Error::Processor {
                 plugin: self.plugin_id.clone(),
@@ -153,94 +144,12 @@ impl crate::model::PluginInstance for LuaPluginInstance {
         };
 
         let ctx = self.processor_ctx()?;
-
-        // Bridge GeneratorHost into Lua via a scope so the borrow is bounded by
-        // the call. The host RefCell lives outside the scope so the scoped
-        // functions can borrow it for the scope's lifetime.
         let plugin_id = self.plugin_id.clone();
-        let host = RefCell::new(host);
-        let result = run_limited(&self.deadline, || {
-            self.lua.scope(|scope| {
-                let host_files = &host;
-                ctx.set(
-                    "files",
-                    scope.create_function_mut(
-                        move |lua, (_this, glob): (Value, Option<mlua::String>)| {
-                            let glob = match glob {
-                                Some(s) => Some(s.to_str()?.to_string()),
-                                None => None,
-                            };
-                            let files = host_files.borrow_mut().list_files(glob.as_deref());
-                            let t = lua.create_table()?;
-                            for (i, f) in files.into_iter().enumerate() {
-                                t.raw_set(i + 1, f)?;
-                            }
-                            Ok(t)
-                        },
-                    )?,
-                )?;
 
-                let host_read = &host;
-                ctx.set(
-                    "read",
-                    scope.create_function_mut(
-                        move |lua, (_this, path): (Value, mlua::String)| {
-                            let path = path.to_str()?.to_string();
-                            validate_relative(&path).map_err(mlua::Error::external)?;
-                            match host_read.borrow_mut().read_file(&path) {
-                                Some(bytes) => Ok(Value::String(lua.create_string(&bytes)?)),
-                                None => Ok(Value::Nil),
-                            }
-                        },
-                    )?,
-                )?;
-
-                let host_read_src = &host;
-                ctx.set(
-                    "read_source",
-                    scope.create_function_mut(
-                        move |lua, (_this, path): (Value, mlua::String)| {
-                            let path = path.to_str()?.to_string();
-                            validate_relative(&path).map_err(mlua::Error::external)?;
-                            match host_read_src.borrow_mut().read_source(&path) {
-                                Some(bytes) => Ok(Value::String(lua.create_string(&bytes)?)),
-                                None => Ok(Value::Nil),
-                            }
-                        },
-                    )?,
-                )?;
-
-                let host_emit = &host;
-                ctx.set(
-                    "emit",
-                    scope.create_function_mut(
-                        move |_, (_this, path, contents): (Value, mlua::String, mlua::String)| {
-                            let path = path.to_str()?;
-                            validate_relative(&path).map_err(mlua::Error::external)?;
-                            host_emit
-                                .borrow_mut()
-                                .emit(&path, contents.as_bytes().to_vec());
-                            Ok(())
-                        },
-                    )?,
-                )?;
-
-                let host_remove = &host;
-                ctx.set(
-                    "remove",
-                    scope.create_function_mut(move |_, (_this, path): (Value, mlua::String)| {
-                        let path = path.to_str()?;
-                        validate_relative(&path).map_err(mlua::Error::external)?;
-                        host_remove.borrow_mut().remove(&path);
-                        Ok(())
-                    })?,
-                )?;
-
-                handler.call::<()>(ctx)
-            })
-        });
-
-        result.map_err(|e| Error::Generator {
+        run_limited(&self.deadline, self.execution_limit, || {
+            call_generator(&self.lua, &handler, ctx, host)
+        })
+        .map_err(|e| Error::Generator {
             plugin: plugin_id,
             message: traceback::render(&e),
         })
@@ -251,7 +160,10 @@ impl crate::model::PluginInstance for LuaPluginInstance {
             return Ok(());
         };
         let ctx = self.processor_ctx()?;
-        run_limited(&self.deadline, || handler.call::<()>(ctx)).map_err(|e| Error::Hook {
+        run_limited(&self.deadline, self.execution_limit, || {
+            handler.call::<()>(ctx)
+        })
+        .map_err(|e| Error::Hook {
             plugin: self.plugin_id.clone(),
             hook: "on_start".into(),
             message: traceback::render(&e),
@@ -273,12 +185,13 @@ impl crate::model::PluginInstance for LuaPluginInstance {
         let _ = stats_t.set("generated", stats.generated);
         let _ = stats_t.set("dropped", stats.dropped);
 
-        run_limited(&self.deadline, || handler.call::<()>((ctx, stats_t))).map_err(|e| {
-            Error::Hook {
-                plugin: self.plugin_id.clone(),
-                hook: "on_finish".into(),
-                message: traceback::render(&e),
-            }
+        run_limited(&self.deadline, self.execution_limit, || {
+            handler.call::<()>((ctx, stats_t))
+        })
+        .map_err(|e| Error::Hook {
+            plugin: self.plugin_id.clone(),
+            hook: "on_finish".into(),
+            message: traceback::render(&e),
         })
     }
 }

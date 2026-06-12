@@ -5,6 +5,8 @@ use std::sync::Arc;
 use mlua::{MetaMethod, UserData, UserDataFields, UserDataMethods};
 use parking_lot::Mutex;
 
+use crate::util::path::validate_relative;
+
 /// The mutable state behind a `file` userdata.
 ///
 /// Shared via `Rc<RefCell<_>>` so the Rust side can read back the final state
@@ -42,6 +44,7 @@ impl UserData for FileHandle {
         fields.add_field_method_set("path", |_, this, value: mlua::String| {
             let mut state = this.0.lock();
             let new = value.to_str()?.to_string();
+            validate_relative(&new).map_err(mlua::Error::external)?;
             if new != state.path {
                 state.path = new;
                 state.modified = true;

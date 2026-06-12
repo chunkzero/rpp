@@ -242,6 +242,94 @@ file.text = table.concat({
 }
 
 #[test]
+fn duplicate_processor_rejected() {
+    let p = PluginDir::lua(
+        "dup-proc",
+        r#"
+local rpp = require("rpp")
+local plugin = rpp.plugin()
+plugin:processor("t", { files = { "**/*" } }, function() end)
+plugin:processor("t", { files = { "*.txt" } }, function() end)
+return plugin
+"#,
+    );
+    let Err(err) = rpp::lua::LuaPluginFactory::load(
+        p.path(),
+        toml::Value::Table(toml::map::Map::new()),
+        "pack",
+        None,
+        None,
+    ) else {
+        panic!("expected duplicate processor registration to fail at load");
+    };
+    let msg = format!("{err}");
+    assert!(msg.contains("already registered"), "{msg}");
+}
+
+#[test]
+fn duplicate_generator_rejected() {
+    let p = PluginDir::lua(
+        "dup-gen",
+        r#"
+local rpp = require("rpp")
+local plugin = rpp.plugin()
+plugin:generator("a", function() end)
+plugin:generator("b", function() end)
+return plugin
+"#,
+    );
+    let Err(err) = rpp::lua::LuaPluginFactory::load(
+        p.path(),
+        toml::Value::Table(toml::map::Map::new()),
+        "pack",
+        None,
+        None,
+    ) else {
+        panic!("expected duplicate generator registration to fail at load");
+    };
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("at most one generator") || msg.contains("generator"),
+        "{msg}"
+    );
+}
+
+#[test]
+fn cache_key_depends_on_options() {
+    let entry = r#"
+local rpp = require("rpp")
+return rpp.plugin()
+"#;
+    let p = PluginDir::lua("opts", entry);
+
+    let mut a = toml::map::Map::new();
+    a.insert("flag".into(), toml::Value::Boolean(true));
+    let f1 = rpp::lua::LuaPluginFactory::load(p.path(), toml::Value::Table(a), "pack", None, None)
+        .expect("load");
+
+    let f2 = rpp::lua::LuaPluginFactory::load(
+        p.path(),
+        toml::Value::Table(toml::map::Map::new()),
+        "pack",
+        None,
+        None,
+    )
+    .expect("load");
+
+    assert_ne!(f1.cache_key(), f2.cache_key());
+
+    let f3 = rpp::lua::LuaPluginFactory::load(
+        p.path(),
+        toml::Value::Table(toml::map::Map::new()),
+        "pack",
+        None,
+        None,
+    )
+    .expect("load");
+    assert_eq!(f2.cache_key(), f3.cache_key());
+}
+
+#[test]
 fn str_builtins() {
     let out = run(
         &processor_wrap(

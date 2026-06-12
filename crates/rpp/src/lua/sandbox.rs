@@ -9,7 +9,7 @@ use mlua::{HookTriggers, Lua, Table, Value, Variadic, VmState};
 use parking_lot::Mutex;
 
 use crate::lua::builtins;
-use crate::lua::builtins::log::{emit, LogLevel};
+use crate::lua::builtins::log::{emit, stringify_values, LogLevel};
 
 /// Default per-Lua-state memory limit (256 MB).
 pub(crate) const DEFAULT_MEMORY_LIMIT: usize = 256 * 1024 * 1024;
@@ -37,9 +37,10 @@ pub(crate) fn install_limits(lua: &Lua, memory_limit: usize) -> mlua::Result<Dea
 
 pub(crate) fn run_limited<T>(
     deadline: &Deadline,
+    execution_limit: Duration,
     operation: impl FnOnce() -> mlua::Result<T>,
 ) -> mlua::Result<T> {
-    *deadline.lock() = Some(Instant::now() + DEFAULT_EXECUTION_LIMIT);
+    *deadline.lock() = Some(Instant::now() + execution_limit);
     let result = operation();
     *deadline.lock() = None;
     result
@@ -144,36 +145,69 @@ fn install_print(lua: &Lua, env: &Table, plugin_id: &str) -> mlua::Result<()> {
     env.set(
         "print",
         lua.create_function(move |_, args: Variadic<Value>| {
-            let mut parts = Vec::with_capacity(args.len());
-            for v in args.iter() {
-                let part = match v {
-                    Value::String(s) => s.to_string_lossy().to_string(),
-                    Value::Integer(i) => i.to_string(),
-                    Value::Number(n) => n.to_string(),
-                    Value::Boolean(b) => b.to_string(),
-                    Value::Nil => "nil".to_string(),
-                    other => format!("<{}>", other.type_name()),
-                };
-                parts.push(part);
-            }
-            emit(&plugin, LogLevel::Info, &parts.join("\t"));
+            emit(&plugin, LogLevel::Info, &stringify_values(args));
             Ok(())
         })?,
     )?;
     Ok(())
 }
 
+struct RppModules {
+    root: Table,
+    json: Table,
+    toml: Table,
+    hash: Table,
+    path: Table,
+    log: Table,
+    str: Table,
+}
+
+fn build_rpp_modules(lua: &Lua, plugin_id: &str) -> mlua::Result<RppModules> {
+    let json = builtins::json::module(lua)?;
+    let toml = builtins::toml_mod::module(lua)?;
+    let hash = builtins::hash::module(lua)?;
+    let path = builtins::path::module(lua)?;
+    let log = builtins::log::table(lua, plugin_id)?;
+    let str = builtins::str::module(lua)?;
+
+    let root = lua.create_table()?;
+    root.set(
+        "plugin",
+        lua.create_function(move |lua, ()| {
+            crate::lua::plugin_builder::PluginBuilder::create_userdata(lua)
+        })?,
+    )?;
+    root.set("json", json.clone())?;
+    root.set("toml", toml.clone())?;
+    root.set("hash", hash.clone())?;
+    root.set("path", path.clone())?;
+    root.set("log", log.clone())?;
+    root.set("str", str.clone())?;
+
+    Ok(RppModules {
+        root,
+        json,
+        toml,
+        hash,
+        path,
+        log,
+        str,
+    })
+}
+
 /// Install a sandboxed `require` plus the preloaded builtin module cache.
 fn install_require(lua: &Lua, env: &Table, plugin_id: &str, root: &Path) -> mlua::Result<()> {
+    let modules = build_rpp_modules(lua, plugin_id)?;
+
     // Loaded-module cache, private to this environment.
     let loaded = lua.create_table()?;
-    loaded.set("rpp", build_rpp_root(lua, plugin_id)?)?;
-    loaded.set("rpp.json", builtins::json::module(lua)?)?;
-    loaded.set("rpp.toml", builtins::toml_mod::module(lua)?)?;
-    loaded.set("rpp.hash", builtins::hash::module(lua)?)?;
-    loaded.set("rpp.path", builtins::path::module(lua)?)?;
-    loaded.set("rpp.log", builtins::log::table(lua, plugin_id)?)?;
-    loaded.set("rpp.str", builtins::str::module(lua)?)?;
+    loaded.set("rpp", modules.root)?;
+    loaded.set("rpp.json", modules.json)?;
+    loaded.set("rpp.toml", modules.toml)?;
+    loaded.set("rpp.hash", modules.hash)?;
+    loaded.set("rpp.path", modules.path)?;
+    loaded.set("rpp.log", modules.log)?;
+    loaded.set("rpp.str", modules.str)?;
 
     let root = root.to_path_buf();
     let env_for_require = env.clone();
@@ -207,27 +241,6 @@ fn install_require(lua: &Lua, env: &Table, plugin_id: &str, root: &Path) -> mlua
 
     env.set("require", require)?;
     Ok(())
-}
-
-/// Build the root `rpp` module table: `rpp.plugin()` plus submodule re-exports.
-fn build_rpp_root(lua: &Lua, plugin_id: &str) -> mlua::Result<Table> {
-    let t = lua.create_table()?;
-
-    t.set(
-        "plugin",
-        lua.create_function(move |lua, ()| {
-            crate::lua::plugin_builder::PluginBuilder::create_userdata(lua)
-        })?,
-    )?;
-
-    t.set("json", builtins::json::module(lua)?)?;
-    t.set("toml", builtins::toml_mod::module(lua)?)?;
-    t.set("hash", builtins::hash::module(lua)?)?;
-    t.set("path", builtins::path::module(lua)?)?;
-    t.set("log", builtins::log::table(lua, plugin_id)?)?;
-    t.set("str", builtins::str::module(lua)?)?;
-
-    Ok(t)
 }
 
 struct LocalSource {

@@ -3,17 +3,59 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 
-use mlua::Lua;
-
+use crate::config::{BuildConfig, LuaConfig};
 use crate::error::{Error, Result};
+use crate::lua::bootstrap::eval_entry;
 use crate::lua::ctx::PackInfo;
-use crate::lua::instance::LuaPluginInstance;
-use crate::lua::sandbox::{install_limits, run_limited, Sandbox, DEFAULT_MEMORY_LIMIT};
-use crate::lua::traceback;
+use crate::lua::instance::{extract_builder, LuaPluginInstance};
+use crate::lua::sandbox::{DEFAULT_EXECUTION_LIMIT, DEFAULT_MEMORY_LIMIT};
 use crate::manifest::PluginManifest;
 use crate::model::{PluginFactory, PluginInstance, ProcessorDef};
+use crate::util::canonical::canonical_options_json;
 use crate::util::hash::HashWriter;
+
+/// Resource limits applied to each Lua plugin instance.
+#[derive(Debug, Clone, Copy)]
+pub struct LuaPluginLimits {
+    /// Per-state memory limit in bytes.
+    pub memory_limit: usize,
+    /// Maximum wall-clock time for a single Lua call.
+    pub execution_limit: Duration,
+}
+
+impl Default for LuaPluginLimits {
+    fn default() -> Self {
+        Self {
+            memory_limit: DEFAULT_MEMORY_LIMIT,
+            execution_limit: DEFAULT_EXECUTION_LIMIT,
+        }
+    }
+}
+
+impl LuaPluginLimits {
+    /// Read limits from `[build.lua]`; zero values keep the sandbox defaults.
+    pub fn from_build_config(build: &BuildConfig) -> Self {
+        Self::from_lua_config(&build.lua)
+    }
+
+    /// Read limits from `[build.lua]`; zero values keep the sandbox defaults.
+    pub fn from_lua_config(lua: &LuaConfig) -> Self {
+        Self {
+            memory_limit: if lua.memory_limit_mb == 0 {
+                DEFAULT_MEMORY_LIMIT
+            } else {
+                lua.memory_limit_mb as usize * 1024 * 1024
+            },
+            execution_limit: if lua.execution_deadline_seconds == 0 {
+                DEFAULT_EXECUTION_LIMIT
+            } else {
+                Duration::from_secs(lua.execution_deadline_seconds)
+            },
+        }
+    }
+}
 
 /// Immutable, shareable data describing a loaded Lua plugin.
 ///
@@ -34,10 +76,16 @@ struct Shared {
     processors: Vec<ProcessorDef>,
     has_generator: bool,
     memory_limit: usize,
+    execution_limit: Duration,
     cache_key: u64,
 }
 
 impl LuaPluginFactory {
+    /// Read sandbox limits from `[build.lua]`.
+    pub fn limits_from_build(build: &BuildConfig) -> LuaPluginLimits {
+        LuaPluginLimits::from_build_config(build)
+    }
+
     /// Load a Lua plugin from its package directory and validate it.
     ///
     /// Reads `plugin.toml`, runs the entry script in a throwaway sandbox to
@@ -49,6 +97,25 @@ impl LuaPluginFactory {
         pack_name: impl Into<String>,
         pack_description: Option<String>,
         pack_format: Option<u32>,
+    ) -> Result<Self> {
+        Self::load_with_limits(
+            dir,
+            options,
+            pack_name,
+            pack_description,
+            pack_format,
+            LuaPluginLimits::default(),
+        )
+    }
+
+    /// Like [`Self::load`], but with explicit sandbox resource limits.
+    pub fn load_with_limits(
+        dir: impl AsRef<Path>,
+        options: toml::Value,
+        pack_name: impl Into<String>,
+        pack_description: Option<String>,
+        pack_format: Option<u32>,
+        limits: LuaPluginLimits,
     ) -> Result<Self> {
         let dir = dir.as_ref();
         let manifest = PluginManifest::load(dir)?;
@@ -80,7 +147,7 @@ impl LuaPluginFactory {
 
         // Validation load: extract processor defs and generator presence.
         let (processors, has_generator) =
-            validation_load(&manifest.id, &root, &manifest.entry, &entry_source)?;
+            validation_load(&manifest.id, &root, &manifest.entry, &entry_source, limits)?;
 
         Ok(LuaPluginFactory {
             shared: Arc::new(Shared {
@@ -93,7 +160,8 @@ impl LuaPluginFactory {
                 pack,
                 processors,
                 has_generator,
-                memory_limit: DEFAULT_MEMORY_LIMIT,
+                memory_limit: limits.memory_limit,
+                execution_limit: limits.execution_limit,
                 cache_key,
             }),
         })
@@ -118,6 +186,10 @@ impl LuaPluginFactory {
 
     pub(crate) fn memory_limit(&self) -> usize {
         self.shared.memory_limit
+    }
+
+    pub(crate) fn execution_limit(&self) -> Duration {
+        self.shared.execution_limit
     }
 }
 
@@ -153,26 +225,18 @@ fn validation_load(
     root: &Path,
     entry_name: &str,
     entry_source: &str,
+    limits: LuaPluginLimits,
 ) -> Result<(Vec<ProcessorDef>, bool)> {
-    let lua = Lua::new();
-    let deadline = install_limits(&lua, DEFAULT_MEMORY_LIMIT).map_err(|e| Error::PluginLoad {
-        plugin: plugin_id.to_string(),
-        message: traceback::render(&e),
-    })?;
-    let sandbox = Sandbox::new(&lua, plugin_id, root).map_err(|e| Error::PluginLoad {
-        plugin: plugin_id.to_string(),
-        message: traceback::render(&e),
-    })?;
+    let eval = eval_entry(
+        plugin_id,
+        root,
+        entry_name,
+        entry_source,
+        limits.memory_limit,
+        limits.execution_limit,
+    )?;
 
-    let value = run_limited(&deadline, || {
-        sandbox.exec(&lua, &format!("@{entry_name}"), entry_source)
-    })
-    .map_err(|e| Error::PluginLoad {
-        plugin: plugin_id.to_string(),
-        message: traceback::render(&e),
-    })?;
-
-    let builder = crate::lua::instance::extract_builder(plugin_id, value)?;
+    let builder = extract_builder(plugin_id, eval.value)?;
     let inner = builder.inner.lock();
 
     // Processors are returned in declaration order (as registered).
@@ -203,10 +267,8 @@ fn compute_cache_key(root: &Path, options: &toml::Value) -> Result<u64> {
     writer.write_str("plugin.toml");
     writer.write(&manifest);
 
-    // Canonicalized options: re-serialize so formatting differences do not matter.
-    let canonical = canonicalize_options(options);
     writer.write_str("options");
-    writer.write(canonical.as_bytes());
+    writer.write(canonical_options_json(options).as_bytes());
 
     Ok(writer.finish())
 }
@@ -230,34 +292,4 @@ fn collect_lua(root: &Path, dir: &Path, out: &mut Vec<(String, Vec<u8>)>) -> Res
         }
     }
     Ok(())
-}
-
-/// Produce a deterministic string form of options independent of TOML formatting.
-fn canonicalize_options(options: &toml::Value) -> String {
-    // serde_json with sorted keys gives a stable canonical form.
-    let json: serde_json::Value = serde_json::to_value(options).unwrap_or(serde_json::Value::Null);
-    canonical_json(&json)
-}
-
-fn canonical_json(value: &serde_json::Value) -> String {
-    match value {
-        serde_json::Value::Object(map) => {
-            let mut keys: Vec<&String> = map.keys().collect();
-            keys.sort();
-            let mut parts = Vec::with_capacity(keys.len());
-            for k in keys {
-                parts.push(format!(
-                    "{}:{}",
-                    serde_json::to_string(k).unwrap_or_default(),
-                    canonical_json(&map[k])
-                ));
-            }
-            format!("{{{}}}", parts.join(","))
-        }
-        serde_json::Value::Array(arr) => {
-            let parts: Vec<String> = arr.iter().map(canonical_json).collect();
-            format!("[{}]", parts.join(","))
-        }
-        other => other.to_string(),
-    }
 }

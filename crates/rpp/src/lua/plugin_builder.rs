@@ -82,7 +82,13 @@ impl UserData for PluginBuilder {
 
                 let priority = opts.get::<Option<i32>>("priority")?.unwrap_or(0);
 
-                this.inner.lock().processors.push(RegisteredProcessor {
+                let mut inner = this.inner.lock();
+                if inner.processors.iter().any(|p| p.def.name == name) {
+                    return Err(mlua::Error::external(format!(
+                        "processor `{name}` is already registered"
+                    )));
+                }
+                inner.processors.push(RegisteredProcessor {
                     def: ProcessorDef {
                         name,
                         patterns: files,
@@ -90,6 +96,7 @@ impl UserData for PluginBuilder {
                     },
                     handler,
                 });
+                drop(inner);
                 Ok(())
             },
         );

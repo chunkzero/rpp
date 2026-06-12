@@ -1,6 +1,6 @@
 //! `rpp.log` builtin and the shared log table used by `ctx.log`.
 
-use mlua::{Lua, MultiValue, Table};
+use mlua::{Lua, MultiValue, Table, Value};
 
 /// Severity of a plugin log message.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -69,20 +69,22 @@ pub(crate) fn table(lua: &Lua, plugin_id: &str) -> mlua::Result<Table> {
     Ok(t)
 }
 
-/// Concatenate log arguments space-separated, like Lua's `print`.
-fn stringify(args: MultiValue) -> String {
-    use mlua::Value;
-    let mut parts: Vec<String> = Vec::with_capacity(args.len());
-    for v in args {
-        let part = match v {
+/// Concatenate Lua values tab-separated, matching Lua's `print`.
+pub(crate) fn stringify_values(values: impl IntoIterator<Item = Value>) -> String {
+    let parts: Vec<String> = values
+        .into_iter()
+        .map(|v| match v {
             Value::String(s) => s.to_string_lossy().to_string(),
             Value::Integer(i) => i.to_string(),
             Value::Number(n) => n.to_string(),
             Value::Boolean(b) => b.to_string(),
             Value::Nil => "nil".to_string(),
             other => format!("<{}>", other.type_name()),
-        };
-        parts.push(part);
-    }
-    parts.join(" ")
+        })
+        .collect();
+    parts.join("\t")
+}
+
+fn stringify(args: MultiValue) -> String {
+    stringify_values(args)
 }
