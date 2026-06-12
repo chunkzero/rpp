@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use crate::config::Config;
 use crate::model::PluginFactory;
+use crate::util::config_key;
 use crate::util::glob::GlobSet;
 use crate::util::hash::HashWriter;
 
@@ -99,19 +100,10 @@ pub(crate) fn chain_key(chain: &[ChainStep]) -> u64 {
 /// Compute the global cache key (rpp version + build-relevant config + plugin keys).
 pub(crate) fn global_key(config: &Config, factories: &[Arc<dyn PluginFactory>]) -> u64 {
     let mut writer = HashWriter::new();
-    writer.write_str("rpp.global.v1");
+    writer.write_str("rpp.global.v2");
     writer.write_str(env!("CARGO_PKG_VERSION"));
+    writer.write_u64(config_key::config_digest(config));
 
-    // Build-relevant config: pack + build sections (squash affects post-build,
-    // but the engine output is keyed on processing; we include pack + build dirs
-    // and worker-independent fields).
-    writer.write_str(&config.pack.name);
-    writer.write_str(config.pack.description.as_deref().unwrap_or(""));
-    writer.write_u64(config.pack.pack_format.unwrap_or(0) as u64);
-    writer.write_str(&config.build.source.to_string_lossy());
-    writer.write_str(&config.build.output.to_string_lossy());
-
-    // Ordered plugin cache keys.
     for factory in factories {
         writer.write_u64(factory.cache_key());
     }

@@ -59,10 +59,12 @@ pub(crate) fn discover(source: &Path) -> Result<Vec<SourceFile>> {
         .build();
 
     for result in walker {
-        let entry = match result {
-            Ok(e) => e,
-            Err(_) => continue,
-        };
+        let entry = result.map_err(|e| {
+            Error::Build(format!(
+                "failed to walk source directory `{}`: {e}",
+                source.display()
+            ))
+        })?;
         let path = entry.path();
         if !entry
             .file_type()

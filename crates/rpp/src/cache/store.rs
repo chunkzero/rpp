@@ -45,15 +45,45 @@ impl ObjectStore {
         Ok(key)
     }
 
-    /// Read an object by key, or `None` if it is missing.
-    pub(crate) fn get(&self, key: u64) -> Option<Vec<u8>> {
+    /// Path to a stored object, if present and valid.
+    pub(crate) fn object_path_for(&self, key: u64) -> Option<PathBuf> {
         let path = self.object_path(key);
         let bytes = std::fs::read(&path).ok()?;
         if xxh3(&bytes) == key {
-            Some(bytes)
+            Some(path)
         } else {
             let _ = std::fs::remove_file(path);
             None
+        }
+    }
+
+    /// Whether a valid object exists for `key`.
+    pub(crate) fn contains(&self, key: u64) -> bool {
+        self.object_path_for(key).is_some()
+    }
+
+    /// Read an object by key, or `None` if it is missing.
+    pub(crate) fn get(&self, key: u64) -> Option<Vec<u8>> {
+        let path = self.object_path_for(key)?;
+        std::fs::read(path).ok()
+    }
+
+    /// Materialize a CAS object at `dest`, preferring a hard link with copy fallback.
+    pub(crate) fn link_or_copy_object(&self, key: u64, dest: &std::path::Path) -> Result<()> {
+        let src = self
+            .object_path_for(key)
+            .ok_or_else(|| Error::Build(format!("missing cache object {key:#x}")))?;
+        if let Some(parent) = dest.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| Error::io(parent, e))?;
+        }
+        if dest.exists() {
+            std::fs::remove_file(dest).map_err(|e| Error::io(dest, e))?;
+        }
+        match std::fs::hard_link(&src, dest) {
+            Ok(()) => Ok(()),
+            Err(_) => std::fs::copy(&src, dest)
+                .map(|_| ())
+                .map_err(|e| Error::io(dest, e)),
         }
     }
 
