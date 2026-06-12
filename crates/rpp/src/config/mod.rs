@@ -45,6 +45,27 @@ pub struct PackConfig {
     pub pack_format: Option<u32>,
 }
 
+/// Lua sandbox limits (`[build.lua]`).
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct LuaConfig {
+    /// Per-Lua-state memory limit in megabytes.
+    #[serde(default = "default_lua_memory_limit_mb")]
+    pub memory_limit_mb: u32,
+    /// Maximum wall-clock execution time per Lua call, in seconds.
+    #[serde(default = "default_lua_execution_deadline_seconds")]
+    pub execution_deadline_seconds: u64,
+}
+
+impl Default for LuaConfig {
+    fn default() -> Self {
+        Self {
+            memory_limit_mb: default_lua_memory_limit_mb(),
+            execution_deadline_seconds: default_lua_execution_deadline_seconds(),
+        }
+    }
+}
+
 /// `[build]` section.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -58,6 +79,9 @@ pub struct BuildConfig {
     /// Worker thread count; `0` means available parallelism.
     #[serde(default)]
     pub workers: usize,
+    /// Lua sandbox limits.
+    #[serde(default)]
+    pub lua: LuaConfig,
     /// Squash settings.
     #[serde(default)]
     pub squash: SquashConfig,
@@ -69,6 +93,7 @@ impl Default for BuildConfig {
             source: default_source(),
             output: default_output(),
             workers: 0,
+            lua: LuaConfig::default(),
             squash: SquashConfig::default(),
         }
     }
@@ -282,7 +307,62 @@ impl Config {
                 });
             }
         }
+
+        if self.build.lua.memory_limit_mb == 0 {
+            return Err(Error::Config {
+                path: path.to_path_buf(),
+                message: "`build.lua.memory_limit_mb` must be greater than 0".into(),
+            });
+        }
+        if self.build.lua.execution_deadline_seconds == 0 {
+            return Err(Error::Config {
+                path: path.to_path_buf(),
+                message: "`build.lua.execution_deadline_seconds` must be greater than 0".into(),
+            });
+        }
+
+        if let Some(expected) = self.pack.pack_format {
+            let project_root = path.parent().unwrap_or_else(|| Path::new("."));
+            let mcmeta_path = project_root.join(&self.build.source).join("pack.mcmeta");
+            if mcmeta_path.is_file() {
+                validate_pack_format_mcmeta(&mcmeta_path, expected, path)?;
+            }
+        }
+
         Ok(())
+    }
+}
+
+fn validate_pack_format_mcmeta(
+    mcmeta_path: &Path,
+    expected: u32,
+    config_path: &Path,
+) -> Result<()> {
+    let text = std::fs::read_to_string(mcmeta_path).map_err(|e| Error::io(mcmeta_path, e))?;
+    let value: serde_json::Value = serde_json::from_str(&text).map_err(|e| Error::Config {
+        path: config_path.to_path_buf(),
+        message: format!("`{}` is not valid JSON: {e}", mcmeta_path.display()),
+    })?;
+    let actual = value
+        .get("pack")
+        .and_then(|pack| pack.get("pack_format"))
+        .and_then(|format| format.as_u64());
+    match actual {
+        Some(actual) if actual == u64::from(expected) => Ok(()),
+        Some(actual) => Err(Error::Config {
+            path: config_path.to_path_buf(),
+            message: format!(
+                "`pack.pack_format` ({expected}) does not match `{}` pack_format ({actual})",
+                mcmeta_path.display()
+            ),
+        }),
+        None => Err(Error::Config {
+            path: config_path.to_path_buf(),
+            message: format!(
+                "`{}` is missing `pack.pack_format` but `pack.pack_format` is set in config",
+                mcmeta_path.display()
+            ),
+        }),
     }
 }
 
@@ -314,6 +394,12 @@ fn default_host() -> String {
 }
 fn default_port() -> u16 {
     8080
+}
+fn default_lua_memory_limit_mb() -> u32 {
+    256
+}
+fn default_lua_execution_deadline_seconds() -> u64 {
+    60
 }
 
 #[cfg(test)]
@@ -422,5 +508,59 @@ subdir = "plugins/atlas"
         )
         .unwrap_err();
         assert!(matches!(err, Error::Config { .. }));
+    }
+
+    #[test]
+    fn lua_defaults() {
+        let cfg = Config::parse("[pack]\nname = \"demo\"\n", "rpp.toml").unwrap();
+        assert_eq!(cfg.build.lua.memory_limit_mb, 256);
+        assert_eq!(cfg.build.lua.execution_deadline_seconds, 60);
+    }
+
+    #[test]
+    fn parses_lua_limits() {
+        let cfg = Config::parse(
+            "[pack]\nname=\"x\"\n[build.lua]\nmemory_limit_mb = 512\nexecution_deadline_seconds = 120\n",
+            "rpp.toml",
+        )
+        .unwrap();
+        assert_eq!(cfg.build.lua.memory_limit_mb, 512);
+        assert_eq!(cfg.build.lua.execution_deadline_seconds, 120);
+    }
+
+    #[test]
+    fn pack_format_mismatch_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(
+            root.join("src/pack.mcmeta"),
+            r#"{"pack":{"pack_format":9}}"#,
+        )
+        .unwrap();
+        let err = Config::parse(
+            "[pack]\nname=\"x\"\npack_format = 34\n",
+            root.join("rpp.toml"),
+        )
+        .unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("does not match"), "{msg}");
+    }
+
+    #[test]
+    fn pack_format_agreement_accepted() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(
+            root.join("src/pack.mcmeta"),
+            r#"{"pack":{"pack_format":34}}"#,
+        )
+        .unwrap();
+        Config::parse(
+            "[pack]\nname=\"x\"\npack_format = 34\n",
+            root.join("rpp.toml"),
+        )
+        .unwrap();
     }
 }
