@@ -6,11 +6,11 @@
 //! disk into a ready-to-run build engine, so resolution, plugin loading, and
 //! error messaging are consistent across `build`, `dev`, and friends.
 
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::{anyhow, bail, Context, Result};
-use rpp::config::Config;
+use rpp::config::{Config, PluginConfig};
 use rpp::engine::{Engine, EngineBuilder};
 use rpp::lua::LuaPluginFactory;
 use rpp::manifest::{PluginManifest, Runtime};
@@ -31,6 +31,19 @@ pub struct Project {
     pub root: PathBuf,
     /// The parsed configuration.
     pub config: Config,
+}
+
+/// Resolved plugin identity for list/remove/update matching.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PluginMeta {
+    /// The plugin id from `plugin.toml`.
+    pub id: String,
+    /// The plugin version string.
+    pub version: String,
+    /// The configured `source` string from `rpp.toml`.
+    pub source: String,
+    /// The canonical source key used in the lockfile.
+    pub canonical: String,
 }
 
 impl Project {
@@ -57,6 +70,21 @@ impl Project {
     /// Path to `rpp.lock`.
     pub fn lock_path(&self) -> PathBuf {
         self.root.join(LOCK_FILE)
+    }
+
+    /// Remove the build output directory and the `.rpp` cache without building
+    /// an [`Engine`].
+    pub fn clean_artifacts(&self) -> Result<()> {
+        validate_build_dirs(&self.config, &self.root)?;
+        let output = self.output_dir();
+        let rpp_dir = self.root.join(".rpp");
+        for dir in [&output, &rpp_dir] {
+            if dir.exists() {
+                std::fs::remove_dir_all(dir)
+                    .with_context(|| format!("removing {}", dir.display()))?;
+            }
+        }
+        Ok(())
     }
 
     /// Resolve all `[[plugin]]` entries to plugin factories, building an
@@ -119,15 +147,9 @@ impl Project {
                 .resolve(&source, locked.as_ref())
                 .with_context(|| format!("resolving plugin `{}`", plugin_cfg.source))?;
 
-            // Record / refresh the pin for newly-resolved GitHub plugins.
-            if let Some(pin) = &resolved.pinned {
-                if pin_changed(locked.as_ref(), pin, plugin_cfg.subdir.as_deref()) {
-                    lockfile.upsert(rpp_fetch::LockedPlugin {
-                        source: canonical.clone(),
-                        ref_: pin.ref_.clone(),
-                        commit: pin.commit.clone(),
-                        subdir: plugin_cfg.subdir.clone(),
-                    });
+            if let Some(pinned) = &resolved.pinned {
+                let prev = lockfile.record_resolved(&source, &resolved);
+                if pin_changed(prev.as_ref(), pinned, plugin_cfg.subdir.as_deref()) {
                     lock_dirty = true;
                 }
             }
@@ -141,16 +163,20 @@ impl Project {
             })?;
 
             let factory: Arc<dyn PluginFactory> = match manifest.runtime {
-                Runtime::Lua => Arc::new(
-                    LuaPluginFactory::load(
-                        &resolved.root,
-                        plugin_cfg.options.clone(),
-                        self.config.pack.name.clone(),
-                        self.config.pack.description.clone(),
-                        self.config.pack.pack_format,
+                Runtime::Lua => {
+                    let limits = rpp::lua::LuaPluginFactory::limits_from_build(&self.config.build);
+                    Arc::new(
+                        LuaPluginFactory::load_with_limits(
+                            &resolved.root,
+                            plugin_cfg.options.clone(),
+                            self.config.pack.name.clone(),
+                            self.config.pack.description.clone(),
+                            self.config.pack.pack_format,
+                            limits,
+                        )
+                        .with_context(|| format!("loading Lua plugin `{}`", manifest.id))?,
                     )
-                    .with_context(|| format!("loading Lua plugin `{}`", manifest.id))?,
-                ),
+                }
                 Runtime::Wasm => {
                     let engine = match &shared_wasm {
                         Some(e) => e.clone(),
@@ -199,6 +225,67 @@ impl Project {
     }
 }
 
+/// Resolve a configured plugin to its id/version, when possible.
+///
+/// GitHub sources without a lockfile pin return `None` (the resolver would
+/// need a network fetch).
+pub fn resolve_plugin_meta(
+    plugin: &PluginConfig,
+    lock: &Lockfile,
+    resolver: &Resolver,
+) -> Result<Option<PluginMeta>> {
+    let parsed = PluginSource::parse(
+        &plugin.source,
+        plugin.r#ref.as_deref(),
+        plugin.subdir.as_deref(),
+    )
+    .with_context(|| format!("invalid plugin source `{}`", plugin.source))?;
+    let canonical = parsed.canonical();
+
+    let locked = lock
+        .get_for(
+            &canonical,
+            plugin.r#ref.as_deref(),
+            plugin.subdir.as_deref(),
+        )
+        .cloned();
+    if matches!(parsed, PluginSource::GitHub { .. }) && locked.is_none() {
+        return Ok(None);
+    }
+
+    let resolved = resolver
+        .resolve(&parsed, locked.as_ref())
+        .with_context(|| format!("resolving plugin `{}`", plugin.source))?;
+    let (id, version) = validate_plugin_dir(&resolved.root)?;
+
+    Ok(Some(PluginMeta {
+        id,
+        version,
+        source: plugin.source.clone(),
+        canonical,
+    }))
+}
+
+/// Find a configured plugin by exact `source` string or resolved plugin id.
+pub fn find_plugin_by_id_or_source<'a>(
+    project: &'a Project,
+    id_or_source: &str,
+    lock: &Lockfile,
+    resolver: &Resolver,
+) -> Result<Option<&'a PluginConfig>> {
+    for plugin in &project.config.plugins {
+        if plugin.source == id_or_source {
+            return Ok(Some(plugin));
+        }
+        if let Some(meta) = resolve_plugin_meta(plugin, lock, resolver)? {
+            if meta.id == id_or_source || meta.canonical == id_or_source {
+                return Ok(Some(plugin));
+            }
+        }
+    }
+    Ok(None)
+}
+
 struct ResolvedFactories {
     factories: Vec<Arc<dyn PluginFactory>>,
     wasm_engine: Option<WasmEngine>,
@@ -210,6 +297,39 @@ fn pin_changed(locked: Option<&rpp_fetch::LockedPlugin>, pin: &Pin, subdir: Opti
         None => true,
         Some(l) => l.commit != pin.commit || l.ref_ != pin.ref_ || l.subdir.as_deref() != subdir,
     }
+}
+
+/// Mirror [`Engine`]'s build-directory validation so `clean` cannot delete
+/// paths outside the project.
+fn validate_build_dirs(config: &Config, project_root: &Path) -> Result<()> {
+    let source = &config.build.source;
+    let output = &config.build.output;
+    for (label, path) in [("source", source), ("output", output)] {
+        if path.as_os_str().is_empty()
+            || path.is_absolute()
+            || path
+                .components()
+                .any(|component| !matches!(component, Component::Normal(_)))
+        {
+            bail!(
+                "`build.{label}` in {} must be a normalized project-relative path",
+                project_root.join(CONFIG_FILE).display()
+            );
+        }
+        if path.starts_with(".rpp") {
+            bail!(
+                "`build.{label}` in {} must not be inside `.rpp`",
+                project_root.join(CONFIG_FILE).display()
+            );
+        }
+    }
+    if source == output || source.starts_with(output) || output.starts_with(source) {
+        bail!(
+            "`build.source` and `build.output` in {} must be separate directories",
+            project_root.join(CONFIG_FILE).display()
+        );
+    }
+    Ok(())
 }
 
 /// Walk up from `start` looking for a directory containing `rpp.toml`.

@@ -45,7 +45,7 @@ enum Command {
     Clean,
     /// Manage plugins (`add`/`remove`/`list`/`update`/`search`).
     #[command(subcommand)]
-    Plugin(PluginCli),
+    Plugin(PluginCommand),
 }
 
 #[derive(Debug, Args)]
@@ -79,38 +79,6 @@ struct BuildCli {
     jobs: Option<usize>,
 }
 
-#[derive(Debug, Subcommand)]
-enum PluginCli {
-    /// Add a plugin and resolve it immediately.
-    Add {
-        /// Source string (`path:...` or `github:owner/repo`).
-        source: String,
-        /// Git ref (tag/branch/sha) for GitHub sources.
-        #[arg(long = "ref")]
-        r#ref: Option<String>,
-        /// Subdirectory within a GitHub repo.
-        #[arg(long)]
-        subdir: Option<String>,
-    },
-    /// Remove a plugin by id or source string.
-    Remove {
-        /// The plugin id or source string.
-        id: String,
-    },
-    /// List configured plugins.
-    List,
-    /// Re-resolve plugins (ignoring pins) and update the lockfile.
-    Update {
-        /// An optional single plugin (id or source) to update.
-        id: Option<String>,
-    },
-    /// Search GitHub for `rpp-plugin`-topic repositories.
-    Search {
-        /// The search query.
-        query: String,
-    },
-}
-
 fn main() {
     let cli = Cli::parse();
     init_tracing(cli.verbose);
@@ -135,30 +103,12 @@ fn main() {
         ),
         Command::Dev => commands::dev::run(&dir),
         Command::Clean => commands::clean::run(&dir),
-        Command::Plugin(cmd) => commands::plugin::run(&dir, to_plugin_command(cmd)),
+        Command::Plugin(cmd) => commands::plugin::run(&dir, cmd),
     };
 
     if let Err(err) = result {
         eprintln!("{} {:#}", console::style("error:").red().bold(), err);
         std::process::exit(1);
-    }
-}
-
-fn to_plugin_command(cmd: PluginCli) -> PluginCommand {
-    match cmd {
-        PluginCli::Add {
-            source,
-            r#ref,
-            subdir,
-        } => PluginCommand::Add {
-            source,
-            r#ref,
-            subdir,
-        },
-        PluginCli::Remove { id } => PluginCommand::Remove { id },
-        PluginCli::List => PluginCommand::List,
-        PluginCli::Update { id } => PluginCommand::Update { id },
-        PluginCli::Search { query } => PluginCommand::Search { query },
     }
 }
 

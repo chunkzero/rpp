@@ -7,7 +7,8 @@ use anyhow::{Context, Result};
 use rpp::config::PngSetting;
 use rpp::engine::BuildResult;
 use rpp_squash::{
-    run_packsquash, squash_dir, write_zip, PngLevel, SquashOptions, SquashReport, ZipOptions,
+    copy_tree, run_packsquash, squash_dir, write_zip, PngLevel, SquashOptions, SquashReport,
+    ZipOptions,
 };
 
 use crate::luals;
@@ -46,15 +47,22 @@ pub fn run(dir: &Path, args: BuildArgs) -> Result<()> {
     }
 
     ui::phase("Resolving plugins");
+    let resolve_start = Instant::now();
     let plugin_count = project.config.plugins.len();
     let engine = project.build_engine()?;
     ui::detail(format!(
-        "{plugin_count} plugin{} resolved",
-        if plugin_count == 1 { "" } else { "s" }
+        "{plugin_count} plugin{} resolved in {}",
+        if plugin_count == 1 { "" } else { "s" },
+        ui::fmt_duration(resolve_start.elapsed())
     ));
 
     ui::phase("Building");
+    let build_start = Instant::now();
     let result = engine.build().context("running the build")?;
+    ui::detail(format!(
+        "finished in {}",
+        ui::fmt_duration(build_start.elapsed())
+    ));
     report_build(&result);
 
     let output_dir = project.output_dir().clone();
@@ -167,38 +175,8 @@ fn stage_release(
         .prefix("release-")
         .tempdir_in(&temp_root)
         .context("creating release staging directory")?;
-    copy_release_files(output_dir, staging.path(), zip_path)?;
+    copy_tree(output_dir, staging.path(), zip_path).context("staging release files")?;
     Ok(staging)
-}
-
-fn copy_release_files(source: &Path, target: &Path, zip_path: &Path) -> Result<()> {
-    for entry in
-        std::fs::read_dir(source).with_context(|| format!("reading {}", source.display()))?
-    {
-        let entry = entry.with_context(|| format!("reading {}", source.display()))?;
-        let source_path = entry.path();
-        if source_path == zip_path {
-            continue;
-        }
-        let target_path = target.join(entry.file_name());
-        let file_type = entry
-            .file_type()
-            .with_context(|| format!("reading type of {}", source_path.display()))?;
-        if file_type.is_dir() {
-            std::fs::create_dir_all(&target_path)
-                .with_context(|| format!("creating {}", target_path.display()))?;
-            copy_release_files(&source_path, &target_path, zip_path)?;
-        } else if file_type.is_file() {
-            std::fs::copy(&source_path, &target_path).with_context(|| {
-                format!(
-                    "copying release file {} to {}",
-                    source_path.display(),
-                    target_path.display()
-                )
-            })?;
-        }
-    }
-    Ok(())
 }
 
 /// Write a deterministic release zip through a sibling temporary file.
