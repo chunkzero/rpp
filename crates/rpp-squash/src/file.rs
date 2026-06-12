@@ -39,7 +39,9 @@ pub(crate) fn squash_file_collecting(
 ) -> Result<Option<Vec<u8>>> {
     match Kind::of(path) {
         Some(Kind::Json) if opts.json => Ok(squash_json(path, &contents, warnings)),
-        Some(Kind::Png) if opts.png.is_enabled() => Ok(squash_png(path, &contents, opts.png)),
+        Some(Kind::Png) if opts.png.is_enabled() => {
+            Ok(squash_png(path, &contents, opts.png, warnings))
+        }
         _ => Ok(None),
     }
 }
@@ -85,7 +87,12 @@ fn squash_json(path: &str, contents: &[u8], warnings: &mut Vec<String>) -> Optio
 
 /// Optimize a PNG; returns `Some` only if strictly smaller. Any oxipng failure
 /// yields `None` (the original is kept).
-fn squash_png(path: &str, contents: &[u8], level: PngLevel) -> Option<Vec<u8>> {
+fn squash_png(
+    path: &str,
+    contents: &[u8],
+    level: PngLevel,
+    warnings: &mut Vec<String>,
+) -> Option<Vec<u8>> {
     let preset = level.preset()?;
     let mut options = oxipng::Options::from_preset(preset);
     // Strip metadata that does not affect image display (safe, lossless).
@@ -95,7 +102,7 @@ fn squash_png(path: &str, contents: &[u8], level: PngLevel) -> Option<Vec<u8>> {
         Ok(optimized) if optimized.len() < contents.len() => Some(optimized),
         Ok(_) => None,
         Err(err) => {
-            emit_warning(&format!(
+            warnings.push(format!(
                 "{path}: png optimization failed, kept original ({err})"
             ));
             None
