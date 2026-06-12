@@ -1,0 +1,261 @@
+//! Sandbox enforcement and builtin module tests.
+
+mod common;
+
+use common::PluginDir;
+use rpp::model::{PackFile, PluginFactory};
+
+/// Run a one-shot processor and return its produced contents (or the load/run error message).
+fn run(entry: &str, input: &str) -> Result<Vec<u8>, String> {
+    let p = PluginDir::lua("t", entry);
+    let options: toml::Value = toml::Value::Table(Default::default());
+    let factory = match rpp::lua::LuaPluginFactory::load(p.path(), options, "pack", None, None) {
+        Ok(f) => f,
+        Err(e) => return Err(format!("{e}")),
+    };
+    let mut inst = factory.instantiate().map_err(|e| format!("{e}"))?;
+    let mut file = PackFile::new("in.txt", input.as_bytes().to_vec());
+    inst.process("t", &mut file).map_err(|e| format!("{e}"))?;
+    Ok(file.contents)
+}
+
+fn processor_wrap(body: &str) -> String {
+    format!(
+        r#"
+local rpp = require("rpp")
+local plugin = rpp.plugin()
+plugin:processor("t", {{ files = {{ "**/*" }} }}, function(ctx, file)
+{body}
+end)
+return plugin
+"#
+    )
+}
+
+#[test]
+fn io_is_unavailable() {
+    let err = run(&processor_wrap("io.write('x')"), "").unwrap_err();
+    assert!(err.contains("io") || err.contains("nil"), "{err}");
+}
+
+#[test]
+fn os_execute_is_unavailable() {
+    let err = run(&processor_wrap("os.execute('echo hi')"), "").unwrap_err();
+    assert!(err.contains("execute") || err.contains("nil"), "{err}");
+}
+
+#[test]
+fn os_clock_is_available() {
+    // os.clock is whitelisted; this must succeed.
+    let out = run(
+        &processor_wrap("local _ = os.clock(); file.text = 'ok'"),
+        "",
+    )
+    .unwrap();
+    assert_eq!(out, b"ok");
+}
+
+#[test]
+fn load_is_unavailable() {
+    let err = run(&processor_wrap("load('return 1')()"), "").unwrap_err();
+    assert!(err.contains("load") || err.contains("nil"), "{err}");
+}
+
+#[test]
+fn dofile_is_unavailable() {
+    let err = run(&processor_wrap("dofile('/etc/passwd')"), "").unwrap_err();
+    assert!(err.contains("dofile") || err.contains("nil"), "{err}");
+}
+
+#[test]
+fn debug_is_unavailable() {
+    let err = run(&processor_wrap("debug.getinfo(1)"), "").unwrap_err();
+    assert!(err.contains("debug") || err.contains("nil"), "{err}");
+}
+
+#[test]
+fn require_parent_escape_blocked() {
+    let err = run(&processor_wrap("require('../secret')"), "").unwrap_err();
+    assert!(
+        err.contains("not allowed") || err.contains("escape"),
+        "{err}"
+    );
+}
+
+#[test]
+fn require_unknown_rpp_module_fails() {
+    let err = run(&processor_wrap("require('rpp.bogus')"), "").unwrap_err();
+    assert!(err.contains("bogus") || err.contains("not found"), "{err}");
+}
+
+#[test]
+fn print_maps_to_log() {
+    // print must exist and not error (mapped to log.info).
+    let out = run(
+        &processor_wrap("print('hello from plugin'); file.text='p'"),
+        "",
+    )
+    .unwrap();
+    assert_eq!(out, b"p");
+}
+
+#[test]
+fn require_local_module_works() {
+    let p = PluginDir::lua(
+        "withmod",
+        r#"
+local rpp = require("rpp")
+local helper = require("helper")
+local plugin = rpp.plugin()
+plugin:processor("t", { files = { "**/*" } }, function(ctx, file)
+    file.text = helper.shout(file.text)
+end)
+return plugin
+"#,
+    )
+    .with_module(
+        "helper.lua",
+        "return { shout = function(s) return s .. '!' end }",
+    );
+
+    let f = p.factory("");
+    let mut inst = f.instantiate().unwrap();
+    let mut file = PackFile::new("x.txt", b"hi".to_vec());
+    inst.process("t", &mut file).unwrap();
+    assert_eq!(file.contents, b"hi!");
+}
+
+#[test]
+fn require_nested_init_module_works() {
+    let p = PluginDir::lua(
+        "nested",
+        r#"
+local rpp = require("rpp")
+local lib = require("lib.core")
+local plugin = rpp.plugin()
+plugin:processor("t", { files = { "**/*" } }, function(ctx, file)
+    file.text = lib.tag(file.text)
+end)
+return plugin
+"#,
+    )
+    .with_module(
+        "lib/core.lua",
+        "return { tag = function(s) return '[' .. s .. ']' end }",
+    );
+
+    let f = p.factory("");
+    let mut inst = f.instantiate().unwrap();
+    let mut file = PackFile::new("x.txt", b"v".to_vec());
+    inst.process("t", &mut file).unwrap();
+    assert_eq!(file.contents, b"[v]");
+}
+
+#[test]
+fn json_builtin_roundtrips() {
+    let out = run(
+        &processor_wrap(
+            r#"
+local data = rpp.json.decode(file.text)
+data.added = true
+file.text = rpp.json.encode(data)
+"#,
+        ),
+        "{\"a\":1}",
+    )
+    .unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+    assert_eq!(v["a"], 1);
+    assert_eq!(v["added"], true);
+}
+
+#[test]
+fn toml_builtin_roundtrips() {
+    let out = run(
+        &processor_wrap(
+            r#"
+local data = rpp.toml.decode(file.text)
+file.text = rpp.toml.encode({ name = data.name, n = 5 })
+"#,
+        ),
+        "name = \"abc\"\n",
+    )
+    .unwrap();
+    let s = String::from_utf8(out).unwrap();
+    assert!(s.contains("name = \"abc\""), "{s}");
+    assert!(s.contains("n = 5"), "{s}");
+}
+
+#[test]
+fn hash_builtins() {
+    let out = run(
+        &processor_wrap(
+            r#"
+local parts = {
+    rpp.hash.xxh3("abc"),
+    rpp.hash.sha256("abc"),
+    rpp.hash.md5("abc"),
+    tostring(rpp.hash.crc32("abc")),
+}
+file.text = table.concat(parts, "|")
+"#,
+        ),
+        "",
+    )
+    .unwrap();
+    let s = String::from_utf8(out).unwrap();
+    let parts: Vec<&str> = s.split('|').collect();
+    // sha256("abc")
+    assert_eq!(
+        parts[1],
+        "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+    );
+    // md5("abc")
+    assert_eq!(parts[2], "900150983cd24fb0d6963f7d28e17f72");
+    // crc32("abc") = 891568578
+    assert_eq!(parts[3], "891568578");
+    // xxh3 is 16 hex chars
+    assert_eq!(parts[0].len(), 16);
+}
+
+#[test]
+fn path_builtins() {
+    let out = run(
+        &processor_wrap(
+            r#"
+local p = "a/b/c.txt"
+file.text = table.concat({
+    rpp.path.dirname(p),
+    rpp.path.basename(p),
+    rpp.path.ext(p),
+    rpp.path.with_ext(p, "json"),
+    rpp.path.join("x", "y/z", "w"),
+    tostring(rpp.path.match("a/**/*.txt", p)),
+}, "|")
+"#,
+        ),
+        "",
+    )
+    .unwrap();
+    let s = String::from_utf8(out).unwrap();
+    assert_eq!(s, "a/b|c.txt|txt|a/b/c.json|x/y/z/w|true");
+}
+
+#[test]
+fn str_builtins() {
+    let out = run(
+        &processor_wrap(
+            r#"
+file.text = table.concat({
+    tostring(rpp.str.starts_with("hello", "he")),
+    tostring(rpp.str.ends_with("hello", "lo")),
+    rpp.str.trim("  hi  "),
+    table.concat(rpp.str.split("a,b,c", ","), "-"),
+}, "|")
+"#,
+        ),
+        "",
+    )
+    .unwrap();
+    assert_eq!(String::from_utf8(out).unwrap(), "true|true|hi|a-b-c");
+}

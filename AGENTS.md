@@ -4,9 +4,13 @@ This file provides guidelines for agentic coding agents working in the RPP (Reso
 
 ## Project Overview
 
-RPP is a Rust-based toolchain for building and testing Minecraft resource packs. It consists of:
-- `crates/rpp`: Core library with compile and Lua plugin systems
-- `crates/rpp-cli`: CLI application with build, init, plugin, and serve commands
+RPP is a Rust-based toolchain for building and testing Minecraft resource packs. The authoritative design document is `docs/SPEC.md` — read it before making architectural changes. The workspace consists of:
+- `crates/rpp`: Core library — config (`rpp.toml`), plugin model, sandboxed Lua 5.4 plugin runtime, incremental build engine with content-addressed cache
+- `crates/rpp-fetch`: Plugin source resolution (GitHub + local), lockfile (`rpp.lock`), plugin discovery/search
+- `crates/rpp-squash`: Pack optimization — JSON minify, PNG optimization (oxipng), deterministic zip, external PackSquash support
+- `crates/rpp-wasm`: WASIp2 component plugin host (wasmtime); WIT contract at `crates/rpp-wasm/wit/plugin.wit`
+- `crates/rpp-cli`: The `rpp` binary — init, build, dev server, plugin management
+- `examples/`: Working example pack project and plugin packages (Lua + WASM guest)
 
 ## Build Commands
 
@@ -210,7 +214,9 @@ pub struct Cli {
 
 ## Important Notes
 
-- This project uses `mlua` with vendored LuaJIT
+- This project uses `mlua` with vendored **Lua 5.4** (not LuaJIT) — features `lua54, vendored, serde, send`
 - The CLI binary is named `rpp` (from `rpp-cli` crate)
-- Cache files use `bincode` with big-endian fixed-int encoding
+- The incremental cache lives at `.rpp/cache/` (bincode manifest + content-addressed objects)
 - The project supports custom ignore files (`.rppignore`)
+- WASM guest example crates under `examples/plugins/` are intentionally NOT workspace members
+- Prefer package-scoped cargo commands (`-p <crate>`) when iterating

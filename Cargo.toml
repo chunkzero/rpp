@@ -2,7 +2,9 @@
 members = [
     "crates/rpp",
     "crates/rpp-cli",
-    "examples/lib"
+    "crates/rpp-fetch",
+    "crates/rpp-squash",
+    "crates/rpp-wasm",
 ]
 resolver = "2"
 

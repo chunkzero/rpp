@@ -1,0 +1,607 @@
+//! End-to-end build engine tests: chain ordering, generators, incremental cache.
+
+mod common;
+
+use std::sync::Arc;
+
+use common::{PluginDir, Project};
+use rpp::engine::Engine;
+use rpp::model::PluginFactory;
+
+fn build(project: &Project, plugins: Vec<Arc<dyn PluginFactory>>) -> rpp::engine::BuildResult {
+    let engine = Engine::builder(project.config())
+        .project_root(project.root())
+        .plugins(plugins)
+        .build_engine()
+        .unwrap();
+    engine.build().unwrap()
+}
+
+#[test]
+fn basic_processor_writes_output() {
+    let project = Project::new();
+    project.write_src("a.txt", "hello");
+
+    let upper = PluginDir::lua(
+        "upper",
+        r#"
+local rpp = require("rpp")
+local plugin = rpp.plugin()
+plugin:processor("up", { files = { "**/*.txt" } }, function(ctx, file)
+    file.text = string.upper(file.text)
+end)
+return plugin
+"#,
+    );
+
+    let result = build(&project, vec![upper.factory_arc("")]);
+    assert_eq!(result.processed, 1);
+    assert_eq!(project.read_out("a.txt").as_deref(), Some("HELLO"));
+}
+
+#[test]
+fn chain_ordering_across_plugins() {
+    // Two plugins both append a marker; priority + plugin order decide sequence.
+    let project = Project::new();
+    project.write_src("x.txt", "");
+
+    let make = |id: &str, mark: &str, prio: i32| {
+        PluginDir::lua(
+            id,
+            &format!(
+                r#"
+local rpp = require("rpp")
+local plugin = rpp.plugin()
+plugin:processor("p", {{ files = {{ "**/*" }}, priority = {prio} }}, function(ctx, file)
+    file.text = file.text .. "{mark}"
+end)
+return plugin
+"#
+            ),
+        )
+    };
+
+    // late has higher priority number => runs after early.
+    let early = make("early", "A", 10);
+    let late = make("late", "B", 20);
+
+    // Register late first in config order to prove priority wins over order.
+    let result = build(&project, vec![late.factory_arc(""), early.factory_arc("")]);
+    assert_eq!(result.processed, 1);
+    assert_eq!(project.read_out("x.txt").as_deref(), Some("AB"));
+}
+
+#[test]
+fn chain_tie_broken_by_plugin_order() {
+    let project = Project::new();
+    project.write_src("x.txt", "");
+
+    let make = |id: &str, mark: &str| {
+        PluginDir::lua(
+            id,
+            &format!(
+                r#"
+local rpp = require("rpp")
+local plugin = rpp.plugin()
+plugin:processor("p", {{ files = {{ "**/*" }} }}, function(ctx, file)
+    file.text = file.text .. "{mark}"
+end)
+return plugin
+"#
+            ),
+        )
+    };
+
+    let first = make("first", "1");
+    let second = make("second", "2");
+    // Same priority (0); config order decides.
+    let result = build(
+        &project,
+        vec![first.factory_arc(""), second.factory_arc("")],
+    );
+    assert_eq!(result.processed, 1);
+    assert_eq!(project.read_out("x.txt").as_deref(), Some("12"));
+}
+
+#[test]
+fn dropped_file_excluded_from_output() {
+    let project = Project::new();
+    project.write_src("keep.txt", "k");
+    project.write_src("drop.txt", "d");
+
+    let dropper = PluginDir::lua(
+        "dropper",
+        r#"
+local rpp = require("rpp")
+local plugin = rpp.plugin()
+plugin:processor("d", { files = { "drop.txt" } }, function(ctx, file)
+    file:drop()
+end)
+return plugin
+"#,
+    );
+
+    let result = build(&project, vec![dropper.factory_arc("")]);
+    assert_eq!(result.dropped, 1);
+    assert!(project.out_exists("keep.txt"));
+    assert!(!project.out_exists("drop.txt"));
+}
+
+#[test]
+fn generator_emit_and_read() {
+    let project = Project::new();
+    project.write_src("assets/a.txt", "one");
+    project.write_src("assets/b.txt", "two");
+
+    let gen = PluginDir::lua(
+        "indexer",
+        r#"
+local rpp = require("rpp")
+local plugin = rpp.plugin()
+plugin:generator("index", function(ctx)
+    local names = {}
+    for _, path in ipairs(ctx:files("assets/*.txt")) do
+        local body = ctx:read(path)
+        names[#names + 1] = path .. "=" .. body
+    end
+    table.sort(names)
+    ctx:emit("index.txt", table.concat(names, "\n"))
+end)
+return plugin
+"#,
+    );
+
+    let result = build(&project, vec![gen.factory_arc("")]);
+    assert_eq!(result.generated, 1);
+    assert_eq!(
+        project.read_out("index.txt").as_deref(),
+        Some("assets/a.txt=one\nassets/b.txt=two")
+    );
+}
+
+#[test]
+fn generator_read_source() {
+    let project = Project::new();
+    project.write_src("raw.txt", "RAWBODY");
+
+    // A processor mutates the processed copy, but read_source sees the original.
+    let plugin = PluginDir::lua(
+        "src-reader",
+        r#"
+local rpp = require("rpp")
+local plugin = rpp.plugin()
+plugin:processor("up", { files = { "raw.txt" } }, function(ctx, file)
+    file.text = "PROCESSED"
+end)
+plugin:generator("g", function(ctx)
+    local raw = ctx:read_source("raw.txt")
+    local proc = ctx:read("raw.txt")
+    ctx:emit("report.txt", raw .. "|" .. proc)
+end)
+return plugin
+"#,
+    );
+
+    build(&project, vec![plugin.factory_arc("")]);
+    assert_eq!(
+        project.read_out("report.txt").as_deref(),
+        Some("RAWBODY|PROCESSED")
+    );
+}
+
+#[test]
+fn incremental_second_build_all_cached() {
+    let project = Project::new();
+    project.write_src("a.txt", "a");
+    project.write_src("b.txt", "b");
+
+    let upper = PluginDir::lua(
+        "u",
+        r#"
+local rpp = require("rpp")
+local plugin = rpp.plugin()
+plugin:processor("u", { files = { "**/*.txt" } }, function(ctx, file)
+    file.text = string.upper(file.text)
+end)
+return plugin
+"#,
+    );
+
+    let first = build(&project, vec![upper.factory_arc("")]);
+    assert_eq!(first.processed, 2);
+    assert_eq!(first.cached, 0);
+
+    let second = build(&project, vec![upper.factory_arc("")]);
+    assert_eq!(second.processed, 0);
+    assert_eq!(second.cached, 2);
+    // Outputs still correct.
+    assert_eq!(project.read_out("a.txt").as_deref(), Some("A"));
+}
+
+#[test]
+fn incremental_touch_one_file_reprocesses_only_it() {
+    let project = Project::new();
+    project.write_src("a.txt", "a");
+    project.write_src("b.txt", "b");
+
+    let upper = PluginDir::lua(
+        "u",
+        r#"
+local rpp = require("rpp")
+local plugin = rpp.plugin()
+plugin:processor("u", { files = { "**/*.txt" } }, function(ctx, file)
+    file.text = string.upper(file.text)
+end)
+return plugin
+"#,
+    );
+
+    build(&project, vec![upper.factory_arc("")]);
+
+    // Change one file's content.
+    project.write_src("a.txt", "changed");
+
+    let second = build(&project, vec![upper.factory_arc("")]);
+    assert_eq!(second.processed, 1);
+    assert_eq!(second.cached, 1);
+    assert_eq!(project.read_out("a.txt").as_deref(), Some("CHANGED"));
+}
+
+#[test]
+fn changing_options_reprocesses() {
+    let project = Project::new();
+    project.write_src("a.txt", "x");
+
+    let plugin = PluginDir::lua(
+        "opt",
+        r#"
+local rpp = require("rpp")
+local plugin = rpp.plugin()
+plugin:processor("p", { files = { "**/*" } }, function(ctx, file)
+    file.text = ctx.options.tag .. file.text
+end)
+return plugin
+"#,
+    );
+
+    let first = build(&project, vec![plugin.factory_arc("tag = \"A\"")]);
+    assert_eq!(first.processed, 1);
+    assert_eq!(project.read_out("a.txt").as_deref(), Some("Ax"));
+
+    // Different options => different cache_key => reprocess.
+    let second = build(&project, vec![plugin.factory_arc("tag = \"B\"")]);
+    assert_eq!(second.processed, 1);
+    assert_eq!(second.cached, 0);
+    assert_eq!(project.read_out("a.txt").as_deref(), Some("Bx"));
+}
+
+#[test]
+fn changing_plugin_source_reprocesses() {
+    let project = Project::new();
+    project.write_src("a.txt", "x");
+
+    let v1 = PluginDir::lua(
+        "p",
+        r#"
+local rpp = require("rpp")
+local plugin = rpp.plugin()
+plugin:processor("p", { files = { "**/*" } }, function(ctx, file)
+    file.text = "v1:" .. file.text
+end)
+return plugin
+"#,
+    );
+    let first = build(&project, vec![v1.factory_arc("")]);
+    assert_eq!(first.processed, 1);
+
+    let v2 = PluginDir::lua(
+        "p",
+        r#"
+local rpp = require("rpp")
+local plugin = rpp.plugin()
+plugin:processor("p", { files = { "**/*" } }, function(ctx, file)
+    file.text = "v2:" .. file.text
+end)
+return plugin
+"#,
+    );
+    let second = build(&project, vec![v2.factory_arc("")]);
+    assert_eq!(second.processed, 1);
+    assert_eq!(second.cached, 0);
+    assert_eq!(project.read_out("a.txt").as_deref(), Some("v2:x"));
+}
+
+#[test]
+fn output_sync_removes_stale_files() {
+    let project = Project::new();
+    project.write_src("a.txt", "a");
+    project.write_src("b.txt", "b");
+
+    let passthrough = PluginDir::lua(
+        "noop",
+        r#"
+local rpp = require("rpp")
+local plugin = rpp.plugin()
+plugin:processor("n", { files = { "**/*" } }, function(ctx, file) end)
+return plugin
+"#,
+    );
+
+    build(&project, vec![passthrough.factory_arc("")]);
+    assert!(project.out_exists("a.txt"));
+    assert!(project.out_exists("b.txt"));
+
+    // Remove a source file; rebuild should delete its output.
+    std::fs::remove_file(project.src().join("b.txt")).unwrap();
+    let report = build(&project, vec![passthrough.factory_arc("")]);
+    assert!(project.out_exists("a.txt"));
+    assert!(!project.out_exists("b.txt"));
+    assert!(report.changes.removed.contains(&"b.txt".to_string()));
+}
+
+#[test]
+fn generator_incremental_reuses_when_inputs_unchanged() {
+    let project = Project::new();
+    project.write_src("a.txt", "a");
+
+    let gen = PluginDir::lua(
+        "g",
+        r#"
+local rpp = require("rpp")
+local plugin = rpp.plugin()
+plugin:generator("g", function(ctx)
+    local n = #ctx:files("**/*.txt")
+    ctx:emit("count.txt", tostring(n))
+end)
+return plugin
+"#,
+    );
+
+    let first = build(&project, vec![gen.factory_arc("")]);
+    assert_eq!(first.generated, 1);
+    assert_eq!(project.read_out("count.txt").as_deref(), Some("1"));
+
+    // Second build with no changes: generator output reused from cache.
+    let second = build(&project, vec![gen.factory_arc("")]);
+    assert_eq!(project.read_out("count.txt").as_deref(), Some("1"));
+    // No source change, no rewrite expected.
+    assert!(second.changes.written.is_empty());
+}
+
+#[test]
+fn generator_reruns_when_read_set_changes() {
+    let project = Project::new();
+    project.write_src("a.txt", "a");
+
+    let gen = PluginDir::lua(
+        "g",
+        r#"
+local rpp = require("rpp")
+local plugin = rpp.plugin()
+plugin:generator("g", function(ctx)
+    local n = #ctx:files("**/*.txt")
+    ctx:emit("count.txt", tostring(n))
+end)
+return plugin
+"#,
+    );
+
+    build(&project, vec![gen.factory_arc("")]);
+    assert_eq!(project.read_out("count.txt").as_deref(), Some("1"));
+
+    // Add a file: the generator's file-list read-set changes => rerun.
+    project.write_src("b.txt", "b");
+    build(&project, vec![gen.factory_arc("")]);
+    assert_eq!(project.read_out("count.txt").as_deref(), Some("2"));
+}
+
+#[test]
+fn clean_removes_output_and_cache() {
+    let project = Project::new();
+    project.write_src("a.txt", "a");
+
+    let noop = PluginDir::lua(
+        "n",
+        r#"
+local rpp = require("rpp")
+local plugin = rpp.plugin()
+plugin:processor("n", { files = { "**/*" } }, function(ctx, file) end)
+return plugin
+"#,
+    );
+
+    let engine = Engine::builder(project.config())
+        .project_root(project.root())
+        .plugin(noop.factory_arc(""))
+        .build_engine()
+        .unwrap();
+    engine.build().unwrap();
+    assert!(project.out_exists("a.txt"));
+
+    engine.clean().unwrap();
+    assert!(!project.root().join("dist").exists());
+    assert!(!project.root().join(".rpp").exists());
+}
+
+#[test]
+fn lifecycle_hooks_run() {
+    let project = Project::new();
+    project.write_src("a.txt", "a");
+
+    // on_start/on_finish just must not error; use log.
+    let plugin = PluginDir::lua(
+        "hooks",
+        r#"
+local rpp = require("rpp")
+local plugin = rpp.plugin()
+plugin:on_start(function(ctx) ctx.log.info("start") end)
+plugin:on_finish(function(ctx, stats) ctx.log.info("finish " .. stats.processed) end)
+plugin:processor("n", { files = { "**/*" } }, function(ctx, file) end)
+return plugin
+"#,
+    );
+
+    let result = build(&project, vec![plugin.factory_arc("")]);
+    assert_eq!(result.processed, 1);
+}
+
+#[test]
+fn rppignore_excludes_files() {
+    let project = Project::new();
+    project.write_src("a.txt", "a");
+    project.write_src("ignored.tmp", "x");
+    std::fs::write(project.src().join(".rppignore"), "*.tmp\n").unwrap();
+
+    let noop = PluginDir::lua(
+        "n",
+        r#"
+local rpp = require("rpp")
+local plugin = rpp.plugin()
+plugin:processor("n", { files = { "**/*" } }, function(ctx, file) end)
+return plugin
+"#,
+    );
+
+    build(&project, vec![noop.factory_arc("")]);
+    assert!(project.out_exists("a.txt"));
+    assert!(!project.out_exists("ignored.tmp"));
+}
+
+#[test]
+fn processor_cannot_escape_output_directory() {
+    let project = Project::new();
+    project.write_src("a.txt", "a");
+    let plugin = PluginDir::lua(
+        "escape",
+        r#"
+local rpp = require("rpp")
+local plugin = rpp.plugin()
+plugin:processor("p", { files = { "**/*" } }, function(ctx, file)
+    file.path = "../escaped.txt"
+end)
+return plugin
+"#,
+    );
+    let engine = Engine::builder(project.config())
+        .project_root(project.root())
+        .plugin(plugin.factory_arc(""))
+        .build_engine()
+        .unwrap();
+    assert!(engine.build().is_err());
+    assert!(!project.root().join("escaped.txt").exists());
+}
+
+#[test]
+fn generator_cannot_escape_source_or_output_directories() {
+    let project = Project::new();
+    project.write_src("a.txt", "a");
+    std::fs::write(project.root().join("secret.txt"), "secret").unwrap();
+    let plugin = PluginDir::lua(
+        "escape",
+        r#"
+local rpp = require("rpp")
+local plugin = rpp.plugin()
+plugin:generator("g", function(ctx)
+    ctx:emit("../escaped.txt", ctx:read_source("../secret.txt") or "missing")
+end)
+return plugin
+"#,
+    );
+    let engine = Engine::builder(project.config())
+        .project_root(project.root())
+        .plugin(plugin.factory_arc(""))
+        .build_engine()
+        .unwrap();
+    assert!(engine.build().is_err());
+    assert!(!project.root().join("escaped.txt").exists());
+}
+
+#[test]
+fn cached_generator_replays_removals() {
+    let project = Project::new();
+    project.write_src("remove.txt", "remove me");
+    let plugin = PluginDir::lua(
+        "remover",
+        r#"
+local rpp = require("rpp")
+local plugin = rpp.plugin()
+plugin:generator("g", function(ctx)
+    ctx:remove("remove.txt")
+end)
+return plugin
+"#,
+    );
+
+    build(&project, vec![plugin.factory_arc("")]);
+    assert!(!project.out_exists("remove.txt"));
+    let second = build(&project, vec![plugin.factory_arc("")]);
+    assert!(!project.out_exists("remove.txt"));
+    assert!(second.changes.written.is_empty());
+}
+
+#[test]
+fn colliding_processor_outputs_fail_deterministically() {
+    let project = Project::new();
+    project.write_src("a.txt", "a");
+    project.write_src("b.txt", "b");
+    let plugin = PluginDir::lua(
+        "rename",
+        r#"
+local rpp = require("rpp")
+local plugin = rpp.plugin()
+plugin:processor("p", { files = { "**/*" } }, function(ctx, file)
+    file.path = "same.txt"
+end)
+return plugin
+"#,
+    );
+    let engine = Engine::builder(project.config())
+        .project_root(project.root())
+        .plugin(plugin.factory_arc(""))
+        .build_engine()
+        .unwrap();
+    let error = engine.build().unwrap_err().to_string();
+    assert!(error.contains("both produce `same.txt`"), "{error}");
+}
+
+#[test]
+fn generator_reads_use_the_pre_generator_snapshot() {
+    let project = Project::new();
+    project.write_src("a.txt", "a");
+    let plugin = PluginDir::lua(
+        "snapshot",
+        r#"
+local rpp = require("rpp")
+local plugin = rpp.plugin()
+plugin:generator("g", function(ctx)
+    ctx:emit("marker.txt", "marker")
+    ctx:files()
+end)
+return plugin
+"#,
+    );
+
+    build(&project, vec![plugin.factory_arc("")]);
+    let second = build(&project, vec![plugin.factory_arc("")]);
+    assert!(second.changes.written.is_empty());
+}
+
+#[test]
+fn corrupt_cache_object_is_rebuilt() {
+    let project = Project::new();
+    project.write_src("a.txt", "a");
+    build(&project, Vec::new());
+
+    let objects = project.root().join(".rpp/cache/objects");
+    let object = std::fs::read_dir(&objects)
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    std::fs::write(object, "corrupt").unwrap();
+
+    let second = build(&project, Vec::new());
+    assert_eq!(second.processed, 1);
+    assert_eq!(project.read_out("a.txt").as_deref(), Some("a"));
+}

@@ -1,18 +1,23 @@
-//! RPP - Resource Pack Processor
+//! `rpp` core library: project config, the runtime-agnostic plugin model, the
+//! Lua plugin system, and the incremental build engine.
 //!
-//! A multi-phase build pipeline with sandboxed Lua plugins.
+//! The pipeline is defined entirely in terms of [`model`] traits. The Lua
+//! runtime ([`lua::LuaPluginFactory`]) is one implementation; the build engine
+//! ([`engine::Engine`]) drives them.
 
-pub mod build;
 pub mod config;
-pub mod lua;
-pub mod plugin;
-pub mod sandbox;
-pub mod worker;
+pub mod engine;
+pub mod manifest;
+pub mod model;
 
-// Re-export commonly used types
-pub use build::{BuildEngine, BuildEngineBuilder, BuildError, BuildResult};
-pub use config::{ConfigError, DevServerConfig, RppConfig};
-pub use plugin::{
-    GeneratorContext, GeneratorPlugin, LuaProcessor, Plugin, PluginRegistry, ProcessResult,
-    ProcessingContext, ProcessorPlugin,
-};
+#[cfg(feature = "lua")]
+pub mod lua;
+
+#[cfg(feature = "wasm")]
+pub mod wasm;
+
+mod cache;
+mod error;
+mod util;
+
+pub use error::{Error, Result};

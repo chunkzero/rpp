@@ -1,0 +1,7 @@
+[plugin]
+id = "grayscale"
+version = "0.1.0"
+description = "Converts **/*.gray.png textures to grayscale and strips the .gray suffix"
+authors = ["rpp examples"]
+runtime = "wasm"
+module = "plugin.wasm"
