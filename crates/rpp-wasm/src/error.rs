@@ -57,10 +57,6 @@ pub enum Error {
     /// The guest returned an `Err(string)` from a fallible export.
     #[error("guest error: {0}")]
     GuestError(String),
-
-    /// The requested processor name is not declared by the plugin.
-    #[error("unknown processor: {0}")]
-    UnknownProcessor(String),
 }
 
 /// Re-export of `anyhow::Error` under a stable name. wasmtime returns
