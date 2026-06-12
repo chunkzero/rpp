@@ -8,6 +8,7 @@
 
 use std::io::Read;
 use std::path::{Component, Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use flate2::read::GzDecoder;
 use tar::Archive;
@@ -189,7 +190,6 @@ fn sanitize(path: &Path) -> Option<PathBuf> {
 fn unique_temp_dir(parent: &Path) -> Result<PathBuf> {
     // Combine pid + a monotonic-ish counter to avoid collisions within a process
     // and a nanosecond timestamp across processes.
-    use std::sync::atomic::{AtomicU64, Ordering};
     static COUNTER: AtomicU64 = AtomicU64::new(0);
 
     let nanos = std::time::SystemTime::now()

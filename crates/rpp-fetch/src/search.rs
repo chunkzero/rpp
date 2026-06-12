@@ -6,6 +6,8 @@ use crate::http::{GitHubClient, HttpConfig};
 /// A single repository hit from a plugin search.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RepoHit {
+    /// Short repository name (without owner).
+    pub name: String,
     /// `owner/repo`.
     pub full_name: String,
     /// The repository description, if any.
@@ -53,6 +55,17 @@ fn parse_search_response(value: &serde_json::Value) -> Result<Vec<RepoHit>> {
         let Some(full_name) = item.get("full_name").and_then(|v| v.as_str()) else {
             continue;
         };
+        let name = item
+            .get("name")
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+            .unwrap_or_else(|| {
+                full_name
+                    .rsplit('/')
+                    .next()
+                    .unwrap_or(full_name)
+                    .to_string()
+            });
         let description = item
             .get("description")
             .and_then(|v| v.as_str())
@@ -68,6 +81,7 @@ fn parse_search_response(value: &serde_json::Value) -> Result<Vec<RepoHit>> {
             .unwrap_or_else(|| format!("https://github.com/{full_name}"));
 
         hits.push(RepoHit {
+            name,
             full_name: full_name.to_string(),
             description,
             stars,
@@ -86,6 +100,7 @@ mod tests {
         let v = serde_json::json!({
             "items": [
                 {
+                    "name": "rpp-plugins",
                     "full_name": "example/rpp-plugins",
                     "description": "Some plugins",
                     "stargazers_count": 42,
@@ -101,6 +116,7 @@ mod tests {
         });
         let hits = parse_search_response(&v).unwrap();
         assert_eq!(hits.len(), 2);
+        assert_eq!(hits[0].name, "rpp-plugins");
         assert_eq!(hits[0].full_name, "example/rpp-plugins");
         assert_eq!(hits[0].stars, 42);
         assert_eq!(hits[0].description.as_deref(), Some("Some plugins"));

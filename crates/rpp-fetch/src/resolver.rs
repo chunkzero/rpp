@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use crate::error::{Error, Result};
 use crate::extract::extract_tarball;
 use crate::http::{GitHubClient, HttpConfig};
-use crate::lockfile::LockedPlugin;
+use crate::lockfile::{LockedPlugin, Lockfile};
 use crate::manifest::MANIFEST_FILE;
 use crate::source::PluginSource;
 
@@ -130,32 +130,14 @@ impl Resolver {
         subdir: Option<&str>,
         locked: Option<&LockedPlugin>,
     ) -> Result<ResolvedPlugin> {
+        let client = GitHubClient::new(self.http.clone());
+
         // Pin short-circuit: if a lock pins a commit already cached, return with
-        // zero network calls.
+        // zero network calls when possible.
         if let Some(lock) = locked.filter(|lock| {
             lock.subdir.as_deref() == subdir && ref_.is_none_or(|requested| lock.ref_ == requested)
         }) {
-            let dir = self.commit_dir(owner, repo, &lock.commit);
-            if dir.is_dir() {
-                let root = self.join_subdir(&dir, subdir);
-                if self.verify_manifest(&root).is_ok() {
-                    return Ok(ResolvedPlugin {
-                        root,
-                        pinned: Some(Pin {
-                            ref_: lock.ref_.clone(),
-                            commit: lock.commit.clone(),
-                        }),
-                    });
-                }
-                std::fs::remove_dir_all(&dir).map_err(|error| {
-                    Error::io(format!("removing damaged cache {}", dir.display()), error)
-                })?;
-            }
-            let client = GitHubClient::new(self.http.clone());
-            let bytes = client.download_tarball(owner, repo, &lock.commit)?;
-            extract_tarball(&bytes, &dir)?;
-            let root = self.join_subdir(&dir, subdir);
-            self.verify_manifest(&root)?;
+            let root = self.ensure_cached_commit(&client, owner, repo, &lock.commit, subdir)?;
             return Ok(ResolvedPlugin {
                 root,
                 pinned: Some(Pin {
@@ -166,23 +148,8 @@ impl Resolver {
         }
 
         // Resolve ref -> commit SHA, then ensure the commit is cached.
-        let client = GitHubClient::new(self.http.clone());
         let (ref_name, sha) = client.resolve_commit(owner, repo, ref_)?;
-
-        let dir = self.commit_dir(owner, repo, &sha);
-        let root = self.join_subdir(&dir, subdir);
-        if dir.is_dir() && self.verify_manifest(&root).is_err() {
-            std::fs::remove_dir_all(&dir).map_err(|error| {
-                Error::io(format!("removing damaged cache {}", dir.display()), error)
-            })?;
-        }
-        if !dir.is_dir() {
-            let bytes = client.download_tarball(owner, repo, &sha)?;
-            extract_tarball(&bytes, &dir)?;
-        }
-
-        let root = self.join_subdir(&dir, subdir);
-        self.verify_manifest(&root)?;
+        let root = self.ensure_cached_commit(&client, owner, repo, &sha, subdir)?;
 
         Ok(ResolvedPlugin {
             root,
@@ -191,6 +158,35 @@ impl Resolver {
                 commit: sha,
             }),
         })
+    }
+
+    /// Ensure `owner/repo@sha` is present in the cache and contains a valid
+    /// manifest at `subdir`. Downloads and extracts when missing or damaged.
+    fn ensure_cached_commit(
+        &self,
+        client: &GitHubClient,
+        owner: &str,
+        repo: &str,
+        sha: &str,
+        subdir: Option<&str>,
+    ) -> Result<PathBuf> {
+        let dir = self.commit_dir(owner, repo, sha);
+        let root = self.join_subdir(&dir, subdir);
+        if dir.is_dir() {
+            if self.verify_manifest(&root).is_ok() {
+                return Ok(root);
+            }
+            std::fs::remove_dir_all(&dir).map_err(|error| {
+                Error::io(format!("removing damaged cache {}", dir.display()), error)
+            })?;
+        }
+        if !dir.is_dir() {
+            let bytes = client.download_tarball(owner, repo, sha)?;
+            extract_tarball(&bytes, &dir)?;
+        }
+        let root = self.join_subdir(&dir, subdir);
+        self.verify_manifest(&root)?;
+        Ok(root)
     }
 
     /// `<cache_root>/github/<owner>/<repo>/<sha>`
@@ -238,4 +234,26 @@ fn default_cache_root() -> Result<PathBuf> {
         )
     })?;
     Ok(base.join("rpp").join(CACHE_SUBDIR))
+}
+
+impl Lockfile {
+    /// Record a resolved GitHub plugin pin. Path sources are ignored.
+    ///
+    /// Returns the previous pin for the same source/ref/subdir key, if any.
+    pub fn record_resolved(
+        &mut self,
+        source: &PluginSource,
+        resolved: &ResolvedPlugin,
+    ) -> Option<LockedPlugin> {
+        let PluginSource::GitHub { subdir, .. } = source else {
+            return None;
+        };
+        let pin = resolved.pinned.as_ref()?;
+        self.upsert(LockedPlugin {
+            source: source.canonical(),
+            ref_: pin.ref_.clone(),
+            commit: pin.commit.clone(),
+            subdir: subdir.clone(),
+        })
+    }
 }

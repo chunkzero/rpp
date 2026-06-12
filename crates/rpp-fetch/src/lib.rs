@@ -21,7 +21,10 @@
 //! let source = PluginSource::parse("github:example/rpp-plugins", Some("v1.0.0"), None)?;
 //! let lock = Lockfile::load(std::path::Path::new("rpp.lock"))?;
 //! let resolver = Resolver::new(".")?;
-//! let resolved = resolver.resolve(&source, lock.get(&source.canonical()))?;
+//! let resolved = resolver.resolve(
+//!     &source,
+//!     lock.get_for(&source.canonical(), Some("v1.0.0"), None),
+//! )?;
 //! println!("plugin at {}", resolved.root.display());
 //! # Ok(())
 //! # }

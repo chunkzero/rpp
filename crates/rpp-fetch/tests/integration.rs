@@ -400,6 +400,7 @@ fn search_against_mock() {
     let body = serde_json::to_vec(&serde_json::json!({
         "items": [
             {
+                "name": "rpp-plugins",
                 "full_name": "example/rpp-plugins",
                 "description": "Atlas + minify",
                 "stargazers_count": 7,
@@ -422,6 +423,7 @@ fn search_against_mock() {
     let server = MockServer::start(routes);
     let hits = rpp_fetch::search_with_config("atlas", server.config()).unwrap();
     assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].name, "rpp-plugins");
     assert_eq!(hits[0].full_name, "example/rpp-plugins");
     assert_eq!(hits[0].stars, 7);
     assert_eq!(hits[0].description.as_deref(), Some("Atlas + minify"));

@@ -151,7 +151,11 @@ impl Lockfile {
         std::fs::write(path, text).map_err(|e| Error::io(format!("writing {}", path.display()), e))
     }
 
-    /// Look up a locked pin by its canonical source string.
+    /// Look up the first locked pin by its canonical source string.
+    ///
+    /// Prefer [`get_for`](Self::get_for) when a source may have multiple pins
+    /// (distinct refs or subdirs). This returns only the first match in stable
+    /// sort order.
     pub fn get(&self, source_str: &str) -> Option<&LockedPlugin> {
         self.plugins.iter().find(|p| p.source == source_str)
     }
@@ -186,12 +190,22 @@ impl Lockfile {
         }
     }
 
-    /// Remove the pin for a source. Returns the removed pin, if any.
-    pub fn remove(&mut self, source_str: &str) -> Option<LockedPlugin> {
-        let idx = self.plugins.iter().position(|p| p.source == source_str)?;
-        let removed = self.plugins.remove(idx);
-        self.plugins.retain(|plugin| plugin.source != source_str);
-        Some(removed)
+    /// Remove the pin matching `source`, `requested_ref`, and `subdir`.
+    ///
+    /// `requested_ref` follows the same semantics as [`get_for`](Self::get_for):
+    /// `None` matches any ref for that source/subdir pair.
+    pub fn remove_for(
+        &mut self,
+        source: &str,
+        requested_ref: Option<&str>,
+        subdir: Option<&str>,
+    ) -> Option<LockedPlugin> {
+        let idx = self.plugins.iter().position(|plugin| {
+            plugin.source == source
+                && plugin.subdir.as_deref() == subdir
+                && requested_ref.is_none_or(|requested| plugin.ref_ == requested)
+        })?;
+        Some(self.plugins.remove(idx))
     }
 
     /// All locked pins, in stable (sorted) order.
@@ -286,12 +300,47 @@ mod tests {
     }
 
     #[test]
-    fn remove_works() {
+    fn remove_for_works() {
         let mut lock = Lockfile::new();
         lock.upsert(pin("github:a/b", "main", "sha", None));
-        assert!(lock.remove("github:a/b").is_some());
+        assert!(lock.remove_for("github:a/b", Some("main"), None).is_some());
         assert!(lock.get("github:a/b").is_none());
-        assert!(lock.remove("github:a/b").is_none());
+        assert!(lock.remove_for("github:a/b", Some("main"), None).is_none());
+    }
+
+    #[test]
+    fn remove_for_leaves_other_subdirs() {
+        let mut lock = Lockfile::new();
+        lock.upsert(pin(
+            "github:example/rpp-plugins",
+            "v1",
+            "one",
+            Some("plugins/one"),
+        ));
+        lock.upsert(pin(
+            "github:example/rpp-plugins",
+            "v1",
+            "two",
+            Some("plugins/two"),
+        ));
+        assert!(lock
+            .remove_for(
+                "github:example/rpp-plugins",
+                Some("v1"),
+                Some("plugins/one"),
+            )
+            .is_some());
+        assert_eq!(lock.plugins().len(), 1);
+        assert_eq!(
+            lock.get_for(
+                "github:example/rpp-plugins",
+                Some("v1"),
+                Some("plugins/two"),
+            )
+            .unwrap()
+            .commit,
+            "two"
+        );
     }
 
     #[test]
