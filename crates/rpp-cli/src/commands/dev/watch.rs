@@ -152,7 +152,21 @@ pub fn classify_path(
 /// The set of local (`path:`) plugin directories to watch.
 pub fn local_plugin_dirs(project: &Project) -> Vec<PathBuf> {
     let mut dirs = Vec::new();
-    for plugin in &project.config.plugins {
+    collect_local_plugin_dirs(
+        &mut dirs,
+        &project.user_plugins.plugins,
+        &project.user_plugins.root,
+    );
+    collect_local_plugin_dirs(&mut dirs, &project.config.plugins, &project.root);
+    dirs
+}
+
+fn collect_local_plugin_dirs(
+    dirs: &mut Vec<PathBuf>,
+    plugins: &[rpp::config::PluginConfig],
+    root: &Path,
+) {
+    for plugin in plugins {
         if let Some(rest) = plugin.source.strip_prefix("path:") {
             let rest = rest.trim();
             if rest.is_empty() {
@@ -162,10 +176,9 @@ pub fn local_plugin_dirs(project: &Project) -> Vec<PathBuf> {
             let abs = if dir.is_absolute() {
                 dir
             } else {
-                project.root.join(dir)
+                root.join(dir)
             };
             dirs.push(abs);
         }
     }
-    dirs
 }

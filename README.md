@@ -63,6 +63,10 @@ rpp build [--no-cache] [--no-squash] [--jobs N]
 rpp dev
 rpp clean
 rpp plugin add|remove|list|update|search
+
+# Add from GitHub or a plugin package directory; choose project or global scope
+rpp plugin add ../window
+rpp plugin add github:owner/repo --global
 ```
 
 `rpp dev` serves loose output. Builtin squash and PackSquash are release archive

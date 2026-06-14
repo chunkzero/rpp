@@ -1,16 +1,20 @@
-//! `rpp plugin ...`: manage `[[plugin]]` entries in `rpp.toml` (via `toml_edit`,
-//! preserving formatting and comments) and the `rpp.lock` pins (via `rpp-fetch`).
+//! `rpp plugin ...`: manage project and user-level plugin manifests (via
+//! `toml_edit`, preserving formatting and comments) and their lockfile pins.
 
-use std::path::Path;
+use std::io::IsTerminal;
+use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, Context, Result};
 use clap::Subcommand;
+use dialoguer::{theme::ColorfulTheme, Select};
+use rpp::config::PluginConfig;
 use rpp_fetch::{search, Lockfile, PluginSource, Resolver};
 
 use crate::project::{
     find_plugin_by_id_or_source, resolve_plugin_meta, validate_plugin_dir, Project,
 };
 use crate::ui;
+use crate::user_plugins::{copy_plugin_dir, UserPlugins};
 
 mod edit;
 
@@ -21,7 +25,7 @@ pub use edit::{add_plugin, remove_plugin, PluginEntry};
 pub enum PluginCommand {
     /// Add a plugin and resolve it immediately.
     Add {
-        /// Source string (`path:...` or `github:owner/repo`).
+        /// Source string, GitHub source, or plugin package directory.
         source: String,
         /// Git ref (tag/branch/sha) for GitHub sources.
         #[arg(long = "ref")]
@@ -29,18 +33,34 @@ pub enum PluginCommand {
         /// Optional subdir within a GitHub repo.
         #[arg(long)]
         subdir: Option<String>,
+        /// Install for every project in the user plugin directory.
+        #[arg(long, conflicts_with = "project")]
+        global: bool,
+        /// Install only in the current project's manifest.
+        #[arg(long, conflicts_with = "global")]
+        project: bool,
     },
     /// Remove a plugin by id or source string.
     Remove {
         /// The plugin id or source string to remove.
         id: String,
+        /// Remove from the user-level plugin manifest.
+        #[arg(long)]
+        global: bool,
     },
     /// List configured plugins.
-    List,
+    List {
+        /// List only user-level plugins.
+        #[arg(long)]
+        global: bool,
+    },
     /// Re-resolve plugins (ignoring existing pins), updating the lockfile.
     Update {
         /// An optional single plugin (id or source) to update.
         id: Option<String>,
+        /// Update user-level plugins.
+        #[arg(long)]
+        global: bool,
     },
     /// Search GitHub for `rpp-plugin`-topic repositories.
     Search {
@@ -56,18 +76,64 @@ pub fn run(dir: &Path, command: PluginCommand) -> Result<()> {
             source,
             r#ref,
             subdir,
-        } => add(dir, &source, r#ref.as_deref(), subdir.as_deref()),
-        PluginCommand::Remove { id } => remove(dir, &id),
-        PluginCommand::List => list(dir),
-        PluginCommand::Update { id } => update(dir, id.as_deref()),
+            global,
+            project,
+        } => add(
+            dir,
+            &source,
+            r#ref.as_deref(),
+            subdir.as_deref(),
+            install_scope(global, project)?,
+        ),
+        PluginCommand::Remove { id, global } => remove(dir, &id, global),
+        PluginCommand::List { global } => list(dir, global),
+        PluginCommand::Update { id, global } => update(dir, id.as_deref(), global),
         PluginCommand::Search { query } => run_search(&query),
     }
 }
 
-fn add(dir: &Path, source: &str, ref_: Option<&str>, subdir: Option<&str>) -> Result<()> {
-    let project = Project::discover(dir)?;
+#[derive(Clone, Copy)]
+enum InstallScope {
+    Project,
+    Global,
+}
 
-    let parsed = PluginSource::parse(source, ref_, subdir)
+fn install_scope(global: bool, project: bool) -> Result<InstallScope> {
+    if global {
+        return Ok(InstallScope::Global);
+    }
+    if project || !std::io::stdin().is_terminal() {
+        return Ok(InstallScope::Project);
+    }
+    let selection = Select::with_theme(&ColorfulTheme::default())
+        .with_prompt("Where should this plugin be installed?")
+        .items(&["This project", "Globally for this user"])
+        .default(0)
+        .interact()?;
+    Ok(if selection == 0 {
+        InstallScope::Project
+    } else {
+        InstallScope::Global
+    })
+}
+
+fn add(
+    dir: &Path,
+    source: &str,
+    ref_: Option<&str>,
+    subdir: Option<&str>,
+    scope: InstallScope,
+) -> Result<()> {
+    match scope {
+        InstallScope::Project => add_project(dir, source, ref_, subdir),
+        InstallScope::Global => add_global(dir, source, ref_, subdir),
+    }
+}
+
+fn add_project(dir: &Path, source: &str, ref_: Option<&str>, subdir: Option<&str>) -> Result<()> {
+    let project = Project::discover(dir)?;
+    let source = normalize_source(source, dir)?;
+    let parsed = PluginSource::parse(&source, ref_, subdir)
         .with_context(|| format!("invalid plugin source `{source}`"))?;
     let canonical = parsed.canonical();
 
@@ -86,7 +152,7 @@ fn add(dir: &Path, source: &str, ref_: Option<&str>, subdir: Option<&str>) -> Re
     let updated = add_plugin(
         &text,
         PluginEntry {
-            source: source.to_string(),
+            source: source.clone(),
             r#ref: ref_.map(str::to_string),
             subdir: subdir.map(str::to_string),
         },
@@ -100,11 +166,90 @@ fn add(dir: &Path, source: &str, ref_: Option<&str>, subdir: Option<&str>) -> Re
     }
     std::fs::write(&config_path, &updated)?;
 
-    ui::success(format!("Added plugin `{id}` v{version}"));
+    ui::success(format!("Added project plugin `{id}` v{version}"));
     Ok(())
 }
 
-fn remove(dir: &Path, id_or_source: &str) -> Result<()> {
+fn add_global(dir: &Path, source: &str, ref_: Option<&str>, subdir: Option<&str>) -> Result<()> {
+    let user = UserPlugins::load()?;
+    let source = normalize_source(source, dir)?;
+    let parsed = PluginSource::parse(&source, ref_, subdir)
+        .with_context(|| format!("invalid plugin source `{source}`"))?;
+    let resolver_root = absolute_dir(dir)?;
+    let resolver = Resolver::new(&resolver_root).context("initializing resolver")?;
+    let mut lock = user.lockfile()?;
+    let canonical = parsed.canonical();
+    let resolved = resolver
+        .resolve(&parsed, lock.get_for(&canonical, ref_, subdir))
+        .with_context(|| format!("resolving plugin `{source}`"))?;
+    let (id, version) = validate_plugin_dir(&resolved.root)?;
+
+    let installed_source = if matches!(parsed, PluginSource::Path { .. }) {
+        format!("path:plugins/{id}")
+    } else {
+        source
+    };
+    let text = user.manifest_text()?;
+    let updated = add_plugin(
+        &text,
+        PluginEntry {
+            source: installed_source,
+            r#ref: ref_.map(str::to_string),
+            subdir: subdir.map(str::to_string),
+        },
+    )?;
+
+    user.ensure_root()?;
+    if matches!(parsed, PluginSource::Path { .. }) {
+        copy_plugin_dir(&resolved.root, &user.plugin_dir(&id))?;
+    }
+    if resolved.pinned.is_some() {
+        lock.record_resolved(&parsed, &resolved);
+        lock.save(&user.lock_path())?;
+    }
+    std::fs::write(user.manifest_path(), updated)?;
+
+    ui::success(format!("Installed global plugin `{id}` v{version}"));
+    Ok(())
+}
+
+fn normalize_source(source: &str, dir: &Path) -> Result<String> {
+    if source.starts_with("path:") || source.starts_with("github:") {
+        return Ok(source.to_string());
+    }
+
+    let base = absolute_dir(dir)?;
+    let candidate = PathBuf::from(source);
+    let resolved = if candidate.is_absolute() {
+        candidate
+    } else {
+        base.join(candidate)
+    };
+    if !resolved.is_dir() {
+        anyhow::bail!(
+            "plugin source `{source}` is neither `path:...`, `github:owner/repo`, nor a directory"
+        );
+    }
+    let resolved = resolved
+        .canonicalize()
+        .with_context(|| format!("canonicalizing {}", resolved.display()))?;
+    Ok(format!("path:{}", resolved.display()))
+}
+
+fn absolute_dir(dir: &Path) -> Result<PathBuf> {
+    if dir.is_absolute() {
+        Ok(dir.to_path_buf())
+    } else {
+        Ok(std::env::current_dir()
+            .context("reading current directory")?
+            .join(dir))
+    }
+}
+
+fn remove(dir: &Path, id_or_source: &str, global: bool) -> Result<()> {
+    if global {
+        return remove_global(id_or_source);
+    }
     let project = Project::discover(dir)?;
     let config_path = project.config_path();
     let text = std::fs::read_to_string(&config_path)?;
@@ -141,17 +286,89 @@ fn remove(dir: &Path, id_or_source: &str) -> Result<()> {
     Ok(())
 }
 
-fn list(dir: &Path) -> Result<()> {
-    let project = Project::discover(dir)?;
-    let lock = Lockfile::load(&project.lock_path())?;
+fn remove_global(id_or_source: &str) -> Result<()> {
+    let user = UserPlugins::load()?;
+    let text = user.manifest_text()?;
+    let mut lock = user.lockfile()?;
+    let resolver = Resolver::new(&user.root).context("initializing resolver")?;
+    let plugin = find_plugin_in(&user.plugins, id_or_source, &lock, &resolver)?
+        .ok_or_else(|| anyhow!("no global plugin matching `{id_or_source}` found"))?;
+    let meta = resolve_plugin_meta(plugin, &lock, &resolver)?;
+    let (updated, removed_source) = remove_plugin(&text, &plugin.source, &user.root)?;
+    let removed_source = removed_source
+        .ok_or_else(|| anyhow!("no global plugin matching `{id_or_source}` found"))?;
+    std::fs::write(user.manifest_path(), updated)?;
 
-    if project.config.plugins.is_empty() {
+    if let Ok(parsed) = PluginSource::parse(
+        &removed_source,
+        plugin.r#ref.as_deref(),
+        plugin.subdir.as_deref(),
+    ) {
+        if lock
+            .remove_for(
+                &parsed.canonical(),
+                plugin.r#ref.as_deref(),
+                plugin.subdir.as_deref(),
+            )
+            .is_some()
+        {
+            lock.save(&user.lock_path())?;
+        }
+    }
+    if let Some(meta) = meta {
+        let installed = user.plugin_dir(&meta.id);
+        if removed_source == format!("path:plugins/{}", meta.id) && installed.is_dir() {
+            std::fs::remove_dir_all(&installed)
+                .with_context(|| format!("removing {}", installed.display()))?;
+        }
+    }
+
+    ui::success(format!("Removed global plugin `{id_or_source}`"));
+    Ok(())
+}
+
+fn list(dir: &Path, global_only: bool) -> Result<()> {
+    if global_only {
+        let user = UserPlugins::load()?;
+        return list_plugins(&user.plugins, &user.lock_path(), &user.root, "global");
+    }
+    let project = Project::discover(dir)?;
+    if project.user_plugins.plugins.is_empty() && project.config.plugins.is_empty() {
         ui::detail("no plugins configured");
         return Ok(());
     }
+    if !project.user_plugins.plugins.is_empty() {
+        list_plugins(
+            &project.user_plugins.plugins,
+            &project.user_plugins.lock_path(),
+            &project.user_plugins.root,
+            "global",
+        )?;
+    }
+    if !project.config.plugins.is_empty() {
+        list_plugins(
+            &project.config.plugins,
+            &project.lock_path(),
+            &project.root,
+            "project",
+        )?;
+    }
+    Ok(())
+}
 
-    let resolver = Resolver::new(&project.root).context("initializing resolver")?;
-    for plugin in &project.config.plugins {
+fn list_plugins(
+    plugins: &[PluginConfig],
+    lock_path: &Path,
+    resolver_root: &Path,
+    scope: &str,
+) -> Result<()> {
+    if plugins.is_empty() {
+        ui::detail(format!("no {scope} plugins configured"));
+        return Ok(());
+    }
+    let lock = Lockfile::load(lock_path)?;
+    let resolver = Resolver::new(resolver_root).context("initializing resolver")?;
+    for plugin in plugins {
         let parsed = PluginSource::parse(
             &plugin.source,
             plugin.r#ref.as_deref(),
@@ -174,25 +391,42 @@ fn list(dir: &Path) -> Result<()> {
             None => "(unresolved)".to_string(),
         };
         match pin {
-            Some(pin) => println!("  {id_ver}  [{}]  pin={pin}", plugin.source),
-            None => println!("  {id_ver}  [{}]", plugin.source),
+            Some(pin) => println!("  {id_ver}  [{scope}: {}]  pin={pin}", plugin.source),
+            None => println!("  {id_ver}  [{scope}: {}]", plugin.source),
         }
     }
     Ok(())
 }
 
-fn update(dir: &Path, id_or_source: Option<&str>) -> Result<()> {
+fn update(dir: &Path, id_or_source: Option<&str>, global: bool) -> Result<()> {
+    if global {
+        let user = UserPlugins::load()?;
+        return update_plugins(&user.plugins, &user.root, &user.lock_path(), id_or_source);
+    }
     let project = Project::discover(dir)?;
-    let resolver = Resolver::new(&project.root).context("initializing resolver")?;
-    let lock_path = project.lock_path();
-    let mut lock = Lockfile::load(&lock_path)?;
+    update_plugins(
+        &project.config.plugins,
+        &project.root,
+        &project.lock_path(),
+        id_or_source,
+    )
+}
+
+fn update_plugins(
+    plugins: &[PluginConfig],
+    resolver_root: &Path,
+    lock_path: &Path,
+    id_or_source: Option<&str>,
+) -> Result<()> {
+    let resolver = Resolver::new(resolver_root).context("initializing resolver")?;
+    let mut lock = Lockfile::load(lock_path)?;
     let mut changed = 0usize;
     let mut matched = false;
 
-    for plugin in &project.config.plugins {
+    for plugin in plugins {
         if let Some(target) = id_or_source {
             let matches = plugin.source == target
-                || find_plugin_by_id_or_source(&project, target, &lock, &resolver)?
+                || find_plugin_in(plugins, target, &lock, &resolver)?
                     .is_some_and(|p| p.source == plugin.source);
             if !matches {
                 continue;
@@ -230,7 +464,7 @@ fn update(dir: &Path, id_or_source: Option<&str>) -> Result<()> {
     }
 
     if changed > 0 {
-        lock.save(&lock_path)?;
+        lock.save(lock_path)?;
     }
     if id_or_source.is_some() && !matched {
         return Err(anyhow!(
@@ -243,6 +477,25 @@ fn update(dir: &Path, id_or_source: Option<&str>) -> Result<()> {
         if changed == 1 { "" } else { "s" }
     ));
     Ok(())
+}
+
+fn find_plugin_in<'a>(
+    plugins: &'a [PluginConfig],
+    id_or_source: &str,
+    lock: &Lockfile,
+    resolver: &Resolver,
+) -> Result<Option<&'a PluginConfig>> {
+    for plugin in plugins {
+        if plugin.source == id_or_source {
+            return Ok(Some(plugin));
+        }
+        if let Some(meta) = resolve_plugin_meta(plugin, lock, resolver)? {
+            if meta.id == id_or_source || meta.canonical == id_or_source {
+                return Ok(Some(plugin));
+            }
+        }
+    }
+    Ok(None)
 }
 
 fn run_search(query: &str) -> Result<()> {

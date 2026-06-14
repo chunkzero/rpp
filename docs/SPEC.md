@@ -94,6 +94,20 @@ subdir = "plugins/atlas"                  # optional path within the repo
 - `path:<relative-or-absolute-dir>` — local plugin package directory.
 - `github:<owner>/<repo>` — GitHub repository (optionally with `ref` and `subdir` keys).
 
+The CLI also accepts a bare plugin package directory for `rpp plugin add` and
+normalizes it to a `path:` source.
+
+### User-level plugins
+
+`rpp plugin add` prompts whether to install into the current project or globally
+for the current user. `--project` and `--global` select the scope non-interactively.
+Global plugin entries live in `~/.rpp/plugins.toml`, with GitHub pins in
+`~/.rpp/plugins.lock`. Directory sources are copied into `~/.rpp/plugins/<id>` so
+they can be used from unrelated projects without retaining a relative source path.
+
+Global plugins are loaded before project plugins. A project plugin with the same
+plugin id overrides the global plugin.
+
 ## 2. Plugin manifest: `plugin.toml`
 
 A **plugin is a directory** ("plugin package") containing `plugin.toml`:
@@ -449,9 +463,10 @@ pub fn run_packsquash(binary: &str, pack_dir: &Path, zip_path: &Path, options_fi
   live-reload events listing changed paths. Plugin file changes reload that plugin and
   invalidate accordingly; rpp.toml changes do a full reload.
 - `rpp clean` — remove output + cache.
-- `rpp plugin add <source> [--ref r] [--subdir d]` / `remove <id>` / `list` /
-  `update [id]` / `search <query>` — manages `[[plugin]]` entries (toml_edit, preserve
-  formatting) + `rpp.lock`.
+- `rpp plugin add <source> [--ref r] [--subdir d] [--project|--global]` /
+  `remove <id> [--global]` / `list [--global]` /
+  `update [id] [--global]` / `search <query>` — manages `[[plugin]]` entries
+  (toml_edit, preserve formatting) and the corresponding lockfile.
 
 ## 10. Examples (must actually work)
 

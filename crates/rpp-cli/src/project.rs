@@ -19,6 +19,8 @@ use rpp::wasm::WasmPluginFactory;
 use rpp_fetch::{Lockfile, Pin, PluginSource, Resolver};
 use rpp_wasm::WasmEngine;
 
+use crate::user_plugins::UserPlugins;
+
 /// The config file name.
 pub const CONFIG_FILE: &str = "rpp.toml";
 /// The lockfile name.
@@ -31,6 +33,8 @@ pub struct Project {
     pub root: PathBuf,
     /// The parsed configuration.
     pub config: Config,
+    /// User-level plugins loaded from `~/.rpp/plugins.toml`.
+    pub user_plugins: UserPlugins,
 }
 
 /// Resolved plugin identity for list/remove/update matching.
@@ -59,7 +63,12 @@ impl Project {
         let config_path = root.join(CONFIG_FILE);
         let config = Config::load(&config_path)
             .with_context(|| format!("loading {}", config_path.display()))?;
-        Ok(Project { root, config })
+        let user_plugins = UserPlugins::load()?;
+        Ok(Project {
+            root,
+            config,
+            user_plugins,
+        })
     }
 
     /// Path to `rpp.toml`.
@@ -118,100 +127,164 @@ impl Project {
 
     /// Resolve and load every configured plugin into a factory, in order.
     fn resolve_factories(&self, wasm_engine: Option<WasmEngine>) -> Result<ResolvedFactories> {
-        let resolver = Resolver::new(&self.root).context("initializing the plugin resolver")?;
-        let lock_path = self.lock_path();
-        let mut lockfile = Lockfile::load(&lock_path)
-            .with_context(|| format!("reading {}", lock_path.display()))?;
-        let mut lock_dirty = false;
+        let global_resolver = Resolver::new(&self.user_plugins.root)
+            .context("initializing the global plugin resolver")?;
+        let project_resolver =
+            Resolver::new(&self.root).context("initializing the project plugin resolver")?;
+        let global_lock_path = self.user_plugins.lock_path();
+        let project_lock_path = self.lock_path();
+        let mut global_lock = Lockfile::load(&global_lock_path)
+            .with_context(|| format!("reading {}", global_lock_path.display()))?;
+        let mut project_lock = Lockfile::load(&project_lock_path)
+            .with_context(|| format!("reading {}", project_lock_path.display()))?;
+        let mut global_lock_dirty = false;
+        let mut project_lock_dirty = false;
 
-        let mut factories: Vec<Arc<dyn PluginFactory>> = Vec::new();
+        let mut factories: Vec<LoadedFactory> = Vec::new();
         let mut shared_wasm = wasm_engine;
 
-        for plugin_cfg in &self.config.plugins {
-            let source = PluginSource::parse(
-                &plugin_cfg.source,
-                plugin_cfg.r#ref.as_deref(),
-                plugin_cfg.subdir.as_deref(),
-            )
-            .with_context(|| format!("invalid plugin source `{}`", plugin_cfg.source))?;
-
-            let canonical = source.canonical();
-            let locked = lockfile
-                .get_for(
-                    &canonical,
-                    plugin_cfg.r#ref.as_deref(),
-                    plugin_cfg.subdir.as_deref(),
-                )
-                .cloned();
-            let resolved = resolver
-                .resolve(&source, locked.as_ref())
-                .with_context(|| format!("resolving plugin `{}`", plugin_cfg.source))?;
-
-            if let Some(pinned) = &resolved.pinned {
-                let prev = lockfile.record_resolved(&source, &resolved);
-                if pin_changed(prev.as_ref(), pinned, plugin_cfg.subdir.as_deref()) {
-                    lock_dirty = true;
-                }
+        for plugin_cfg in &self.user_plugins.plugins {
+            let loaded = self.resolve_factory(
+                plugin_cfg,
+                &global_resolver,
+                &mut global_lock,
+                &mut global_lock_dirty,
+                &mut shared_wasm,
+                PluginScope::Global,
+            )?;
+            if factories.iter().any(|existing| existing.id == loaded.id) {
+                bail!(
+                    "global plugin id `{}` is configured more than once",
+                    loaded.id
+                );
             }
-
-            let manifest = PluginManifest::load(&resolved.root).with_context(|| {
-                format!(
-                    "reading plugin manifest for `{}` at {}",
-                    plugin_cfg.source,
-                    resolved.root.display()
-                )
-            })?;
-
-            let factory: Arc<dyn PluginFactory> = match manifest.runtime {
-                Runtime::Lua => {
-                    let limits = rpp::lua::LuaPluginFactory::limits_from_build(&self.config.build);
-                    Arc::new(
-                        LuaPluginFactory::load_with_limits(
-                            &resolved.root,
-                            plugin_cfg.options.clone(),
-                            self.config.pack.name.clone(),
-                            self.config.pack.description.clone(),
-                            self.config.pack.pack_format,
-                            limits,
-                        )
-                        .with_context(|| format!("loading Lua plugin `{}`", manifest.id))?,
-                    )
-                }
-                Runtime::Wasm => {
-                    let engine = match &shared_wasm {
-                        Some(e) => e.clone(),
-                        None => {
-                            let e = WasmEngine::new()
-                                .map_err(|e| anyhow!("initializing the wasm engine: {e}"))?;
-                            shared_wasm = Some(e.clone());
-                            e
-                        }
-                    };
-                    Arc::new(
-                        WasmPluginFactory::load(
-                            &engine,
-                            &resolved.root,
-                            &manifest,
-                            plugin_cfg.options.clone(),
-                        )
-                        .with_context(|| format!("loading WASM plugin `{}`", manifest.id))?,
-                    )
-                }
-            };
-
-            factories.push(factory);
+            factories.push(loaded);
         }
 
-        if lock_dirty {
-            lockfile
-                .save(&lock_path)
-                .with_context(|| format!("writing {}", lock_path.display()))?;
+        for plugin_cfg in &self.config.plugins {
+            let loaded = self.resolve_factory(
+                plugin_cfg,
+                &project_resolver,
+                &mut project_lock,
+                &mut project_lock_dirty,
+                &mut shared_wasm,
+                PluginScope::Project,
+            )?;
+            if let Some(index) = factories
+                .iter()
+                .position(|existing| existing.id == loaded.id)
+            {
+                if factories[index].scope == PluginScope::Project {
+                    bail!(
+                        "project plugin id `{}` is configured more than once",
+                        loaded.id
+                    );
+                }
+                factories.remove(index);
+            }
+            factories.push(loaded);
+        }
+
+        if global_lock_dirty {
+            self.user_plugins.ensure_root()?;
+            global_lock
+                .save(&global_lock_path)
+                .with_context(|| format!("writing {}", global_lock_path.display()))?;
+        }
+        if project_lock_dirty {
+            project_lock
+                .save(&project_lock_path)
+                .with_context(|| format!("writing {}", project_lock_path.display()))?;
         }
 
         Ok(ResolvedFactories {
-            factories,
+            factories: factories.into_iter().map(|loaded| loaded.factory).collect(),
             wasm_engine: shared_wasm,
         })
+    }
+
+    fn resolve_factory(
+        &self,
+        plugin_cfg: &PluginConfig,
+        resolver: &Resolver,
+        lockfile: &mut Lockfile,
+        lock_dirty: &mut bool,
+        shared_wasm: &mut Option<WasmEngine>,
+        scope: PluginScope,
+    ) -> Result<LoadedFactory> {
+        let source = PluginSource::parse(
+            &plugin_cfg.source,
+            plugin_cfg.r#ref.as_deref(),
+            plugin_cfg.subdir.as_deref(),
+        )
+        .with_context(|| format!("invalid plugin source `{}`", plugin_cfg.source))?;
+
+        let canonical = source.canonical();
+        let locked = lockfile
+            .get_for(
+                &canonical,
+                plugin_cfg.r#ref.as_deref(),
+                plugin_cfg.subdir.as_deref(),
+            )
+            .cloned();
+        let resolved = resolver
+            .resolve(&source, locked.as_ref())
+            .with_context(|| format!("resolving plugin `{}`", plugin_cfg.source))?;
+
+        if let Some(pinned) = &resolved.pinned {
+            let prev = lockfile.record_resolved(&source, &resolved);
+            if pin_changed(prev.as_ref(), pinned, plugin_cfg.subdir.as_deref()) {
+                *lock_dirty = true;
+            }
+        }
+
+        let manifest = PluginManifest::load(&resolved.root).with_context(|| {
+            format!(
+                "reading plugin manifest for `{}` at {}",
+                plugin_cfg.source,
+                resolved.root.display()
+            )
+        })?;
+        let id = manifest.id.clone();
+
+        let factory: Arc<dyn PluginFactory> = match manifest.runtime {
+            Runtime::Lua => {
+                let limits = rpp::lua::LuaPluginFactory::limits_from_build(&self.config.build);
+                Arc::new(
+                    LuaPluginFactory::load_with_limits(
+                        &resolved.root,
+                        plugin_cfg.options.clone(),
+                        self.config.pack.name.clone(),
+                        self.config.pack.description.clone(),
+                        self.config.pack.pack_format,
+                        limits,
+                    )
+                    .with_context(|| format!("loading Lua plugin `{}`", manifest.id))?,
+                )
+            }
+            Runtime::Wasm => {
+                let engine = match shared_wasm {
+                    Some(engine) => engine.clone(),
+                    None => {
+                        let engine = WasmEngine::new()
+                            .map_err(|error| anyhow!("initializing the wasm engine: {error}"))?;
+                        *shared_wasm = Some(engine.clone());
+                        engine
+                    }
+                };
+                Arc::new(
+                    WasmPluginFactory::load(
+                        &engine,
+                        &resolved.root,
+                        &manifest,
+                        plugin_cfg.options.clone(),
+                    )
+                    .with_context(|| format!("loading WASM plugin `{}`", manifest.id))?,
+                )
+            }
+        };
+
+        Ok(LoadedFactory { id, factory, scope })
     }
 
     /// The absolute output directory.
@@ -289,6 +362,18 @@ pub fn find_plugin_by_id_or_source<'a>(
 struct ResolvedFactories {
     factories: Vec<Arc<dyn PluginFactory>>,
     wasm_engine: Option<WasmEngine>,
+}
+
+struct LoadedFactory {
+    id: String,
+    factory: Arc<dyn PluginFactory>,
+    scope: PluginScope,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PluginScope {
+    Global,
+    Project,
 }
 
 /// Whether a freshly-resolved pin differs from what the lockfile recorded.

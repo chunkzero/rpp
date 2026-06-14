@@ -12,6 +12,16 @@ fn rpp_bin() -> &'static str {
 fn run(root: &Path, args: &[&str]) -> std::process::Output {
     Command::new(rpp_bin())
         .current_dir(root)
+        .env("RPP_HOME", root.join(".test-rpp-home"))
+        .args(args)
+        .output()
+        .expect("run rpp")
+}
+
+fn run_with_home(root: &Path, home: &Path, args: &[&str]) -> std::process::Output {
+    Command::new(rpp_bin())
+        .current_dir(root)
+        .env("RPP_HOME", home)
         .args(args)
         .output()
         .expect("run rpp")
@@ -95,4 +105,109 @@ fn add_rejects_duplicate() {
     let out = run(root, &["plugin", "add", "path:plugins/a"]);
     assert!(!out.status.success(), "duplicate add should fail");
     assert!(String::from_utf8_lossy(&out.stderr).contains("already configured"));
+}
+
+#[test]
+fn add_accepts_bare_directory_source() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    scaffold(root);
+
+    let out = run(root, &["plugin", "add", "plugins/b", "--project"]);
+    assert!(
+        out.status.success(),
+        "add failed:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let toml = std::fs::read_to_string(root.join("rpp.toml")).unwrap();
+    assert!(toml.contains("source = \"path:"));
+    assert!(toml.contains("/plugins/b\""));
+}
+
+#[test]
+fn global_directory_plugin_is_copied_and_project_plugin_overrides_it() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    let home = root.join("home");
+    let global_source = root.join("window");
+    write_text_plugin(&global_source, "shared", "global");
+
+    let install = run_with_home(root, &home, &["plugin", "add", "window", "--global"]);
+    assert!(
+        install.status.success(),
+        "global add failed:\n{}",
+        String::from_utf8_lossy(&install.stderr)
+    );
+    let manifest = std::fs::read_to_string(home.join("plugins.toml")).unwrap();
+    assert!(manifest.contains("source = \"path:plugins/shared\""));
+    assert!(home.join("plugins/shared/init.lua").is_file());
+
+    let project = root.join("project");
+    std::fs::create_dir_all(project.join("src")).unwrap();
+    std::fs::write(project.join("src/value.txt"), "start").unwrap();
+    std::fs::write(
+        project.join("rpp.toml"),
+        "[pack]\nname = \"test\"\n\n[build]\nsource = \"src\"\noutput = \"dist\"\n",
+    )
+    .unwrap();
+
+    let build = run_with_home(&project, &home, &["build", "--no-squash"]);
+    assert!(
+        build.status.success(),
+        "global build failed:\n{}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+    assert_eq!(
+        std::fs::read_to_string(project.join("dist/value.txt")).unwrap(),
+        "global"
+    );
+
+    let local_source = project.join("plugins/local");
+    write_text_plugin(&local_source, "shared", "local");
+    std::fs::write(
+        project.join("rpp.toml"),
+        "[pack]\nname = \"test\"\n\n[build]\nsource = \"src\"\noutput = \"dist\"\n\n\
+         [[plugin]]\nsource = \"path:plugins/local\"\n",
+    )
+    .unwrap();
+
+    let build = run_with_home(&project, &home, &["build", "--no-squash"]);
+    assert!(
+        build.status.success(),
+        "override build failed:\n{}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+    assert_eq!(
+        std::fs::read_to_string(project.join("dist/value.txt")).unwrap(),
+        "local"
+    );
+
+    let remove = run_with_home(&project, &home, &["plugin", "remove", "shared", "--global"]);
+    assert!(
+        remove.status.success(),
+        "global remove failed:\n{}",
+        String::from_utf8_lossy(&remove.stderr)
+    );
+    assert!(!home.join("plugins/shared").exists());
+}
+
+fn write_text_plugin(root: &Path, id: &str, value: &str) {
+    std::fs::create_dir_all(root).unwrap();
+    std::fs::write(
+        root.join("plugin.toml"),
+        format!("[plugin]\nid = \"{id}\"\nversion = \"0.1.0\"\nruntime = \"lua\"\n"),
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("init.lua"),
+        format!(
+            "local rpp = require(\"rpp\")\n\
+             local plugin = rpp.plugin()\n\
+             plugin:processor(\"replace\", {{ files = {{ \"**/*.txt\" }} }}, function(ctx, file)\n\
+                 file.text = \"{value}\"\n\
+             end)\n\
+             return plugin\n"
+        ),
+    )
+    .unwrap();
 }

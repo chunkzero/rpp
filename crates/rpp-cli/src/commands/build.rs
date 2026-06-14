@@ -48,7 +48,7 @@ pub fn run(dir: &Path, args: BuildArgs) -> Result<()> {
 
     ui::phase("Resolving plugins");
     let resolve_start = Instant::now();
-    let plugin_count = project.config.plugins.len();
+    let plugin_count = project.user_plugins.plugins.len() + project.config.plugins.len();
     let engine = project.build_engine()?;
     ui::detail(format!(
         "{plugin_count} plugin{} resolved in {}",

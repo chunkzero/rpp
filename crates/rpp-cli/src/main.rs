@@ -8,6 +8,7 @@ mod commands;
 mod luals;
 mod project;
 mod ui;
+mod user_plugins;
 
 use std::path::PathBuf;
 
