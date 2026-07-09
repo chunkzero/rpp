@@ -235,7 +235,7 @@ fn write_octal(field: &mut [u8], value: u64) {
 }
 
 const SHA: &str = "0123456789abcdef0123456789abcdef01234567";
-const MANIFEST: &[u8] = b"[plugin]\nid = \"atlas\"\nversion = \"1.2.0\"\nruntime = \"lua\"\n";
+const MANIFEST: &[u8] = b"[plugin]\nid = \"atlas\"\nversion = \"1.2.0\"\n";
 
 fn commits_route() -> (String, Canned) {
     let body = serde_json::to_vec(&serde_json::json!({ "sha": SHA })).unwrap();

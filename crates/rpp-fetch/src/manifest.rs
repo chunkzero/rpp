@@ -82,7 +82,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
             dir.path().join(MANIFEST_FILE),
-            "[plugin]\nid = \"json-minify\"\nversion = \"1.2.0\"\nruntime = \"lua\"\n",
+            "[plugin]\nid = \"json-minify\"\nversion = \"1.2.0\"\n",
         )
         .unwrap();
         let summary = parse_manifest_summary(dir.path()).unwrap();

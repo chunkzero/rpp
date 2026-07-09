@@ -45,14 +45,15 @@ fn os_execute_is_unavailable() {
 }
 
 #[test]
-fn os_clock_is_available() {
-    // os.clock is whitelisted; this must succeed.
-    let out = run(
-        &processor_wrap("local _ = os.clock(); file.text = 'ok'"),
-        "",
-    )
-    .unwrap();
-    assert_eq!(out, b"ok");
+fn host_time_is_unavailable_without_a_clock_grant() {
+    let err = run(&processor_wrap("local _ = os.clock()"), "").unwrap_err();
+    assert!(err.contains("os") || err.contains("nil"), "{err}");
+}
+
+#[test]
+fn host_randomness_is_unavailable_without_a_random_grant() {
+    let err = run(&processor_wrap("local _ = math.random()"), "").unwrap_err();
+    assert!(err.contains("random") || err.contains("nil"), "{err}");
 }
 
 #[test]
@@ -149,6 +150,37 @@ return plugin
     let mut file = PackFile::new("x.txt", b"v".to_vec());
     inst.process("t", &mut file).unwrap();
     assert_eq!(file.contents, b"[v]");
+}
+
+#[test]
+fn local_module_diagnostics_use_stable_relative_paths() {
+    let plugin = PluginDir::lua(
+        "stable-diagnostic",
+        r#"
+local rpp = require("rpp")
+local helper = require("helper")
+local plugin = rpp.plugin()
+plugin:processor("t", { files = { "**/*" } }, function()
+    helper.fail()
+end)
+return plugin
+"#,
+    )
+    .with_module(
+        "helper.lua",
+        "return { fail = function() error('broken') end }",
+    );
+
+    let factory = plugin.factory("");
+    let mut instance = factory.instantiate().unwrap();
+    let mut file = PackFile::new("x.txt", Vec::new());
+    let error = instance.process("t", &mut file).unwrap_err().to_string();
+
+    assert!(error.contains("helper.lua"), "{error}");
+    assert!(
+        !error.contains(&plugin.path().display().to_string()),
+        "{error}"
+    );
 }
 
 #[test]
@@ -327,6 +359,24 @@ return rpp.plugin()
     )
     .expect("load");
     assert_eq!(f2.cache_key(), f3.cache_key());
+}
+
+#[test]
+fn cache_key_depends_on_declared_component_bytes() {
+    let plugin = PluginDir::lua(
+        "component-key",
+        "local rpp = require('rpp')\nreturn rpp.plugin()\n",
+    );
+    std::fs::write(
+        plugin.path().join("plugin.toml"),
+        "[plugin]\nid = \"component-key\"\nversion = \"1.0.0\"\n\n[component.compiler]\nmodule = \"compiler.wasm\"\n",
+    )
+    .unwrap();
+    std::fs::write(plugin.path().join("compiler.wasm"), b"first").unwrap();
+    let first = plugin.factory("").cache_key();
+    std::fs::write(plugin.path().join("compiler.wasm"), b"second").unwrap();
+    let second = plugin.factory("").cache_key();
+    assert_ne!(first, second);
 }
 
 #[test]

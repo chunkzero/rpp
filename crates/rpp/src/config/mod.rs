@@ -6,6 +6,7 @@
 
 mod source;
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -227,8 +228,12 @@ impl Default for DevConfig {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct PluginConfig {
+    /// Global plugin id to use for this project.
+    #[serde(default)]
+    pub id: Option<String>,
     /// Source descriptor (`path:...` or `github:owner/repo`).
-    pub source: String,
+    #[serde(default)]
+    pub source: Option<String>,
     /// Optional git ref (tag/branch/sha) for GitHub sources.
     #[serde(default)]
     pub r#ref: Option<String>,
@@ -238,6 +243,77 @@ pub struct PluginConfig {
     /// Arbitrary options passed to the plugin.
     #[serde(default = "empty_table")]
     pub options: toml::Value,
+    /// Security boundary used for this plugin.
+    #[serde(default)]
+    pub security: SecurityMode,
+    /// Explicit host capabilities granted to this plugin.
+    #[serde(default)]
+    pub permissions: PluginPermissions,
+    /// Named project-relative output roots for generated non-pack artifacts.
+    #[serde(default)]
+    pub outputs: BTreeMap<String, PathBuf>,
+}
+
+/// The strength of the plugin sandbox.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SecurityMode {
+    /// Pure processors and generator access only through tracked RPP APIs.
+    #[default]
+    Sandboxed,
+    /// Explicit host capabilities are enabled while resource limits remain active.
+    Trusted,
+    /// Full Lua standard library and arbitrary host access; no sandbox guarantee.
+    Native,
+}
+
+/// Capabilities granted by a `[[plugin]]` configuration entry.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PluginPermissions {
+    /// Executable names or absolute paths accepted by `rpp.process.run`.
+    #[serde(default)]
+    pub process: Vec<String>,
+    /// Environment variable names visible to process calls and WASI components.
+    #[serde(default)]
+    pub environment: Vec<String>,
+    /// Project-relative directories made readable to WASI components.
+    #[serde(default)]
+    pub read: Vec<PathBuf>,
+    /// Project-relative directories made writable to WASI components.
+    #[serde(default)]
+    pub write: Vec<PathBuf>,
+    /// Permit WASI sockets.
+    #[serde(default)]
+    pub network: bool,
+    /// Permit WASI clocks and Lua's restricted `os.clock`/`time`/`date` table.
+    #[serde(default)]
+    pub clocks: bool,
+    /// Permit host-backed WASI randomness and Lua's `math.random` functions.
+    #[serde(default)]
+    pub random: bool,
+    /// Permit inherited WASI stdout/stderr.
+    #[serde(default)]
+    pub stdio: bool,
+    /// Additional Lua standard-library capabilities in trusted mode.
+    #[serde(default)]
+    pub lua: Vec<LuaCapability>,
+}
+
+/// Additional Lua facilities available only to trusted/native plugins.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum LuaCapability {
+    /// The `io` standard library.
+    Io,
+    /// Full `os` standard library, including `os.execute`.
+    Os,
+    /// Dynamic Lua loading (`load`, `loadfile`, and `dofile`).
+    Load,
+    /// The debug standard library.
+    Debug,
+    /// Lua package search paths, excluding native modules.
+    Package,
 }
 
 /// An empty TOML table; the default for plugin options.
@@ -247,8 +323,18 @@ pub(crate) fn empty_table() -> toml::Value {
 
 impl PluginConfig {
     /// Parse [`Self::source`] into a structured [`PluginSourceSpec`].
-    pub fn parse_source(&self) -> std::result::Result<PluginSourceSpec, SourceParseError> {
-        PluginSourceSpec::parse(&self.source, self.r#ref.as_deref(), self.subdir.as_deref())
+    pub fn parse_source(&self) -> Option<std::result::Result<PluginSourceSpec, SourceParseError>> {
+        self.source.as_ref().map(|source| {
+            PluginSourceSpec::parse(source, self.r#ref.as_deref(), self.subdir.as_deref())
+        })
+    }
+
+    /// Human-readable identity for diagnostics.
+    pub fn label(&self) -> &str {
+        self.source
+            .as_deref()
+            .or(self.id.as_deref())
+            .unwrap_or("<unnamed>")
     }
 }
 
@@ -300,12 +386,8 @@ impl Config {
             }
         }
         for plugin in &self.plugins {
-            if let Err(e) = plugin.parse_source() {
-                return Err(Error::Config {
-                    path: path.to_path_buf(),
-                    message: format!("plugin source `{}`: {e}", plugin.source),
-                });
-            }
+            validate_plugin_identity(plugin, path)?;
+            validate_plugin_security(plugin, path)?;
         }
 
         if self.build.lua.memory_limit_mb == 0 {
@@ -331,6 +413,111 @@ impl Config {
 
         Ok(())
     }
+}
+
+fn validate_plugin_identity(plugin: &PluginConfig, path: &Path) -> Result<()> {
+    match (plugin.id.as_deref(), plugin.source.as_deref()) {
+        (Some(id), None) if valid_plugin_id_ref(id) => Ok(()),
+        (Some(id), None) => Err(Error::Config {
+            path: path.to_path_buf(),
+            message: format!("plugin id `{id}` is invalid"),
+        }),
+        (None, Some(source)) => {
+            if let Err(e) =
+                PluginSourceSpec::parse(source, plugin.r#ref.as_deref(), plugin.subdir.as_deref())
+            {
+                return Err(Error::Config {
+                    path: path.to_path_buf(),
+                    message: format!("plugin source `{source}`: {e}"),
+                });
+            }
+            Ok(())
+        }
+        (Some(_), Some(_)) => Err(Error::Config {
+            path: path.to_path_buf(),
+            message: "plugin entries must set either `id` or `source`, not both".into(),
+        }),
+        (None, None) => Err(Error::Config {
+            path: path.to_path_buf(),
+            message: "plugin entries must set either `id` or `source`".into(),
+        }),
+    }
+}
+
+fn valid_plugin_id_ref(id: &str) -> bool {
+    !id.is_empty()
+        && id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'))
+}
+
+fn validate_plugin_security(plugin: &PluginConfig, path: &Path) -> Result<()> {
+    let permissions = &plugin.permissions;
+    let has_permissions = !permissions.process.is_empty()
+        || !permissions.environment.is_empty()
+        || !permissions.read.is_empty()
+        || !permissions.write.is_empty()
+        || permissions.network
+        || permissions.clocks
+        || permissions.random
+        || permissions.stdio
+        || !permissions.lua.is_empty();
+    if plugin.security == SecurityMode::Sandboxed && has_permissions {
+        return Err(Error::Config {
+            path: path.to_path_buf(),
+            message: format!(
+                "plugin `{}` grants permissions but uses `security = \"sandboxed\"`",
+                plugin.label()
+            ),
+        });
+    }
+
+    for (label, values) in [
+        ("permissions.read", &permissions.read),
+        ("permissions.write", &permissions.write),
+    ] {
+        for value in values {
+            validate_project_relative(value).map_err(|message| Error::Config {
+                path: path.to_path_buf(),
+                message: format!("plugin `{}` {label}: {message}", plugin.label()),
+            })?;
+        }
+    }
+    for (name, output) in &plugin.outputs {
+        if name.is_empty()
+            || !name
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+        {
+            return Err(Error::Config {
+                path: path.to_path_buf(),
+                message: format!(
+                    "plugin `{}` has invalid output name `{name}`",
+                    plugin.label()
+                ),
+            });
+        }
+        validate_project_relative(output).map_err(|message| Error::Config {
+            path: path.to_path_buf(),
+            message: format!("plugin `{}` output `{name}`: {message}", plugin.label()),
+        })?;
+    }
+    Ok(())
+}
+
+fn validate_project_relative(path: &Path) -> std::result::Result<(), &'static str> {
+    if path.as_os_str().is_empty() || path.is_absolute() {
+        return Err("path must be project-relative");
+    }
+    if path.components().any(|component| {
+        !matches!(
+            component,
+            std::path::Component::Normal(_) | std::path::Component::ParentDir
+        )
+    }) {
+        return Err("path must be normalized");
+    }
+    Ok(())
 }
 
 fn validate_pack_format_mcmeta(
@@ -463,13 +650,25 @@ subdir = "plugins/atlas"
         assert_eq!(cfg.dev.host, "0.0.0.0");
         assert_eq!(cfg.plugins.len(), 2);
         assert!(matches!(
-            cfg.plugins[0].parse_source().unwrap(),
+            cfg.plugins[0].parse_source().unwrap().unwrap(),
             PluginSourceSpec::Path { .. }
         ));
         assert!(matches!(
-            cfg.plugins[1].parse_source().unwrap(),
+            cfg.plugins[1].parse_source().unwrap().unwrap(),
             PluginSourceSpec::GitHub { .. }
         ));
+    }
+
+    #[test]
+    fn parses_global_plugin_reference() {
+        let cfg = Config::parse(
+            "[pack]\nname = \"demo\"\n[[plugin]]\nid = \"window\"\nsecurity = \"trusted\"\n",
+            "rpp.toml",
+        )
+        .unwrap();
+        assert_eq!(cfg.plugins[0].id.as_deref(), Some("window"));
+        assert!(cfg.plugins[0].source.is_none());
+        assert!(cfg.plugins[0].parse_source().is_none());
     }
 
     #[test]

@@ -1,0 +1,6 @@
+package test:process;
+
+world process-test {
+    import rpp:host/process@0.1.0;
+    export run-echo: func(program: string) -> result<string, string>;
+}

@@ -3,5 +3,4 @@ id = "hash-rename"
 version = "1.0.0"
 description = "Renames matching files to include an 8-char content hash, and emits a rename map."
 authors = ["rpp examples"]
-runtime = "lua"
 entry = "init.lua"

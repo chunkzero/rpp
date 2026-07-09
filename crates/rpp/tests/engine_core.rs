@@ -183,11 +183,13 @@ fn generator_cache_replay_does_not_increment_generated() {
     project.write_src("a.txt", "a");
 
     let plugin = Arc::new(
-        MockFactory::new("gen", cache_key("gen"), |_, _file| ProcessOutcome::Unchanged)
-            .with_generator(|host| {
-                host.emit("out.txt", b"1".to_vec());
-                Ok(())
-            }),
+        MockFactory::new("gen", cache_key("gen"), |_, _file| {
+            ProcessOutcome::Unchanged
+        })
+        .with_generator(|host| {
+            host.emit("out.txt", b"1".to_vec());
+            Ok(())
+        }),
     );
 
     let first = build(&project, vec![plugin.clone()]);
@@ -196,6 +198,43 @@ fn generator_cache_replay_does_not_increment_generated() {
     let second = build(&project, vec![plugin]);
     assert_eq!(second.generated, 0);
     assert_eq!(project.read_out("out.txt").as_deref(), Some("1"));
+}
+
+#[test]
+fn raw_source_list_is_sorted_and_invalidates_generator_cache() {
+    let project = Project::new();
+    project.write_src("window/z.lua", "z");
+    project.write_src("window/a.lua", "a");
+
+    let plugin = Arc::new(
+        MockFactory::new("sources", cache_key("sources"), |_, _file| {
+            ProcessOutcome::Dropped
+        })
+        .with_generator(|host| {
+            let files = host.list_source_files(Some("window/**"));
+            host.emit("sources.txt", files.join("\n").into_bytes());
+            Ok(())
+        }),
+    );
+
+    let first = build(&project, vec![plugin.clone()]);
+    assert_eq!(first.generated, 1);
+    assert_eq!(
+        project.read_out("sources.txt").as_deref(),
+        Some("window/a.lua\nwindow/z.lua")
+    );
+    assert!(!project.out_exists("window/a.lua"));
+
+    let unchanged = build(&project, vec![plugin.clone()]);
+    assert_eq!(unchanged.generated, 0);
+
+    project.write_src("window/m.lua", "m");
+    let added = build(&project, vec![plugin]);
+    assert_eq!(added.generated, 1);
+    assert_eq!(
+        project.read_out("sources.txt").as_deref(),
+        Some("window/a.lua\nwindow/m.lua\nwindow/z.lua")
+    );
 }
 
 #[test]

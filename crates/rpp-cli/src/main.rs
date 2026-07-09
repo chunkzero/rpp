@@ -4,19 +4,15 @@
 //! Shared project plumbing lives in [`project`]; pretty output in [`ui`]; LuaLS
 //! editor stubs in [`luals`].
 
-mod commands;
-mod luals;
-mod project;
-mod ui;
-mod user_plugins;
-
 use std::path::PathBuf;
 
 use clap::{Args, Parser, Subcommand};
 
-use crate::commands::build::BuildArgs;
-use crate::commands::init::InitArgs;
-use crate::commands::plugin::PluginCommand;
+use rpp_cli::commands;
+use rpp_cli::commands::build::BuildArgs;
+use rpp_cli::commands::component::ComponentCommand;
+use rpp_cli::commands::init::InitArgs;
+use rpp_cli::commands::plugin::PluginCommand;
 
 /// rpp — a Minecraft resource pack build tool.
 #[derive(Debug, Parser)]
@@ -47,6 +43,9 @@ enum Command {
     /// Manage plugins (`add`/`remove`/`list`/`update`/`search`).
     #[command(subcommand)]
     Plugin(PluginCommand),
+    /// Inspect and generate bindings for WASM components.
+    #[command(subcommand)]
+    Component(ComponentCommand),
 }
 
 #[derive(Debug, Args)]
@@ -105,6 +104,7 @@ fn main() {
         Command::Dev => commands::dev::run(&dir),
         Command::Clean => commands::clean::run(&dir),
         Command::Plugin(cmd) => commands::plugin::run(&dir, cmd),
+        Command::Component(cmd) => commands::component::run(&dir, cmd),
     };
 
     if let Err(err) = result {

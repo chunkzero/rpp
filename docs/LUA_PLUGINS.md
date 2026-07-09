@@ -7,7 +7,6 @@ plugin-local modules.
 [plugin]
 id = "my-plugin"
 version = "1.0.0"
-runtime = "lua"
 entry = "init.lua"
 ```
 
@@ -35,6 +34,8 @@ Processors may mutate `file.path`, `file.bytes`/`file.text`, or call
 Processors must be deterministic functions of the file, options, and pack
 metadata. Do not accumulate module-level state, use time/randomness, or depend
 on worker ordering: incremental builds may skip a processor entirely.
+Sandboxed Lua therefore omits `os` and `math.random` by default. Trusted
+`clocks`/`random` grants expose them and make that plugin non-replayable.
 
 `ctx` exposes `options`, `pack`, and `log`.
 
@@ -50,23 +51,57 @@ plugin:generator("index", function(ctx)
 end)
 ```
 
-Generator methods are `files`, `read`, `read_source`, `emit`, and `remove`.
-Reads observe an immutable snapshot taken before that generator starts, so a
-generator does not read back its own mutations. Later generators observe
-earlier generators' final output.
+Generator methods are `files`, `source_files`, `read`, `read_source`,
+`load_source`, `emit`, `emit_output`, and `remove`. Reads observe an immutable
+snapshot taken before that generator starts, so a generator does not read back
+its own mutations. Later generators observe earlier generators' final output.
 
-Generators can enumerate processed outputs only. Raw source files can be read
-by exact path but cannot be enumerated. Reads are recorded for incremental
-invalidation.
+`files(glob)` enumerates processed outputs, while `source_files(glob)` enumerates
+raw source files. Both return deterministic, sorted paths and record the list as
+an incremental dependency. `read_source` and `load_source` record the contents of
+the exact source path they read.
 
-## Hooks And Modules
+`emit_output(root, path, contents)` writes to a named project-configured output
+root. Declared roots remain available in the default sandboxed mode:
+
+```toml
+[[plugin]]
+source = "path:plugins/my-plugin"
+
+[plugin.outputs]
+kotlin = "../server/src/main/kotlin/generated"
+```
+
+## Components, Hooks, And Modules
+
+Plugins can ship named WASIp2 components:
+
+```toml
+[component.compiler]
+module = "compiler.wasm"
+```
+
+```lua
+local compiler = require("rpp.component").load("compiler")
+local result = compiler:call("compile", "input")
+```
+
+Processor component calls receive a fresh guest instance per file. This keeps
+guest globals and deterministic WASI random streams independent of worker/file
+ordering. Sequential generator and hook calls may reuse their component instance.
+
+See [`WASM_PLUGINS.md`](WASM_PLUGINS.md) for component details.
 
 `plugin:on_start(fn)` and `plugin:on_finish(fn)` register lifecycle hooks.
 `require("helpers")` resolves `helpers.lua` or `helpers/init.lua` within the
 plugin package.
 
-Builtins are `rpp.json`, `rpp.toml`, `rpp.hash`, `rpp.path`, `rpp.log`, and
-`rpp.str`. There is no `io`, `debug`, dynamic loading, C module loading, or
-unrestricted filesystem access. Lua states have memory and execution limits.
+Builtins are `rpp.json`, `rpp.toml`, `rpp.hash`, `rpp.path`, `rpp.log`,
+`rpp.str`, `rpp.component`, and `rpp.process`. Sandboxed plugins do not get
+`io`, `os`, `math.random`, `debug`, dynamic loading, C module loading,
+unrestricted filesystem access, or process execution. Trusted/native modes can
+grant more capability through project config. Lua states have memory and
+execution limits. Tracebacks name plugin-local and source modules with stable
+package-relative paths.
 
 See [`examples/plugins`](../examples/plugins) for complete plugins.

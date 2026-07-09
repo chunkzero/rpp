@@ -21,7 +21,7 @@ impl PluginDir {
         let dir = tempfile::tempdir().expect("tempdir");
         std::fs::write(
             dir.path().join("plugin.toml"),
-            format!("[plugin]\nid = \"{id}\"\nversion = \"1.0.0\"\nruntime = \"lua\"\n"),
+            format!("[plugin]\nid = \"{id}\"\nversion = \"1.0.0\"\n"),
         )
         .unwrap();
         std::fs::write(dir.path().join("init.lua"), entry).unwrap();

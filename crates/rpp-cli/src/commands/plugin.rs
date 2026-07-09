@@ -260,25 +260,30 @@ fn remove(dir: &Path, id_or_source: &str, global: bool) -> Result<()> {
     let plugin = find_plugin_by_id_or_source(&project, id_or_source, &lock, &resolver)?
         .ok_or_else(|| anyhow!("no plugin matching `{id_or_source}` found"))?;
 
-    let (updated, removed_source) = remove_plugin(&text, &plugin.source, &project.root)?;
-    let removed_source =
-        removed_source.ok_or_else(|| anyhow!("no plugin matching `{id_or_source}` found"))?;
+    let remove_key = plugin
+        .source
+        .as_deref()
+        .or(plugin.id.as_deref())
+        .unwrap_or(id_or_source);
+    let (updated, removed_source) = remove_plugin(&text, remove_key, &project.root)?;
     std::fs::write(&config_path, &updated)?;
 
-    if let Ok(parsed) = PluginSource::parse(
-        &removed_source,
-        plugin.r#ref.as_deref(),
-        plugin.subdir.as_deref(),
-    ) {
-        if lock
-            .remove_for(
-                &parsed.canonical(),
-                plugin.r#ref.as_deref(),
-                plugin.subdir.as_deref(),
-            )
-            .is_some()
-        {
-            lock.save(&lock_path)?;
+    if let Some(removed_source) = removed_source {
+        if let Ok(parsed) = PluginSource::parse(
+            &removed_source,
+            plugin.r#ref.as_deref(),
+            plugin.subdir.as_deref(),
+        ) {
+            if lock
+                .remove_for(
+                    &parsed.canonical(),
+                    plugin.r#ref.as_deref(),
+                    plugin.subdir.as_deref(),
+                )
+                .is_some()
+            {
+                lock.save(&lock_path)?;
+            }
         }
     }
 
@@ -294,7 +299,10 @@ fn remove_global(id_or_source: &str) -> Result<()> {
     let plugin = find_plugin_in(&user.plugins, id_or_source, &lock, &resolver)?
         .ok_or_else(|| anyhow!("no global plugin matching `{id_or_source}` found"))?;
     let meta = resolve_plugin_meta(plugin, &lock, &resolver)?;
-    let (updated, removed_source) = remove_plugin(&text, &plugin.source, &user.root)?;
+    let Some(source) = plugin.source.as_deref() else {
+        return Err(anyhow!("global plugin `{id_or_source}` has no source"));
+    };
+    let (updated, removed_source) = remove_plugin(&text, source, &user.root)?;
     let removed_source = removed_source
         .ok_or_else(|| anyhow!("no global plugin matching `{id_or_source}` found"))?;
     std::fs::write(user.manifest_path(), updated)?;
@@ -369,14 +377,11 @@ fn list_plugins(
     let lock = Lockfile::load(lock_path)?;
     let resolver = Resolver::new(resolver_root).context("initializing resolver")?;
     for plugin in plugins {
-        let parsed = PluginSource::parse(
-            &plugin.source,
-            plugin.r#ref.as_deref(),
-            plugin.subdir.as_deref(),
-        );
+        let parsed = plugin.source.as_deref().and_then(|source| {
+            PluginSource::parse(source, plugin.r#ref.as_deref(), plugin.subdir.as_deref()).ok()
+        });
         let pin = parsed
             .as_ref()
-            .ok()
             .and_then(|p| {
                 lock.get_for(
                     &p.canonical(),
@@ -388,11 +393,16 @@ fn list_plugins(
 
         let id_ver = match resolve_plugin_meta(plugin, &lock, &resolver)? {
             Some(meta) => format!("{} v{}", meta.id, meta.version),
-            None => "(unresolved)".to_string(),
+            None => plugin
+                .id
+                .as_deref()
+                .map(|id| format!("{id} (global reference)"))
+                .unwrap_or_else(|| "(unresolved)".to_string()),
         };
+        let label = plugin.label();
         match pin {
-            Some(pin) => println!("  {id_ver}  [{scope}: {}]  pin={pin}", plugin.source),
-            None => println!("  {id_ver}  [{scope}: {}]", plugin.source),
+            Some(pin) => println!("  {id_ver}  [{scope}: {label}]  pin={pin}"),
+            None => println!("  {id_ver}  [{scope}: {label}]"),
         }
     }
     Ok(())
@@ -425,23 +435,24 @@ fn update_plugins(
 
     for plugin in plugins {
         if let Some(target) = id_or_source {
-            let matches = plugin.source == target
+            let matches = plugin.source.as_deref() == Some(target)
+                || plugin.id.as_deref() == Some(target)
                 || find_plugin_in(plugins, target, &lock, &resolver)?
-                    .is_some_and(|p| p.source == plugin.source);
+                    .is_some_and(|p| p.label() == plugin.label());
             if !matches {
                 continue;
             }
         }
         matched = true;
 
-        let parsed = match PluginSource::parse(
-            &plugin.source,
-            plugin.r#ref.as_deref(),
-            plugin.subdir.as_deref(),
-        ) {
-            Ok(p) => p,
-            Err(_) => continue,
+        let Some(source) = plugin.source.as_deref() else {
+            continue;
         };
+        let parsed =
+            match PluginSource::parse(source, plugin.r#ref.as_deref(), plugin.subdir.as_deref()) {
+                Ok(p) => p,
+                Err(_) => continue,
+            };
 
         if matches!(parsed, PluginSource::Path { .. }) {
             continue;
@@ -449,16 +460,12 @@ fn update_plugins(
 
         let resolved = resolver
             .resolve(&parsed, None)
-            .with_context(|| format!("updating plugin `{}`", plugin.source))?;
+            .with_context(|| format!("updating plugin `{source}`"))?;
         if let Some(pin) = &resolved.pinned {
             let prev = lock.record_resolved(&parsed, &resolved);
             if prev.map(|p| p.commit) != Some(pin.commit.clone()) {
                 changed += 1;
-                ui::detail(format!(
-                    "{} -> {}",
-                    plugin.source,
-                    short_commit(&pin.commit)
-                ));
+                ui::detail(format!("{source} -> {}", short_commit(&pin.commit)));
             }
         }
     }
@@ -486,7 +493,9 @@ fn find_plugin_in<'a>(
     resolver: &Resolver,
 ) -> Result<Option<&'a PluginConfig>> {
     for plugin in plugins {
-        if plugin.source == id_or_source {
+        if plugin.source.as_deref() == Some(id_or_source)
+            || plugin.id.as_deref() == Some(id_or_source)
+        {
             return Ok(Some(plugin));
         }
         if let Some(meta) = resolve_plugin_meta(plugin, lock, resolver)? {

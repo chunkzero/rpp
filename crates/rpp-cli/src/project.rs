@@ -6,16 +6,16 @@
 //! disk into a ready-to-run build engine, so resolution, plugin loading, and
 //! error messaging are consistent across `build`, `dev`, and friends.
 
-use std::path::{Component, Path, PathBuf};
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::{anyhow, bail, Context, Result};
 use rpp::config::{Config, PluginConfig};
 use rpp::engine::{Engine, EngineBuilder};
 use rpp::lua::LuaPluginFactory;
-use rpp::manifest::{PluginManifest, Runtime};
+use rpp::manifest::PluginManifest;
 use rpp::model::PluginFactory;
-use rpp::wasm::WasmPluginFactory;
 use rpp_fetch::{Lockfile, Pin, PluginSource, Resolver};
 use rpp_wasm::WasmEngine;
 
@@ -34,7 +34,7 @@ pub struct Project {
     /// The parsed configuration.
     pub config: Config,
     /// User-level plugins loaded from `~/.rpp/plugins.toml`.
-    pub user_plugins: UserPlugins,
+    pub(crate) user_plugins: UserPlugins,
 }
 
 /// Resolved plugin identity for list/remove/update matching.
@@ -53,6 +53,27 @@ pub struct PluginMeta {
 impl Project {
     /// Locate and load the project containing `start` (searching ancestors).
     pub fn discover(start: &Path) -> Result<Self> {
+        Self::discover_with_user_plugins(start, UserPlugins::load()?)
+    }
+
+    /// Locate a project without consulting machine-global plugin state.
+    pub fn discover_isolated(start: &Path) -> Result<Self> {
+        let root = find_project_root(start).ok_or_else(|| {
+            anyhow!(
+                "no `{CONFIG_FILE}` found in `{}` or any parent directory",
+                start.display()
+            )
+        })?;
+        Self::discover_with_user_plugins(
+            &root,
+            UserPlugins {
+                root: root.join(".rpp/isolated-home"),
+                plugins: Vec::new(),
+            },
+        )
+    }
+
+    fn discover_with_user_plugins(start: &Path, user_plugins: UserPlugins) -> Result<Self> {
         let root = find_project_root(start).ok_or_else(|| {
             anyhow!(
                 "no `{CONFIG_FILE}` found in `{}` or any parent directory\n\
@@ -63,7 +84,6 @@ impl Project {
         let config_path = root.join(CONFIG_FILE);
         let config = Config::load(&config_path)
             .with_context(|| format!("loading {}", config_path.display()))?;
-        let user_plugins = UserPlugins::load()?;
         Ok(Project {
             root,
             config,
@@ -84,16 +104,8 @@ impl Project {
     /// Remove the build output directory and the `.rpp` cache without building
     /// an [`Engine`].
     pub fn clean_artifacts(&self) -> Result<()> {
-        validate_build_dirs(&self.config, &self.root)?;
-        let output = self.output_dir();
-        let rpp_dir = self.root.join(".rpp");
-        for dir in [&output, &rpp_dir] {
-            if dir.exists() {
-                std::fs::remove_dir_all(dir)
-                    .with_context(|| format!("removing {}", dir.display()))?;
-            }
-        }
-        Ok(())
+        rpp::engine::clean_project_artifacts(&self.config, &self.root)
+            .context("cleaning project artifacts")
     }
 
     /// Resolve all `[[plugin]]` entries to plugin factories, building an
@@ -143,6 +155,8 @@ impl Project {
         let mut factories: Vec<LoadedFactory> = Vec::new();
         let mut shared_wasm = wasm_engine;
 
+        let mut global_plugins = BTreeMap::<String, PluginConfig>::new();
+
         for plugin_cfg in &self.user_plugins.plugins {
             let loaded = self.resolve_factory(
                 plugin_cfg,
@@ -158,18 +172,43 @@ impl Project {
                     loaded.id
                 );
             }
+            global_plugins.insert(loaded.id.clone(), plugin_cfg.clone());
             factories.push(loaded);
         }
 
         for plugin_cfg in &self.config.plugins {
-            let loaded = self.resolve_factory(
-                plugin_cfg,
-                &project_resolver,
-                &mut project_lock,
-                &mut project_lock_dirty,
-                &mut shared_wasm,
-                PluginScope::Project,
-            )?;
+            let loaded = if let Some(id) = plugin_cfg.id.as_deref() {
+                let Some(global_cfg) = global_plugins.get(id) else {
+                    bail!("project plugin id `{id}` does not match an installed global plugin");
+                };
+                let effective_cfg = PluginConfig {
+                    id: None,
+                    source: global_cfg.source.clone(),
+                    r#ref: global_cfg.r#ref.clone(),
+                    subdir: global_cfg.subdir.clone(),
+                    options: plugin_cfg.options.clone(),
+                    security: plugin_cfg.security,
+                    permissions: plugin_cfg.permissions.clone(),
+                    outputs: plugin_cfg.outputs.clone(),
+                };
+                self.resolve_factory(
+                    &effective_cfg,
+                    &global_resolver,
+                    &mut global_lock,
+                    &mut global_lock_dirty,
+                    &mut shared_wasm,
+                    PluginScope::Project,
+                )?
+            } else {
+                self.resolve_factory(
+                    plugin_cfg,
+                    &project_resolver,
+                    &mut project_lock,
+                    &mut project_lock_dirty,
+                    &mut shared_wasm,
+                    PluginScope::Project,
+                )?
+            };
             if let Some(index) = factories
                 .iter()
                 .position(|existing| existing.id == loaded.id)
@@ -212,12 +251,16 @@ impl Project {
         shared_wasm: &mut Option<WasmEngine>,
         scope: PluginScope,
     ) -> Result<LoadedFactory> {
+        let source_value = plugin_cfg
+            .source
+            .as_deref()
+            .ok_or_else(|| anyhow!("plugin `{}` has no source to resolve", plugin_cfg.label()))?;
         let source = PluginSource::parse(
-            &plugin_cfg.source,
+            source_value,
             plugin_cfg.r#ref.as_deref(),
             plugin_cfg.subdir.as_deref(),
         )
-        .with_context(|| format!("invalid plugin source `{}`", plugin_cfg.source))?;
+        .with_context(|| format!("invalid plugin source `{source_value}`"))?;
 
         let canonical = source.canonical();
         let locked = lockfile
@@ -229,7 +272,7 @@ impl Project {
             .cloned();
         let resolved = resolver
             .resolve(&source, locked.as_ref())
-            .with_context(|| format!("resolving plugin `{}`", plugin_cfg.source))?;
+            .with_context(|| format!("resolving plugin `{source_value}`"))?;
 
         if let Some(pinned) = &resolved.pinned {
             let prev = lockfile.record_resolved(&source, &resolved);
@@ -241,48 +284,57 @@ impl Project {
         let manifest = PluginManifest::load(&resolved.root).with_context(|| {
             format!(
                 "reading plugin manifest for `{}` at {}",
-                plugin_cfg.source,
+                plugin_cfg.label(),
                 resolved.root.display()
             )
         })?;
         let id = manifest.id.clone();
+        let _ =
+            crate::luals::write_plugin_stubs(&self.root.join(".rpp").join("api"), &resolved.root);
 
-        let factory: Arc<dyn PluginFactory> = match manifest.runtime {
-            Runtime::Lua => {
-                let limits = rpp::lua::LuaPluginFactory::limits_from_build(&self.config.build);
-                Arc::new(
-                    LuaPluginFactory::load_with_limits(
-                        &resolved.root,
-                        plugin_cfg.options.clone(),
-                        self.config.pack.name.clone(),
-                        self.config.pack.description.clone(),
-                        self.config.pack.pack_format,
-                        limits,
-                    )
-                    .with_context(|| format!("loading Lua plugin `{}`", manifest.id))?,
-                )
-            }
-            Runtime::Wasm => {
-                let engine = match shared_wasm {
-                    Some(engine) => engine.clone(),
-                    None => {
-                        let engine = WasmEngine::new()
-                            .map_err(|error| anyhow!("initializing the wasm engine: {error}"))?;
-                        *shared_wasm = Some(engine.clone());
-                        engine
-                    }
-                };
-                Arc::new(
-                    WasmPluginFactory::load(
-                        &engine,
-                        &resolved.root,
-                        &manifest,
-                        plugin_cfg.options.clone(),
-                    )
-                    .with_context(|| format!("loading WASM plugin `{}`", manifest.id))?,
-                )
+        let engine = if manifest.components.is_empty() {
+            shared_wasm.clone()
+        } else {
+            match shared_wasm {
+                Some(engine) => Some(engine.clone()),
+                None => {
+                    let engine = WasmEngine::with_cache_dir(self.root.join(".rpp/cache/wasmtime"))
+                        .map_err(|error| anyhow!("initializing the wasm engine: {error}"))?;
+                    *shared_wasm = Some(engine.clone());
+                    Some(engine)
+                }
             }
         };
+        let mut components = std::collections::BTreeMap::new();
+        if let Some(engine) = engine.as_ref() {
+            for (name, component) in &manifest.components {
+                let path = resolved.root.join(&component.module);
+                let compiled = engine
+                    .load(&path)
+                    .with_context(|| format!("loading component `{name}` at {}", path.display()))?;
+                components.insert(name.clone(), compiled);
+            }
+        }
+        let access = rpp::lua::RuntimeAccess::new(
+            plugin_cfg.security,
+            plugin_cfg.permissions.clone(),
+            self.root.clone(),
+            components,
+            plugin_cfg.outputs.clone(),
+        );
+        let limits = rpp::lua::LuaPluginFactory::limits_from_build(&self.config.build);
+        let factory: Arc<dyn PluginFactory> = Arc::new(
+            LuaPluginFactory::load_with_limits_and_access(
+                &resolved.root,
+                plugin_cfg.options.clone(),
+                self.config.pack.name.clone(),
+                self.config.pack.description.clone(),
+                self.config.pack.pack_format,
+                limits,
+                access,
+            )
+            .with_context(|| format!("loading Lua plugin `{}`", manifest.id))?,
+        );
 
         Ok(LoadedFactory { id, factory, scope })
     }
@@ -307,12 +359,15 @@ pub fn resolve_plugin_meta(
     lock: &Lockfile,
     resolver: &Resolver,
 ) -> Result<Option<PluginMeta>> {
+    let Some(source_value) = plugin.source.as_deref() else {
+        return Ok(None);
+    };
     let parsed = PluginSource::parse(
-        &plugin.source,
+        source_value,
         plugin.r#ref.as_deref(),
         plugin.subdir.as_deref(),
     )
-    .with_context(|| format!("invalid plugin source `{}`", plugin.source))?;
+    .with_context(|| format!("invalid plugin source `{source_value}`"))?;
     let canonical = parsed.canonical();
 
     let locked = lock
@@ -328,13 +383,13 @@ pub fn resolve_plugin_meta(
 
     let resolved = resolver
         .resolve(&parsed, locked.as_ref())
-        .with_context(|| format!("resolving plugin `{}`", plugin.source))?;
+        .with_context(|| format!("resolving plugin `{source_value}`"))?;
     let (id, version) = validate_plugin_dir(&resolved.root)?;
 
     Ok(Some(PluginMeta {
         id,
         version,
-        source: plugin.source.clone(),
+        source: source_value.to_string(),
         canonical,
     }))
 }
@@ -347,7 +402,9 @@ pub fn find_plugin_by_id_or_source<'a>(
     resolver: &Resolver,
 ) -> Result<Option<&'a PluginConfig>> {
     for plugin in &project.config.plugins {
-        if plugin.source == id_or_source {
+        if plugin.source.as_deref() == Some(id_or_source)
+            || plugin.id.as_deref() == Some(id_or_source)
+        {
             return Ok(Some(plugin));
         }
         if let Some(meta) = resolve_plugin_meta(plugin, lock, resolver)? {
@@ -384,39 +441,6 @@ fn pin_changed(locked: Option<&rpp_fetch::LockedPlugin>, pin: &Pin, subdir: Opti
     }
 }
 
-/// Mirror [`Engine`]'s build-directory validation so `clean` cannot delete
-/// paths outside the project.
-fn validate_build_dirs(config: &Config, project_root: &Path) -> Result<()> {
-    let source = &config.build.source;
-    let output = &config.build.output;
-    for (label, path) in [("source", source), ("output", output)] {
-        if path.as_os_str().is_empty()
-            || path.is_absolute()
-            || path
-                .components()
-                .any(|component| !matches!(component, Component::Normal(_)))
-        {
-            bail!(
-                "`build.{label}` in {} must be a normalized project-relative path",
-                project_root.join(CONFIG_FILE).display()
-            );
-        }
-        if path.starts_with(".rpp") {
-            bail!(
-                "`build.{label}` in {} must not be inside `.rpp`",
-                project_root.join(CONFIG_FILE).display()
-            );
-        }
-    }
-    if source == output || source.starts_with(output) || output.starts_with(source) {
-        bail!(
-            "`build.source` and `build.output` in {} must be separate directories",
-            project_root.join(CONFIG_FILE).display()
-        );
-    }
-    Ok(())
-}
-
 /// Walk up from `start` looking for a directory containing `rpp.toml`.
 pub fn find_project_root(start: &Path) -> Option<PathBuf> {
     let start = if start.is_absolute() {
@@ -438,8 +462,5 @@ pub fn find_project_root(start: &Path) -> Option<PathBuf> {
 pub fn validate_plugin_dir(dir: &Path) -> Result<(String, String)> {
     let manifest = PluginManifest::load(dir)
         .with_context(|| format!("reading plugin manifest at {}", dir.display()))?;
-    if manifest.runtime == Runtime::Wasm && manifest.module.is_none() {
-        bail!("wasm plugin `{}` is missing a `module` entry", manifest.id);
-    }
     Ok((manifest.id, manifest.version.to_string()))
 }

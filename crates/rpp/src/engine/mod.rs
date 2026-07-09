@@ -17,6 +17,7 @@
 
 mod cache_replay;
 mod discovery;
+mod external;
 mod file_phase;
 mod finalize;
 mod generator;
@@ -40,7 +41,7 @@ use self::cache_replay::materialize_generator_mutations;
 use self::generator::{read_set_matches, OutputSet, RecordedMutation, RecordingHost};
 use self::keys::{compile_processors, CompiledProcessor};
 
-pub use self::result::{BuildResult, ChangeReport};
+pub use self::result::{BuildResult, ChangeReport, ExternalChangeReport};
 
 /// Builder for an [`Engine`].
 pub struct EngineBuilder {
@@ -85,14 +86,13 @@ impl EngineBuilder {
 
         let source = self.project_root.join(&self.config.build.source);
         let output = self.project_root.join(&self.config.build.output);
-        let rpp_dir = self.project_root.join(".rpp");
-        let cache_dir = rpp_dir.join("cache");
+        let cache_dir = self.project_root.join(".rpp/cache");
 
         Ok(Engine {
+            project_root: self.project_root,
             config: self.config,
             source,
             output,
-            rpp_dir,
             cache_dir,
             factories: Arc::new(self.factories),
             compiled,
@@ -133,10 +133,10 @@ fn validate_build_dirs(config: &Config, project_root: &Path) -> Result<()> {
 
 /// The build engine.
 pub struct Engine {
+    project_root: PathBuf,
     config: Config,
     source: PathBuf,
     output: PathBuf,
-    rpp_dir: PathBuf,
     cache_dir: PathBuf,
     factories: Arc<Vec<Arc<dyn PluginFactory>>>,
     compiled: Vec<CompiledProcessor>,
@@ -162,14 +162,14 @@ impl Engine {
         &self.output
     }
 
+    /// Number of effective plugins after project/global override resolution.
+    pub fn plugin_count(&self) -> usize {
+        self.factories.len()
+    }
+
     /// Remove the output directory and the entire `.rpp` cache directory.
     pub fn clean(&self) -> Result<()> {
-        for dir in [&self.output, &self.rpp_dir] {
-            if dir.exists() {
-                std::fs::remove_dir_all(dir).map_err(|e| Error::io(dir, e))?;
-            }
-        }
-        Ok(())
+        clean_project_artifacts(&self.config, &self.project_root)
     }
 
     /// Run a full (incremental) build.
@@ -188,6 +188,10 @@ impl Engine {
         let prev = prev.filter(|_| global_match);
 
         let sources = discovery::discover(&self.source)?;
+        let source_files = sources
+            .iter()
+            .map(|source| source.rel.clone())
+            .collect::<Vec<_>>();
 
         let mut main_instances = self.instantiate_all()?;
         for inst in main_instances.iter_mut() {
@@ -219,20 +223,15 @@ impl Engine {
                 .or_insert_with(|| owner.clone());
         }
 
-        let generated = self.run_generators(
-            &mut main_instances,
-            &mut output,
-            &mut output_owners,
-            &mut new_manifest,
-            &store,
-            prev.as_ref(),
-        )?;
-
-        let changes = finalize::sync_output(&self.config, &self.output, &output, &store)?;
-
-        let live = finalize::collect_live_objects(&new_manifest);
-        store.gc(&live)?;
-        new_manifest.save(&manifest_path)?;
+        let generated = self.run_generators(GeneratorPhaseCtx {
+            instances: &mut main_instances,
+            output: &mut output,
+            output_owners: &mut output_owners,
+            new_manifest: &mut new_manifest,
+            store: &store,
+            prev: prev.as_ref(),
+            source_files: &source_files,
+        })?;
 
         let stats = BuildStats {
             processed: file_stats.processed,
@@ -241,6 +240,13 @@ impl Engine {
             dropped: file_stats.dropped,
         };
         finalize::finish_build(&mut main_instances, stats)?;
+
+        let mut changes = finalize::sync_output(&self.config, &self.output, &output, &store)?;
+        changes.external = external::sync(&self.project_root, &new_manifest, &store)?;
+
+        let live = finalize::collect_live_objects(&new_manifest);
+        store.gc(&live)?;
+        new_manifest.save(&manifest_path)?;
 
         Ok(BuildResult {
             processed: file_stats.processed,
@@ -269,15 +275,16 @@ impl Engine {
         }
     }
 
-    fn run_generators(
-        &self,
-        instances: &mut [Box<dyn crate::model::PluginInstance>],
-        output: &mut OutputSet,
-        output_owners: &mut BTreeMap<String, String>,
-        new_manifest: &mut Manifest,
-        store: &ObjectStore,
-        prev: Option<&Manifest>,
-    ) -> Result<usize> {
+    fn run_generators(&self, ctx: GeneratorPhaseCtx<'_>) -> Result<usize> {
+        let GeneratorPhaseCtx {
+            instances,
+            output,
+            output_owners,
+            new_manifest,
+            store,
+            prev,
+            source_files,
+        } = ctx;
         let mut generated = 0usize;
 
         for (index, factory) in self.factories.iter().enumerate() {
@@ -289,9 +296,16 @@ impl Engine {
 
             let replayed = prev
                 .and_then(|m| m.generators.get(&plugin_id))
+                .filter(|_| factory.cacheable_generator())
                 .filter(|prev_entry| prev_entry.plugin_key == plugin_key)
                 .filter(|prev_entry| {
-                    read_set_matches(&prev_entry.read_set, output, &self.source, store)
+                    read_set_matches(
+                        &prev_entry.read_set,
+                        output,
+                        &self.source,
+                        source_files,
+                        store,
+                    )
                 })
                 .map(|prev_entry| {
                     materialize_generator_mutations(
@@ -313,9 +327,11 @@ impl Engine {
             let mut host = RecordingHost::new(
                 output,
                 self.source.clone(),
+                source_files.to_vec(),
                 store,
                 &plugin_id,
                 output_owners,
+                factory.output_roots().clone(),
             );
             instances[index].generate(&mut host)?;
             if !host.errors.is_empty() {
@@ -344,6 +360,14 @@ impl Engine {
                                 .into(),
                         ));
                     }
+                    RecordedMutation::EmitExternal {
+                        root,
+                        path,
+                        contents,
+                    } => {
+                        let object = store.put(&contents)?;
+                        mutations.push(GeneratorMutation::EmitExternal { root, path, object });
+                    }
                     RecordedMutation::Remove(path) => {
                         mutations.push(GeneratorMutation::Remove(path));
                     }
@@ -363,4 +387,32 @@ impl Engine {
 
         Ok(generated)
     }
+}
+
+struct GeneratorPhaseCtx<'a> {
+    instances: &'a mut [Box<dyn crate::model::PluginInstance>],
+    output: &'a mut OutputSet,
+    output_owners: &'a mut BTreeMap<String, String>,
+    new_manifest: &'a mut Manifest,
+    store: &'a ObjectStore,
+    prev: Option<&'a Manifest>,
+    source_files: &'a [String],
+}
+
+/// Remove pack output, cache state, and externally generated files owned by RPP.
+///
+/// This does not load or resolve plugins, so it is suitable for `rpp clean`
+/// even when a plugin package is temporarily unavailable.
+pub fn clean_project_artifacts(config: &Config, project_root: &Path) -> Result<()> {
+    validate_build_dirs(config, project_root)?;
+    external::clean(project_root)?;
+    for dir in [
+        project_root.join(&config.build.output),
+        project_root.join(".rpp"),
+    ] {
+        if dir.exists() {
+            std::fs::remove_dir_all(&dir).map_err(|e| Error::io(&dir, e))?;
+        }
+    }
+    Ok(())
 }

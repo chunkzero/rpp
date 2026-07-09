@@ -87,6 +87,15 @@ impl ObjectStore {
         }
     }
 
+    /// Copy an object to a mutable external destination without hard-linking
+    /// it to the immutable CAS entry.
+    pub(crate) fn copy_object(&self, key: u64, dest: &std::path::Path) -> Result<()> {
+        let src = self
+            .object_path_for(key)
+            .ok_or_else(|| Error::Build(format!("missing cache object {key:#x}")))?;
+        crate::util::atomic::copy(&src, dest).map_err(|e| Error::io(dest, e))
+    }
+
     /// Garbage-collect objects not present in `live`.
     pub(crate) fn gc(&self, live: &HashSet<u64>) -> Result<usize> {
         let mut removed = 0;

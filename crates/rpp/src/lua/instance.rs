@@ -13,6 +13,7 @@ use crate::lua::factory::LuaPluginFactory;
 use crate::lua::file::{FileHandle, FileState};
 use crate::lua::generator_ctx::call_generator;
 use crate::lua::plugin_builder::PluginBuilder;
+use crate::lua::runtime::{Phase, RuntimeAccess};
 use crate::lua::sandbox::{run_limited, Deadline};
 use crate::lua::traceback;
 use crate::model::{BuildStats, GeneratorHost, PackFile, PluginFactory, ProcessOutcome};
@@ -33,6 +34,7 @@ pub struct LuaPluginInstance {
     on_finish: Option<Function>,
     deadline: Deadline,
     execution_limit: std::time::Duration,
+    access: RuntimeAccess,
     // Kept alive so the sandbox environment (and its closures) live as long as
     // the registered functions.
     _sandbox_env: Table,
@@ -50,6 +52,7 @@ impl LuaPluginInstance {
             entry_source,
             factory.memory_limit(),
             factory.execution_limit(),
+            factory.access(),
         )?;
 
         let builder = extract_builder(&plugin_id, eval.value)?;
@@ -75,6 +78,7 @@ impl LuaPluginInstance {
             on_finish,
             deadline: eval.deadline,
             execution_limit: factory.execution_limit(),
+            access: factory.access(),
             _sandbox_env: eval.sandbox.env,
         })
     }
@@ -110,9 +114,11 @@ impl crate::model::PluginInstance for LuaPluginInstance {
         )));
         let handle = FileHandle(state.clone());
 
+        self.access.phase.set(Phase::Processor);
         let call: mlua::Result<()> = run_limited(&self.deadline, self.execution_limit, || {
             handler.call((ctx, handle))
         });
+        self.access.phase.set(Phase::Load);
         if let Err(e) = call {
             return Err(Error::Processor {
                 plugin: self.plugin_id.clone(),
@@ -146,13 +152,16 @@ impl crate::model::PluginInstance for LuaPluginInstance {
         let ctx = self.processor_ctx()?;
         let plugin_id = self.plugin_id.clone();
 
-        run_limited(&self.deadline, self.execution_limit, || {
-            call_generator(&self.lua, &handler, ctx, host)
+        self.access.phase.set(Phase::Generator);
+        let result = run_limited(&self.deadline, self.execution_limit, || {
+            call_generator(&self.lua, &handler, ctx, host, self._sandbox_env.clone())
         })
         .map_err(|e| Error::Generator {
             plugin: plugin_id,
             message: traceback::render(&e),
-        })
+        });
+        self.access.phase.set(Phase::Load);
+        result
     }
 
     fn on_build_start(&mut self) -> Result<()> {
@@ -160,14 +169,17 @@ impl crate::model::PluginInstance for LuaPluginInstance {
             return Ok(());
         };
         let ctx = self.processor_ctx()?;
-        run_limited(&self.deadline, self.execution_limit, || {
+        self.access.phase.set(Phase::Hook);
+        let result = run_limited(&self.deadline, self.execution_limit, || {
             handler.call::<()>(ctx)
         })
         .map_err(|e| Error::Hook {
             plugin: self.plugin_id.clone(),
             hook: "on_start".into(),
             message: traceback::render(&e),
-        })
+        });
+        self.access.phase.set(Phase::Load);
+        result
     }
 
     fn on_build_finish(&mut self, stats: &BuildStats) -> Result<()> {
@@ -185,14 +197,17 @@ impl crate::model::PluginInstance for LuaPluginInstance {
         let _ = stats_t.set("generated", stats.generated);
         let _ = stats_t.set("dropped", stats.dropped);
 
-        run_limited(&self.deadline, self.execution_limit, || {
+        self.access.phase.set(Phase::Hook);
+        let result = run_limited(&self.deadline, self.execution_limit, || {
             handler.call::<()>((ctx, stats_t))
         })
         .map_err(|e| Error::Hook {
             plugin: self.plugin_id.clone(),
             hook: "on_finish".into(),
             message: traceback::render(&e),
-        })
+        });
+        self.access.phase.set(Phase::Load);
+        result
     }
 }
 

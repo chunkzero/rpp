@@ -54,9 +54,9 @@ pub fn add_plugin(toml_text: &str, entry: PluginEntry) -> Result<String> {
 
 /// Remove the `[[plugin]]` entry matching `id_or_source` from `rpp.toml` text.
 ///
-/// Matching is by exact `source` string first; if that fails, each path/github
-/// source is resolved enough to read its plugin id (path sources resolve their
-/// `plugin.toml` relative to `project_root`).
+/// Matching is by exact `source` or `id` string first; if that fails, each
+/// path/github source is resolved enough to read its plugin id (path sources
+/// resolve their `plugin.toml` relative to `project_root`).
 ///
 /// Returns `(updated_text, removed_source)` where `removed_source` is `None`
 /// when nothing matched.
@@ -74,12 +74,15 @@ pub fn remove_plugin(
     let mut found_index = None;
     let mut removed_source = None;
     for (i, table) in array.iter().enumerate() {
-        let Some(source) = table.get("source").and_then(|v| v.as_str()) else {
-            continue;
-        };
-        if source == id_or_source || plugin_id_matches(table, source, project_root, id_or_source) {
+        let source = table.get("source").and_then(|v| v.as_str());
+        let id = table.get("id").and_then(|v| v.as_str());
+        if source == Some(id_or_source)
+            || id == Some(id_or_source)
+            || source
+                .is_some_and(|source| plugin_id_matches(table, source, project_root, id_or_source))
+        {
             found_index = Some(i);
-            removed_source = Some(source.to_string());
+            removed_source = source.map(str::to_string);
             break;
         }
     }
@@ -217,12 +220,29 @@ pretty = false
         std::fs::create_dir_all(&plugin_dir).unwrap();
         std::fs::write(
             plugin_dir.join("plugin.toml"),
-            "[plugin]\nid = \"json-minify\"\nversion = \"1.0.0\"\nruntime = \"lua\"\n",
+            "[plugin]\nid = \"json-minify\"\nversion = \"1.0.0\"\n",
         )
         .unwrap();
 
         let (out, removed) = remove_plugin(BASE, "json-minify", dir.path()).unwrap();
         assert_eq!(removed.as_deref(), Some("path:plugins/json-minify"));
         assert!(!out.contains("[[plugin]]"));
+    }
+
+    #[test]
+    fn remove_by_global_id_entry() {
+        let text = r#"[pack]
+name = "demo"
+
+[[plugin]]
+id = "window"
+[plugin.options]
+namespace = "window"
+"#;
+        let dir = tempfile::tempdir().unwrap();
+        let (out, removed) = remove_plugin(text, "window", dir.path()).unwrap();
+        assert_eq!(removed, None);
+        assert!(!out.contains("[[plugin]]"));
+        assert!(out.contains("name = \"demo\""));
     }
 }

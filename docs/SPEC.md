@@ -97,6 +97,19 @@ subdir = "plugins/atlas"                  # optional path within the repo
 The CLI also accepts a bare plugin package directory for `rpp plugin add` and
 normalizes it to a `path:` source.
 
+Project plugin entries may also reference an installed global plugin by id:
+
+```toml
+[[plugin]]
+id = "window"
+[plugin.options]
+namespace = "window"
+```
+
+In that form, the plugin package is resolved from the user-level plugin store,
+while options, permissions, security mode, and output roots come from the
+project entry.
+
 ### User-level plugins
 
 `rpp plugin add` prompts whether to install into the current project or globally
@@ -118,9 +131,10 @@ id = "json-minify"          # ^[a-z0-9][a-z0-9_-]*$ ; unique within a project
 version = "1.2.0"           # semver
 description = "Minifies JSON files"
 authors = ["someone"]
-runtime = "lua"             # "lua" | "wasm"
-entry = "init.lua"          # lua: entry script relative to plugin root (default "init.lua")
-# module = "plugin.wasm"    # wasm: component file relative to plugin root (required for wasm)
+entry = "init.lua"          # Lua entry script relative to plugin root (default "init.lua")
+
+[component.compiler]        # optional named WASIp2 components callable from Lua
+module = "compiler.wasm"
 ```
 
 ## 3. Core plugin model (in `crates/rpp`)
@@ -161,10 +175,12 @@ pub trait PluginInstance: Send {
 /// What generators may do — implemented by the build engine.
 pub trait GeneratorHost {
     fn list_files(&mut self, glob: Option<&str>) -> Vec<String>;   // recorded as dep
+    fn list_source_files(&mut self, glob: Option<&str>) -> Vec<String>; // recorded as dep
     fn read_file(&mut self, path: &str) -> Option<Vec<u8>>;        // processed file; recorded as dep
     fn read_source(&mut self, path: &str) -> Option<Vec<u8>>;      // raw source file; recorded as dep
     fn emit(&mut self, path: &str, contents: Vec<u8>);             // add/overwrite output file
     fn remove(&mut self, path: &str);                              // drop an output file
+    fn emit_output(&mut self, root: &str, path: &str, contents: Vec<u8>); // declared external root
 }
 ```
 
@@ -179,8 +195,8 @@ Notes:
 - A generator's reads observe an immutable snapshot taken before that generator starts.
   It does not read back its own mutations. Later generators observe earlier generators'
   final output.
-- Generators enumerate processed output files only. Raw source files can be read by
-  exact path but cannot be enumerated.
+- Generators enumerate processed output files with `list_files` and raw source files
+  with `list_source_files`. Both list reads are recorded for invalidation.
 - Processor chain for a file: all matching processors across all plugins, sorted by
   `priority` ascending, ties broken by plugin order in `rpp.toml`, then by declaration
   order within a plugin. A `Dropped` outcome stops the chain and excludes the file.
@@ -235,6 +251,7 @@ return plugin
 - **ctx** (processors): `ctx.options` (plugin options as Lua table), `ctx.pack`
   (`{ name, description, format }`), `ctx.log` (`debug|info|warn|error` functions).
 - **ctx** (generators): everything above plus `ctx:files(glob?) -> {string}`,
+  `ctx:source_files(glob?) -> {string}`,
   `ctx:read(path) -> string|nil` (processed output), `ctx:read_source(path) -> string|nil`,
   `ctx:emit(path, contents)`, `ctx:remove(path)`.
 - Raising a Lua `error()` fails the build with plugin/processor/file attribution.
@@ -257,94 +274,68 @@ return plugin
 - `require(name)`: builtin `rpp*` modules; otherwise resolved **within the plugin
   package directory** (`name.lua` or `name/init.lua`, dots map to `/`). Nothing else.
   No C modules, no `package.cpath`.
-- Available stdlib: `string`, `table`, `math`, `utf8`, `select`, `pairs`, `ipairs`,
+- Available stdlib: `string`, `table`, deterministic `math` (without
+  `random`/`randomseed`), `utf8`, `select`, `pairs`, `ipairs`,
   `next`, `tonumber`, `tostring`, `type`, `pcall`, `xpcall`, `error`, `assert`,
-  `setmetatable`/`getmetatable`/`rawget`/`rawset`/`rawequal`/`rawlen`,
-  `os.clock`/`os.time`/`os.date` only. **No** `io`, no `os.*` beyond those, no
+  `setmetatable`/`getmetatable`/`rawget`/`rawset`/`rawequal`/`rawlen`. **No** `io`,
+  no `os`, no host randomness, no
   `load`/`loadstring`/`dofile`/`loadfile`, no `debug`, no `collectgarbage` (stub ok),
-  no global `print` (map it to `rpp.log.info`).
+  no global `print` (map it to `rpp.log.info`). Trusted clock/random grants expose
+  the restricted `os.clock`/`os.time`/`os.date` and `math.random` APIs respectively
+  and disable cache replay for that plugin.
 - Each plugin gets its own environment table (`_ENV`); plugins cannot see each other's
   globals. Memory limit per Lua state (configurable, default 256 MB).
 
 ### Execution model
 
-- One Lua state **per worker thread**; all Lua plugins for the project are loaded into
-  each worker's state at pool startup (each in its own env).
+- One Lua state **per plugin, per worker thread**. This keeps memory limits,
+  module caches, globals, and component handles isolated between plugins while
+  still giving every worker an independent instance.
 - Loading = parse `plugin.toml`, run `entry` in the sandbox, collect the returned
   plugin builder's processors/generators/hooks. Processor defs (patterns/priority) are
   extracted at load time on the main thread (a validation load), then re-instantiated
   per worker via `PluginFactory::instantiate`.
 - Generators and lifecycle hooks run on a single dedicated instance (main thread).
 - `cache_key` for a Lua plugin: xxh3 over all `*.lua` files in the package (sorted by
-  path) + `plugin.toml` + canonicalized options.
+  path) + `plugin.toml` + every declared component binary + canonicalized options and
+  host-access/output-root policy.
 
-## 5. WASM plugin system (`crates/rpp-wasm`)
+## 5. WASM component system (`crates/rpp-wasm`)
 
-Host for **WASIp2 components** using `wasmtime` (component model + `wasmtime-wasi`).
-Standalone crate; `rpp` wraps it behind feature `wasm` with an adapter implementing
-`PluginFactory`/`PluginInstance`.
-
-### WIT (lives at `crates/rpp-wasm/wit/plugin.wit`)
-
-```wit
-package rpp:plugin@0.1.0;
-
-interface host {
-    enum log-level { debug, info, warn, error }
-    log: func(level: log-level, message: string);
-    /// Generator-phase host functions (empty/no-op outside generate()):
-    list-files: func(pattern: option<string>) -> list<string>;
-    read-file: func(path: string) -> option<list<u8>>;
-    read-source: func(path: string) -> option<list<u8>>;
-    emit-file: func(path: string, contents: list<u8>);
-    remove-file: func(path: string);
-}
-
-interface guest {
-    record processor-def { name: string, patterns: list<string>, priority: s32 }
-    record plugin-info { id: string, version: string, processors: list<processor-def>, has-generator: bool }
-    record file-data { path: string, contents: list<u8> }
-    variant process-result { unchanged, modified(file-data), dropped }
-    /// Called once after instantiation; options-json is the plugin options as JSON.
-    configure: func(options-json: string);
-    get-info: func() -> plugin-info;
-    process: func(processor: string, file: file-data) -> result<process-result, string>;
-    generate: func() -> result<_, string>;
-}
-
-world rpp-plugin {
-    import host;
-    export guest;
-}
-```
+Host for **WASIp2 components** using `wasmtime` (component model +
+`wasmtime-wasi`). rpp plugins remain Lua packages; Lua loads named components
+declared in `plugin.toml`.
 
 ### Host crate API (normative shape)
 
 ```rust
 pub struct WasmEngine { /* wasmtime Engine, shared */ }
-pub struct CompiledPlugin { /* Component + metadata, Send+Sync, cheap to instantiate */ }
+pub struct CompiledComponent { /* Component + schema, Send+Sync, cheap to instantiate */ }
 pub struct WasmInstance { /* Store + bindings */ }
 
-impl WasmEngine { pub fn new() -> Result<Self>; pub fn load(&self, wasm_path: &Path) -> Result<CompiledPlugin>; }
-impl CompiledPlugin {
-    pub fn info(&self) -> &PluginInfo;                     // from a validation instantiation
-    pub fn instantiate(&self, options_json: &str, host: impl HostCallbacks + Send + 'static) -> Result<WasmInstance>;
-}
+impl WasmEngine { pub fn new() -> Result<Self>; pub fn load(&self, wasm_path: &Path) -> Result<CompiledComponent>; }
+impl CompiledComponent { pub fn schema(&self) -> &Schema; pub fn instantiate(&self, permissions: Permissions) -> Result<WasmInstance>; }
 impl WasmInstance {
-    pub fn process(&mut self, processor: &str, path: &str, contents: &[u8]) -> Result<ProcessResult>;
-    pub fn generate(&mut self) -> Result<()>;
+    pub fn call(&mut self, export_path: &str, args: &[Value]) -> Result<Vec<Value>>;
 }
-pub trait HostCallbacks { /* mirrors `host` interface; engine wires GeneratorHost here */ }
 ```
 
-- WASI context: no filesystem preopens, no network, no env — stdout/stderr inherited
-  for debugging. Epoch-based interruption with a configurable deadline (default 60s per
-  call).
-- Resource limits: memory cap via `StoreLimits` (default 512 MB).
-- Includes an **example guest plugin** in `examples/plugins/grayscale-wasm/`: a Rust
-  crate (NOT a workspace member; own `Cargo.toml`) using `wit-bindgen`, targeting
-  `wasm32-wasip2`, implementing a simple processor (e.g. converts `**/*.gray.png`
-  textures to grayscale, or a CSV→JSON transformer — something visibly real).
+- WASM is available as named WASIp2 components loaded by Lua with
+  `rpp.component.load(name)`. Components export ordinary WIT functions; rpp
+  validates imports against plugin capabilities and provides WASI without
+  filesystem preopens, network, passed env, or process execution by default.
+- `rpp component bindgen <wasm> --name <component> --out <file>` generates a Lua
+  wrapper from a component's export schema.
+- Component compilation uses an in-memory content-digest map and a persistent
+  project-local Wasmtime cache. Replacing a component binary invalidates the plugin
+  cache key even when its path and Lua wrapper are unchanged.
+- Permissionless WASI random imports receive deterministic streams. Granting
+  `permissions.random = true` enables host randomness and disables build replay for
+  that plugin.
+- Component calls made from processors use a fresh instance per file so guest globals
+  and deterministic random-stream position cannot couple output to worker scheduling.
+  Generator and hook calls may reuse an instance for a sequential component workflow.
+- Resource limits: memory cap via `StoreLimits` and epoch interruption.
 
 ## 6. Plugin fetch & discovery (`crates/rpp-fetch`)
 
@@ -394,7 +385,7 @@ returning name/full_name/description/stars. Provide
 tests can run against a local mock (trait or base-URL injection). **Tests must not hit
 the network** — use local fixtures.
 
-## 7. Incremental compilation (cache v2, in `crates/rpp`)
+## 7. Incremental compilation (cache v3, in `crates/rpp`)
 
 Layout: `.rpp/cache/manifest.bin` (bincode) + `.rpp/cache/objects/<xxh3-hex>` (CAS of
 output contents).
@@ -405,7 +396,7 @@ Manifest:
 - Per source file: `{ fingerprint: {mtime_ns, size, xxh3}, chain_key: u64, outputs: Vec<{ path, object: u64 }> }`
   (`outputs` empty = dropped). `chain_key` = xxh3 over the ordered `(plugin cache_key, processor name)`
   chain that applies to this file.
-- Per generator: `{ plugin cache_key, read_set: Vec<{ kind: List|File|Source, key: String, hash: u64 }>, outputs: Vec<{ path, object }> }`.
+- Per generator: `{ plugin cache_key, read_set: Vec<{ kind: List|SourceList|File|Source, key: String, hash: u64 }>, outputs: Vec<{ path, object }> }`.
 
 Build flow:
 1. Discovery walks `source` (respect `.rppignore` via `ignore` crate), fingerprints
@@ -419,9 +410,18 @@ Build flow:
 5. CAS objects garbage-collected when unreferenced by the new manifest.
 6. Corrupt/old-version manifest → silently treated as empty (full rebuild).
 
+Declared external outputs use a separate `.rpp/external-outputs.bin` ownership
+manifest, so stale generated files can still be removed after cache deletion,
+configuration/plugin changes, and `rpp clean`. Only paths recorded as RPP-owned are
+removed; unrelated files beside generated artifacts are preserved. Replacements are
+published atomically from sibling temporary files and are never hard-linked to the
+immutable CAS. External-output collisions are build errors with both plugin ids in the
+diagnostic.
+
 `BuildResult` reports processed/cached/generated/dropped counts + duration; the engine
 exposes what changed (paths written/removed) so dev-server can broadcast minimal
-reloads and squash can run incrementally.
+reloads and squash can run incrementally. `generated` counts generator executions,
+not individual emitted files. External written/removed paths are reported separately.
 
 ## 8. Squash (`crates/rpp-squash`)
 
@@ -477,6 +477,12 @@ pub fn run_packsquash(binary: &str, pack_dir: &Path, zip_path: &Path, options_fi
 - `examples/plugins/json-minify/` (processor), `examples/plugins/mcmeta-validate/`
   (generator that validates pack.mcmeta + all `*.mcmeta` against pack_format),
   `examples/plugins/hash-rename/` (processor renaming via content hash, demonstrating
-  `file.path` mutation), `examples/plugins/grayscale-wasm/` (WASM guest).
+  `file.path` mutation).
 - Integration tests in the workspace build `examples/pack` end-to-end and assert real
   outputs (minified JSON, zip contents, incremental no-op second build).
+
+Plugin projects can depend on the `rpp-cli` library in integration tests and use
+`rpp_cli::harness::BuildHarness`. The harness ignores user-global plugins, fixes the
+worker count, returns structured results/digests, and can verify two byte-identical
+cold builds followed by a no-op warm build. `build_no_cache` matches the CLI's
+cache-only reset while retaining durable external-output ownership.

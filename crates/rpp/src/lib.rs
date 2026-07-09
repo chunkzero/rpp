@@ -13,9 +13,6 @@ pub mod model;
 #[cfg(feature = "lua")]
 pub mod lua;
 
-#[cfg(feature = "wasm")]
-pub mod wasm;
-
 mod cache;
 mod error;
 mod util;

@@ -19,6 +19,7 @@ pub(crate) struct ChainStep {
     pub(crate) plugin_key: u64,
     /// The processor name.
     pub(crate) processor: String,
+    pub(crate) cacheable: bool,
 }
 
 /// A precompiled processor: its owning plugin metadata plus a glob matcher.
@@ -30,6 +31,7 @@ pub(crate) struct CompiledProcessor {
     pub(crate) priority: i32,
     /// Stable declaration order within the plugin.
     pub(crate) decl_order: usize,
+    pub(crate) cacheable: bool,
     pub(crate) globs: GlobSet,
 }
 
@@ -51,6 +53,7 @@ pub(crate) fn compile_processors(
                 processor: def.name.clone(),
                 priority: def.priority,
                 decl_order,
+                cacheable: factory.cacheable_processors(),
                 globs,
             });
         }
@@ -82,6 +85,7 @@ pub(crate) fn chain_for(processors: &[CompiledProcessor], path: &str) -> Vec<Cha
             plugin_id: p.plugin_id.clone(),
             plugin_key: p.plugin_key,
             processor: p.processor.clone(),
+            cacheable: p.cacheable,
         })
         .collect()
 }
@@ -93,6 +97,7 @@ pub(crate) fn chain_key(chain: &[ChainStep]) -> u64 {
     for step in chain {
         writer.write_u64(step.plugin_key);
         writer.write_str(&step.processor);
+        writer.write_bool(step.cacheable);
     }
     writer.finish()
 }

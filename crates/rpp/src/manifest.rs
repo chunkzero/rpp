@@ -1,11 +1,12 @@
 //! Plugin manifest: `plugin.toml` parsing and validation (spec §2).
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use once_cell::sync::Lazy;
 use regex::Regex;
 use semver::Version;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 
 use crate::error::{Error, Result};
 use crate::util::path::validate_relative;
@@ -13,16 +14,6 @@ use crate::util::path::validate_relative;
 /// Plugin id grammar: `^[a-z0-9][a-z0-9_-]*$`.
 static ID_REGEX: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"^[a-z0-9][a-z0-9_-]*$").expect("static id regex is valid"));
-
-/// The runtime that backs a plugin.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Runtime {
-    /// A Lua 5.4 plugin.
-    Lua,
-    /// A WASM (WASIp2 component) plugin.
-    Wasm,
-}
 
 /// A validated `plugin.toml` manifest.
 #[derive(Debug, Clone)]
@@ -35,18 +26,25 @@ pub struct PluginManifest {
     pub description: Option<String>,
     /// Authors.
     pub authors: Vec<String>,
-    /// The runtime backing this plugin.
-    pub runtime: Runtime,
     /// Lua entry script (relative to plugin root); defaults to `init.lua`.
     pub entry: String,
-    /// WASM component module (relative to plugin root); required for wasm.
-    pub module: Option<String>,
+    /// Named WASM components callable by the Lua entry script.
+    pub components: BTreeMap<String, ComponentManifest>,
+}
+
+/// One named component library shipped in a plugin package.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ComponentManifest {
+    /// Component binary path relative to the plugin package.
+    pub module: String,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawManifest {
     plugin: RawPlugin,
+    #[serde(default, rename = "component")]
+    components: BTreeMap<String, RawComponent>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -58,11 +56,14 @@ struct RawPlugin {
     description: Option<String>,
     #[serde(default)]
     authors: Vec<String>,
-    runtime: Runtime,
     #[serde(default)]
     entry: Option<String>,
-    #[serde(default)]
-    module: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawComponent {
+    module: String,
 }
 
 impl PluginManifest {
@@ -73,7 +74,10 @@ impl PluginManifest {
             path: path.clone(),
             message: format!("{e}"),
         })?;
-        let raw = raw.plugin;
+        let RawManifest {
+            plugin: raw,
+            components,
+        } = raw;
 
         if !ID_REGEX.is_match(&raw.id) {
             return Err(Error::Manifest {
@@ -93,17 +97,24 @@ impl PluginManifest {
             message: format!("invalid `entry`: {message}"),
         })?;
 
-        if raw.runtime == Runtime::Wasm && raw.module.is_none() {
-            return Err(Error::Manifest {
-                path,
-                message: "`module` is required for wasm runtime".into(),
-            });
-        }
-        if let Some(module) = &raw.module {
-            validate_relative(module).map_err(|message| Error::Manifest {
+        let mut validated_components = BTreeMap::new();
+        for (name, component) in components {
+            if !ID_REGEX.is_match(&name) {
+                return Err(Error::Manifest {
+                    path,
+                    message: format!("component name `{name}` must match ^[a-z0-9][a-z0-9_-]*$"),
+                });
+            }
+            validate_relative(&component.module).map_err(|message| Error::Manifest {
                 path: path.clone(),
-                message: format!("invalid `module`: {message}"),
+                message: format!("invalid module for component `{name}`: {message}"),
             })?;
+            validated_components.insert(
+                name,
+                ComponentManifest {
+                    module: component.module,
+                },
+            );
         }
 
         Ok(PluginManifest {
@@ -111,9 +122,8 @@ impl PluginManifest {
             version,
             description: raw.description,
             authors: raw.authors,
-            runtime: raw.runtime,
             entry,
-            module: raw.module,
+            components: validated_components,
         })
     }
 
@@ -139,31 +149,31 @@ id = "json-minify"
 version = "1.2.0"
 description = "Minifies JSON files"
 authors = ["someone"]
-runtime = "lua"
 "#,
             "plugin.toml",
         )
         .unwrap();
         assert_eq!(m.id, "json-minify");
         assert_eq!(m.version, Version::new(1, 2, 0));
-        assert_eq!(m.runtime, Runtime::Lua);
         assert_eq!(m.entry, "init.lua");
+        assert!(m.components.is_empty());
     }
 
     #[test]
-    fn wasm_requires_module() {
-        let err = PluginManifest::parse(
-            "[plugin]\nid=\"x\"\nversion=\"1.0.0\"\nruntime=\"wasm\"\n",
+    fn parses_named_component() {
+        let manifest = PluginManifest::parse(
+            "[plugin]\nid=\"x\"\nversion=\"1.0.0\"\n\
+             [component.compiler]\nmodule=\"compiler.wasm\"\n",
             "plugin.toml",
         )
-        .unwrap_err();
-        assert!(matches!(err, Error::Manifest { .. }));
+        .unwrap();
+        assert_eq!(manifest.components["compiler"].module, "compiler.wasm");
     }
 
     #[test]
     fn rejects_bad_id() {
         let err = PluginManifest::parse(
-            "[plugin]\nid=\"Bad_ID\"\nversion=\"1.0.0\"\nruntime=\"lua\"\n",
+            "[plugin]\nid=\"Bad_ID\"\nversion=\"1.0.0\"\n",
             "plugin.toml",
         )
         .unwrap_err();
@@ -172,18 +182,16 @@ runtime = "lua"
 
     #[test]
     fn rejects_bad_version() {
-        let err = PluginManifest::parse(
-            "[plugin]\nid=\"x\"\nversion=\"notsemver\"\nruntime=\"lua\"\n",
-            "plugin.toml",
-        )
-        .unwrap_err();
+        let err =
+            PluginManifest::parse("[plugin]\nid=\"x\"\nversion=\"notsemver\"\n", "plugin.toml")
+                .unwrap_err();
         assert!(matches!(err, Error::Manifest { .. }));
     }
 
     #[test]
     fn custom_entry() {
         let m = PluginManifest::parse(
-            "[plugin]\nid=\"x\"\nversion=\"1.0.0\"\nruntime=\"lua\"\nentry=\"main.lua\"\n",
+            "[plugin]\nid=\"x\"\nversion=\"1.0.0\"\nentry=\"main.lua\"\n",
             "plugin.toml",
         )
         .unwrap();

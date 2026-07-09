@@ -12,7 +12,7 @@ use crate::error::{Error, Result};
 use crate::model::ReadKind;
 
 /// Current on-disk manifest format version. Bumping forces a full rebuild.
-pub(crate) const MANIFEST_VERSION: u32 = 2;
+pub(crate) const MANIFEST_VERSION: u32 = 3;
 
 /// A file fingerprint used for fast change detection.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -49,6 +49,7 @@ pub(crate) struct FileEntry {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum ReadKindRepr {
     List,
+    SourceList,
     File,
     Source,
 }
@@ -57,6 +58,7 @@ impl From<ReadKind> for ReadKindRepr {
     fn from(k: ReadKind) -> Self {
         match k {
             ReadKind::List => ReadKindRepr::List,
+            ReadKind::SourceList => ReadKindRepr::SourceList,
             ReadKind::File => ReadKindRepr::File,
             ReadKind::Source => ReadKindRepr::Source,
         }
@@ -90,6 +92,15 @@ pub(crate) struct GeneratorEntry {
 pub(crate) enum GeneratorMutation {
     /// Add or overwrite an output file.
     Emit(OutputRef),
+    /// Add or overwrite an external generated artifact.
+    EmitExternal {
+        /// Named output root.
+        root: String,
+        /// Relative path inside the output root.
+        path: String,
+        /// CAS object key.
+        object: u64,
+    },
     /// Remove an output file.
     Remove(String),
 }
@@ -139,6 +150,6 @@ impl Manifest {
         let config = bincode::config::standard();
         let bytes =
             bincode::serde::encode_to_vec(self, config).map_err(|e| Error::Build(e.to_string()))?;
-        std::fs::write(path, bytes).map_err(|e| Error::io(path, e))
+        crate::util::atomic::write(path, &bytes).map_err(|e| Error::io(path, e))
     }
 }

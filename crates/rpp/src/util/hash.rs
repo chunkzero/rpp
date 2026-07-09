@@ -54,6 +54,11 @@ impl HashWriter {
         self.buf.extend_from_slice(&value.to_le_bytes());
     }
 
+    /// Append a boolean value.
+    pub(crate) fn write_bool(&mut self, value: bool) {
+        self.buf.push(u8::from(value));
+    }
+
     /// Finalize and return the xxh3-64 digest of everything written.
     pub(crate) fn finish(&self) -> u64 {
         xxh3(&self.buf)

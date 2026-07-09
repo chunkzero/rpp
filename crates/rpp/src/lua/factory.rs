@@ -10,6 +10,7 @@ use crate::error::{Error, Result};
 use crate::lua::bootstrap::eval_entry;
 use crate::lua::ctx::PackInfo;
 use crate::lua::instance::{extract_builder, LuaPluginInstance};
+use crate::lua::runtime::RuntimeAccess;
 use crate::lua::sandbox::{DEFAULT_EXECUTION_LIMIT, DEFAULT_MEMORY_LIMIT};
 use crate::manifest::PluginManifest;
 use crate::model::{PluginFactory, PluginInstance, ProcessorDef};
@@ -77,6 +78,7 @@ struct Shared {
     has_generator: bool,
     memory_limit: usize,
     execution_limit: Duration,
+    access: RuntimeAccess,
     cache_key: u64,
 }
 
@@ -117,6 +119,27 @@ impl LuaPluginFactory {
         pack_format: Option<u32>,
         limits: LuaPluginLimits,
     ) -> Result<Self> {
+        Self::load_with_limits_and_access(
+            dir,
+            options,
+            pack_name,
+            pack_description,
+            pack_format,
+            limits,
+            RuntimeAccess::sandboxed(PathBuf::from(".")),
+        )
+    }
+
+    /// Like [`Self::load_with_limits`], but with explicit host capabilities.
+    pub fn load_with_limits_and_access(
+        dir: impl AsRef<Path>,
+        options: toml::Value,
+        pack_name: impl Into<String>,
+        pack_description: Option<String>,
+        pack_format: Option<u32>,
+        limits: LuaPluginLimits,
+        access: RuntimeAccess,
+    ) -> Result<Self> {
         let dir = dir.as_ref();
         let manifest = PluginManifest::load(dir)?;
         let root = dir.to_path_buf();
@@ -143,11 +166,17 @@ impl LuaPluginFactory {
             format: pack_format,
         };
 
-        let cache_key = compute_cache_key(&root, &options)?;
+        let cache_key = compute_cache_key(&root, &manifest, &options, &access)?;
 
         // Validation load: extract processor defs and generator presence.
-        let (processors, has_generator) =
-            validation_load(&manifest.id, &root, &manifest.entry, &entry_source, limits)?;
+        let (processors, has_generator) = validation_load(
+            &manifest.id,
+            &root,
+            &manifest.entry,
+            &entry_source,
+            limits,
+            access.clone(),
+        )?;
 
         Ok(LuaPluginFactory {
             shared: Arc::new(Shared {
@@ -162,6 +191,7 @@ impl LuaPluginFactory {
                 has_generator,
                 memory_limit: limits.memory_limit,
                 execution_limit: limits.execution_limit,
+                access,
                 cache_key,
             }),
         })
@@ -191,6 +221,10 @@ impl LuaPluginFactory {
     pub(crate) fn execution_limit(&self) -> Duration {
         self.shared.execution_limit
     }
+
+    pub(crate) fn access(&self) -> RuntimeAccess {
+        self.shared.access.clone()
+    }
 }
 
 impl PluginFactory for LuaPluginFactory {
@@ -214,6 +248,18 @@ impl PluginFactory for LuaPluginFactory {
         self.shared.has_generator
     }
 
+    fn cacheable_processors(&self) -> bool {
+        self.shared.access.is_deterministic()
+    }
+
+    fn cacheable_generator(&self) -> bool {
+        self.shared.access.is_deterministic()
+    }
+
+    fn output_roots(&self) -> &std::collections::BTreeMap<String, PathBuf> {
+        &self.shared.access.outputs
+    }
+
     fn instantiate(&self) -> Result<Box<dyn PluginInstance>> {
         Ok(Box::new(LuaPluginInstance::new(self.clone())?))
     }
@@ -226,6 +272,7 @@ fn validation_load(
     entry_name: &str,
     entry_source: &str,
     limits: LuaPluginLimits,
+    access: RuntimeAccess,
 ) -> Result<(Vec<ProcessorDef>, bool)> {
     let eval = eval_entry(
         plugin_id,
@@ -234,6 +281,7 @@ fn validation_load(
         entry_source,
         limits.memory_limit,
         limits.execution_limit,
+        access,
     )?;
 
     let builder = extract_builder(plugin_id, eval.value)?;
@@ -247,7 +295,12 @@ fn validation_load(
 
 /// Compute the cache key: xxh3 over sorted `*.lua` files + `plugin.toml` +
 /// canonicalized options.
-fn compute_cache_key(root: &Path, options: &toml::Value) -> Result<u64> {
+fn compute_cache_key(
+    root: &Path,
+    manifest: &PluginManifest,
+    options: &toml::Value,
+    access: &RuntimeAccess,
+) -> Result<u64> {
     let mut writer = HashWriter::new();
 
     // Collect all `*.lua` files under root, sorted by relative path.
@@ -263,12 +316,31 @@ fn compute_cache_key(root: &Path, options: &toml::Value) -> Result<u64> {
 
     // plugin.toml
     let manifest_path = root.join("plugin.toml");
-    let manifest = std::fs::read(&manifest_path).map_err(|e| Error::io(&manifest_path, e))?;
+    let manifest_bytes = std::fs::read(&manifest_path).map_err(|e| Error::io(&manifest_path, e))?;
     writer.write_str("plugin.toml");
-    writer.write(&manifest);
+    writer.write(&manifest_bytes);
+
+    // A Lua wrapper and its component binary form one plugin implementation.
+    // Hash declared component bytes explicitly so replacing a `.wasm` file
+    // invalidates processor/generator replay even when Lua and config are
+    // unchanged.
+    for (name, component) in &manifest.components {
+        let path = root.join(&component.module);
+        let bytes = std::fs::read(&path).map_err(|e| Error::io(&path, e))?;
+        writer.write_str("component");
+        writer.write_str(name);
+        writer.write_str(&component.module);
+        writer.write(&bytes);
+    }
 
     writer.write_str("options");
     writer.write(canonical_options_json(options).as_bytes());
+
+    writer.write_str("host-access");
+    let access_key =
+        serde_json::to_vec(&(access.security, &access.permissions, &access.outputs))
+            .map_err(|error| Error::Build(format!("failed to hash plugin host access: {error}")))?;
+    writer.write(&access_key);
 
     Ok(writer.finish())
 }

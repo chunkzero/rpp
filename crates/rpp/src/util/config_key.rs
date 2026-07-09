@@ -10,7 +10,6 @@ use crate::util::hash::xxh3;
 struct BuildKeySection<'a> {
     source: String,
     output: String,
-    workers: usize,
     lua: &'a crate::config::LuaConfig,
 }
 
@@ -29,7 +28,6 @@ fn build_key_section(build: &BuildConfig) -> BuildKeySection<'_> {
     BuildKeySection {
         source: path_key(&build.source),
         output: path_key(&build.output),
-        workers: build.workers,
         lua: &build.lua,
     }
 }

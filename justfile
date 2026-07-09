@@ -36,12 +36,6 @@ build:
 rpp *ARGS:
     cargo run -p rpp-cli -- {{ARGS}}
 
-# Build the example WASM guest plugin (requires the wasm32-wasip2 target)
-wasm-example:
-    cd examples/plugins/grayscale-wasm && cargo build --release --target wasm32-wasip2
-    cp examples/plugins/grayscale-wasm/target/wasm32-wasip2/release/grayscale_wasm.wasm \
-       examples/plugins/grayscale-wasm/plugin.wasm
-
 # Everything CI would run: format check, lints, tests
 ci: fmt-check lint test
 

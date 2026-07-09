@@ -1,5 +1,6 @@
-//! Public types for the WASM plugin host.
+//! Public types for the WASM component host.
 
+use std::path::PathBuf;
 use std::time::Duration;
 
 /// Default per-call epoch deadline.
@@ -7,28 +8,12 @@ pub const DEFAULT_DEADLINE: Duration = Duration::from_secs(60);
 /// Default linear-memory cap (512 MiB).
 pub const DEFAULT_MEMORY_LIMIT: usize = 512 * 1024 * 1024;
 
-/// Severity level for host-routed log messages.
-///
-/// Mirrors the `log-level` enum in the WIT `host` interface.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LogLevel {
-    /// Verbose diagnostic output.
-    Debug,
-    /// Informational messages.
-    Info,
-    /// Warnings that do not abort the build.
-    Warn,
-    /// Errors.
-    Error,
-}
-
-/// Resource limits applied to every [`crate::WasmInstance`].
+/// Resource limits applied to every component instance.
 #[derive(Debug, Clone, Copy)]
 pub struct Limits {
-    /// Maximum wall-clock time a single guest call may run before it is
-    /// interrupted with [`crate::Error::Timeout`].
+    /// Maximum wall-clock time a single guest call may run.
     pub deadline: Duration,
-    /// Maximum linear-memory size (in bytes) any guest memory may grow to.
+    /// Maximum linear-memory size in bytes.
     pub memory_bytes: usize,
 }
 
@@ -41,70 +26,135 @@ impl Default for Limits {
     }
 }
 
-/// A declared processor: its name, the globs it matches, and its priority
-/// (lower runs first).
+/// Host directory exposed through WASI.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ProcessorDef {
-    /// Processor name (unique within the plugin).
-    pub name: String,
-    /// Glob patterns the processor matches.
-    pub patterns: Vec<String>,
-    /// Priority; lower values run first. Ties broken by plugin order.
-    pub priority: i32,
+pub struct Preopen {
+    /// Host path.
+    pub host: PathBuf,
+    /// Path visible to the component.
+    pub guest: String,
+    /// Whether mutation is allowed.
+    pub writable: bool,
 }
 
-/// Static description of a plugin, cached after a single throwaway
-/// instantiation during [`crate::WasmEngine::load`].
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PluginInfo {
-    /// Plugin identifier, matching `^[a-z0-9][a-z0-9_-]*$`.
-    pub id: String,
-    /// Plugin version (valid semver).
-    pub version: String,
-    /// The processors this plugin declares.
-    pub processors: Vec<ProcessorDef>,
-    /// Whether the plugin exports a generator.
-    pub has_generator: bool,
+/// Capabilities available to one component instance.
+#[derive(Debug, Clone, Default)]
+pub struct Permissions {
+    /// Permit wall and monotonic clocks.
+    pub clocks: bool,
+    /// Permit secure and insecure random sources.
+    pub random: bool,
+    /// Permit inherited stdout/stderr.
+    pub stdio: bool,
+    /// Permit arbitrary sockets.
+    pub network: bool,
+    /// Exact environment variables exposed to the component.
+    pub environment: Vec<(String, String)>,
+    /// Scoped filesystem preopens.
+    pub preopens: Vec<Preopen>,
+    /// Executable names or absolute paths accepted by `rpp:host/process`.
+    pub processes: Vec<String>,
+    /// Permit any executable through `rpp:host/process`.
+    pub arbitrary_processes: bool,
+    /// Default working directory for process calls.
+    pub working_directory: Option<PathBuf>,
 }
 
-/// Outcome of running a processor over a file.
+/// Structured process invocation shared by Lua and WASM components.
+#[derive(Debug, Clone, Default)]
+#[allow(missing_docs)]
+pub struct ProcessRequest {
+    pub program: String,
+    pub args: Vec<String>,
+    pub cwd: Option<PathBuf>,
+    pub environment: Vec<(String, String)>,
+    pub stdin: Vec<u8>,
+    pub timeout: Option<Duration>,
+}
+
+/// Captured process completion.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ProcessResult {
-    /// The file was not changed.
-    Unchanged,
-    /// The file was changed (and possibly renamed).
-    Modified {
-        /// The (possibly new) output path.
-        path: String,
-        /// The new file contents.
-        contents: Vec<u8>,
+#[allow(missing_docs)]
+pub struct ProcessOutput {
+    pub status: i32,
+    pub stdout: Vec<u8>,
+    pub stderr: Vec<u8>,
+}
+
+/// A description of a component value type.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(missing_docs)]
+pub enum ValueType {
+    Bool,
+    S8,
+    U8,
+    S16,
+    U16,
+    S32,
+    U32,
+    S64,
+    U64,
+    Float32,
+    Float64,
+    Char,
+    String,
+    List(Box<ValueType>),
+    Record(Vec<(String, ValueType)>),
+    Tuple(Vec<ValueType>),
+    Variant(Vec<(String, Option<ValueType>)>),
+    Enum(Vec<String>),
+    Option(Box<ValueType>),
+    Result {
+        ok: Option<Box<ValueType>>,
+        err: Option<Box<ValueType>>,
     },
-    /// The file should be dropped from the output.
-    Dropped,
+    Flags(Vec<String>),
+    Unsupported(String),
 }
 
-/// Host functions a [`crate::WasmInstance`] may call back into.
-///
-/// Mirrors the WIT `host` interface. The generator-phase methods are only
-/// invoked while [`crate::WasmInstance::generate`] is running; the host
-/// suppresses calls made outside that window (see crate docs), so an
-/// implementation does not need to guard against that itself.
-pub trait HostCallbacks: Send {
-    /// Emit a log message. Always invoked, in any phase.
-    fn log(&mut self, level: LogLevel, message: &str);
+/// A dynamic component value used by language runtimes.
+#[derive(Debug, Clone, PartialEq)]
+#[allow(missing_docs)]
+pub enum Value {
+    Bool(bool),
+    S8(i8),
+    U8(u8),
+    S16(i16),
+    U16(u16),
+    S32(i32),
+    U32(u32),
+    S64(i64),
+    U64(u64),
+    Float32(f32),
+    Float64(f64),
+    Char(char),
+    String(String),
+    List(Vec<Value>),
+    Record(Vec<(String, Value)>),
+    Tuple(Vec<Value>),
+    Variant(String, Option<Box<Value>>),
+    Enum(String),
+    Option(Option<Box<Value>>),
+    Result(std::result::Result<Option<Box<Value>>, Option<Box<Value>>>),
+    Flags(Vec<String>),
+}
 
-    /// List output files matching an optional glob pattern.
-    fn list_files(&mut self, pattern: Option<&str>) -> Vec<String>;
+/// One callable component export.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Function {
+    /// Slash-separated export path. The final segment is the function name.
+    pub path: String,
+    /// Named function parameters.
+    pub params: Vec<(String, ValueType)>,
+    /// Function result types.
+    pub results: Vec<ValueType>,
+}
 
-    /// Read a processed output file. `None` if it does not exist.
-    fn read_file(&mut self, path: &str) -> Option<Vec<u8>>;
-
-    /// Read a raw source file. `None` if it does not exist.
-    fn read_source(&mut self, path: &str) -> Option<Vec<u8>>;
-
-    /// Add or overwrite an output file.
-    fn emit_file(&mut self, path: &str, contents: Vec<u8>);
-
-    /// Remove an output file.
-    fn remove_file(&mut self, path: &str);
+/// Static component interface discovered from the binary.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Schema {
+    /// Top-level component imports.
+    pub imports: Vec<String>,
+    /// Recursively flattened function exports.
+    pub functions: Vec<Function>,
 }

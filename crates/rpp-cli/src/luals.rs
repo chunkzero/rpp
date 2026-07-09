@@ -16,7 +16,7 @@ use anyhow::{Context, Result};
 
 /// Bump this whenever the generated API stubs change. Embedded as a marker
 /// comment so stale definitions can be detected and refreshed.
-pub const API_VERSION: u32 = 1;
+pub const API_VERSION: u32 = 2;
 
 const MARKER_PREFIX: &str = "---@meta rpp-api v";
 
@@ -43,6 +43,50 @@ pub fn write_if_stale(api_dir: &Path) -> Result<bool> {
         if stale {
             std::fs::write(&path, &contents)
                 .with_context(|| format!("writing {}", path.display()))?;
+            wrote = true;
+        }
+    }
+    Ok(wrote)
+}
+
+/// Copy LuaLS definitions shipped by a plugin package from `luals/*.lua` into
+/// the project API directory. Files are namespaced by module filename: a plugin
+/// stub `luals/window.lua` becomes `.rpp/api/window.lua`, making
+/// `require("window")` typed in pack-authored Lua sources.
+pub fn write_plugin_stubs(api_dir: &Path, plugin_root: &Path) -> Result<bool> {
+    let luals_dir = plugin_root.join("luals");
+    if !luals_dir.is_dir() {
+        return Ok(false);
+    }
+
+    std::fs::create_dir_all(api_dir).with_context(|| format!("creating {}", api_dir.display()))?;
+    let mut wrote = false;
+    for entry in
+        std::fs::read_dir(&luals_dir).with_context(|| format!("reading {}", luals_dir.display()))?
+    {
+        let entry = entry.with_context(|| format!("reading {}", luals_dir.display()))?;
+        let path = entry.path();
+        if !entry
+            .file_type()
+            .with_context(|| format!("reading file type for {}", path.display()))?
+            .is_file()
+        {
+            continue;
+        }
+        if path.extension().and_then(|ext| ext.to_str()) != Some("lua") {
+            continue;
+        }
+
+        let contents =
+            std::fs::read(&path).with_context(|| format!("reading {}", path.display()))?;
+        let target = api_dir.join(entry.file_name());
+        let stale = match std::fs::read(&target) {
+            Ok(existing) => existing != contents,
+            Err(_) => true,
+        };
+        if stale {
+            std::fs::write(&target, contents)
+                .with_context(|| format!("writing {}", target.display()))?;
             wrote = true;
         }
     }
@@ -165,6 +209,44 @@ function Str.split(s, sep) end
 ---@return string
 function Str.trim(s) end
 
+---@class rpp.ComponentHandle
+local ComponentHandle = {}
+--- Call one exported WIT function. Generated bindgen wrappers provide precise
+--- parameter and return types for each export.
+---@param export_path string
+---@param ... any
+---@return any ...
+function ComponentHandle.call(self, export_path, ...) end
+--- List the component's flattened export paths.
+---@return string[]
+function ComponentHandle.schema(self) end
+
+---@class rpp.Component
+local Component = {}
+--- Load a component declared as `[component.<name>]` in plugin.toml.
+---@param name string
+---@return rpp.ComponentHandle
+function Component.load(name) end
+
+---@class rpp.ProcessRequest
+---@field program string Executable name or path allowed by plugin permissions.
+---@field args string[]|nil
+---@field cwd string|nil
+---@field env table<string, string>|nil
+---@field stdin string|nil Binary-safe standard input.
+---@field timeout number|nil Timeout in seconds.
+
+---@class rpp.ProcessOutput
+---@field status integer
+---@field stdout string Binary-safe captured standard output.
+---@field stderr string Binary-safe captured standard error.
+
+---@class rpp.Process
+local Process = {}
+---@param request rpp.ProcessRequest
+---@return rpp.ProcessOutput
+function Process.run(request) end
+
 ---@class rpp.ProcessorOpts
 ---@field files string|string[] Glob pattern(s) selecting matching files. Required.
 ---@field priority integer|nil Lower runs first (default 0).
@@ -205,6 +287,8 @@ function Plugin.on_finish(self, fn) end
 ---@field path rpp.Path
 ---@field log  rpp.Log
 ---@field str  rpp.Str
+---@field component rpp.Component
+---@field process rpp.Process
 local rpp = {}
 --- Create a new plugin builder.
 ---@return rpp.Plugin
@@ -242,6 +326,10 @@ local GeneratorCtx = {}
 ---@param glob string|nil
 ---@return string[]
 function GeneratorCtx.files(self, glob) end
+--- List raw source files matching an optional glob.
+---@param glob string|nil
+---@return string[]
+function GeneratorCtx.source_files(self, glob) end
 --- Read a processed output file. Returns nil if absent.
 ---@param path string
 ---@return string|nil
@@ -250,10 +338,20 @@ function GeneratorCtx.read(self, path) end
 ---@param path string
 ---@return string|nil
 function GeneratorCtx.read_source(self, path) end
+--- Load and evaluate a UTF-8 Lua authoring source in the plugin environment.
+--- The source contents are recorded as a generator dependency.
+---@param path string
+---@return any
+function GeneratorCtx.load_source(self, path) end
 --- Add or overwrite an output file.
 ---@param path string
 ---@param contents string
 function GeneratorCtx.emit(self, path, contents) end
+--- Emit a non-pack artifact into a named root declared by `[plugin.outputs]`.
+---@param root string
+---@param path string
+---@param contents string
+function GeneratorCtx.emit_output(self, root, path, contents) end
 --- Drop an output file.
 ---@param path string
 function GeneratorCtx.remove(self, path) end
@@ -272,4 +370,20 @@ fn luarc_hint() -> String {
          \"Lua.workspace.library\": [\".rpp/api\"],\n  \
          \"Lua.runtime.version\": \"Lua 5.4\"\n}}\n"
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn definitions_cover_component_and_external_codegen_apis() {
+        let module = rpp_module();
+        assert!(module.contains("---@field component rpp.Component"));
+        assert!(module.contains("function Component.load(name) end"));
+
+        let context = file_and_ctx();
+        assert!(context.contains("function GeneratorCtx.load_source(self, path) end"));
+        assert!(context.contains("function GeneratorCtx.emit_output(self, root, path, contents)"));
+    }
 }

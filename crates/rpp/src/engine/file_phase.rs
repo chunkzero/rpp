@@ -50,20 +50,22 @@ pub(crate) fn process_files(ctx: FilePhaseCtx<'_>) -> Result<FilePhaseStats> {
     for src in sources {
         let chain = chain_for(compiled, &src.rel);
         let ck = chain_key(&chain);
+        let chain_cacheable = chain.iter().all(|step| step.cacheable);
 
         let prev_entry = prev.and_then(|m| m.files.get(&src.rel));
-        let clean = match prev_entry {
-            Some(entry) => {
-                entry.chain_key == ck
-                    && (src.matches_fast(&entry.fingerprint) || {
-                        match src.fingerprint() {
-                            Ok((fp, _)) => fp.xxh3 == entry.fingerprint.xxh3,
-                            Err(_) => false,
-                        }
-                    })
-            }
-            None => false,
-        };
+        let clean = chain_cacheable
+            && match prev_entry {
+                Some(entry) => {
+                    entry.chain_key == ck
+                        && (src.matches_fast(&entry.fingerprint) || {
+                            match src.fingerprint() {
+                                Ok((fp, _)) => fp.xxh3 == entry.fingerprint.xxh3,
+                                Err(_) => false,
+                            }
+                        })
+                }
+                None => false,
+            };
 
         if clean {
             let entry = prev_entry.expect("clean implies prev entry").clone();

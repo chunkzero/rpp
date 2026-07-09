@@ -95,8 +95,14 @@ pub(crate) fn collect_live_objects(manifest: &Manifest) -> HashSet<u64> {
     }
     for entry in manifest.generators.values() {
         for mutation in &entry.mutations {
-            if let GeneratorMutation::Emit(out) = mutation {
-                live.insert(out.object);
+            match mutation {
+                GeneratorMutation::Emit(out) => {
+                    live.insert(out.object);
+                }
+                GeneratorMutation::EmitExternal { object, .. } => {
+                    live.insert(*object);
+                }
+                GeneratorMutation::Remove(_) => {}
             }
         }
     }

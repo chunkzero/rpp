@@ -4,6 +4,9 @@
 //! WASM runtimes are implementations of [`PluginFactory`] / [`PluginInstance`];
 //! the build engine implements [`GeneratorHost`].
 
+use std::collections::BTreeMap;
+use std::path::PathBuf;
+
 use crate::error::Result;
 
 /// A file flowing through the pipeline.
@@ -56,7 +59,7 @@ pub struct BuildStats {
     pub processed: usize,
     /// Number of source files served from the cache.
     pub cached: usize,
-    /// Number of generator output files produced.
+    /// Number of generators executed rather than replayed from cache.
     pub generated: usize,
     /// Number of files dropped by processors.
     pub dropped: usize,
@@ -75,6 +78,19 @@ pub trait PluginFactory: Send + Sync {
     fn processors(&self) -> &[ProcessorDef];
     /// Whether this plugin has a generator phase.
     fn has_generator(&self) -> bool;
+    /// Whether per-file processor results may be served from cache.
+    fn cacheable_processors(&self) -> bool {
+        true
+    }
+    /// Whether generator mutations may be replayed from cache.
+    fn cacheable_generator(&self) -> bool {
+        true
+    }
+    /// Named non-pack output roots available to this plugin.
+    fn output_roots(&self) -> &BTreeMap<String, PathBuf> {
+        static EMPTY: std::sync::OnceLock<BTreeMap<String, PathBuf>> = std::sync::OnceLock::new();
+        EMPTY.get_or_init(BTreeMap::new)
+    }
     /// Instantiate a live instance for one worker thread.
     fn instantiate(&self) -> Result<Box<dyn PluginInstance>>;
 }
@@ -96,6 +112,8 @@ pub trait PluginInstance: Send {
 pub enum ReadKind {
     /// A `list_files(glob)` query.
     List,
+    /// A `list_source_files(glob)` query.
+    SourceList,
     /// A `read_file(path)` of a processed output.
     File,
     /// A `read_source(path)` of a raw source file.
@@ -109,6 +127,8 @@ pub enum ReadKind {
 pub trait GeneratorHost {
     /// List processed output files matching an optional glob. Recorded as a dep.
     fn list_files(&mut self, glob: Option<&str>) -> Vec<String>;
+    /// List raw source files matching an optional glob. Recorded as a dep.
+    fn list_source_files(&mut self, glob: Option<&str>) -> Vec<String>;
     /// Read a processed output file. Recorded as a dep.
     fn read_file(&mut self, path: &str) -> Option<Vec<u8>>;
     /// Read a raw source file. Recorded as a dep.
@@ -117,4 +137,6 @@ pub trait GeneratorHost {
     fn emit(&mut self, path: &str, contents: Vec<u8>);
     /// Drop an output file.
     fn remove(&mut self, path: &str);
+    /// Emit a non-pack artifact into a configured named output root.
+    fn emit_output(&mut self, _root: &str, _path: &str, _contents: Vec<u8>) {}
 }

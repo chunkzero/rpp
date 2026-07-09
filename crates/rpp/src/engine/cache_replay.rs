@@ -45,10 +45,18 @@ pub(crate) fn materialize_generator_mutations(
     plugin_id: &str,
 ) -> Result<bool> {
     for mutation in mutations {
-        if let GeneratorMutation::Emit(out) = mutation {
-            if !store.contains(out.object) {
-                return Ok(false);
+        match mutation {
+            GeneratorMutation::Emit(out) => {
+                if !store.contains(out.object) {
+                    return Ok(false);
+                }
             }
+            GeneratorMutation::EmitExternal { object, .. } => {
+                if !store.contains(*object) {
+                    return Ok(false);
+                }
+            }
+            GeneratorMutation::Remove(_) => {}
         }
     }
 
@@ -68,6 +76,7 @@ pub(crate) fn materialize_generator_mutations(
                 output_owners.remove(path);
                 apply_generator_mutation(output, RecordedMutation::Remove(path.clone()));
             }
+            GeneratorMutation::EmitExternal { .. } => {}
         }
     }
     Ok(true)

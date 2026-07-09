@@ -6,6 +6,8 @@
 use std::path::Path;
 use std::process::Command;
 
+use rpp_cli::harness::BuildHarness;
+
 fn rpp_bin() -> &'static str {
     env!("CARGO_BIN_EXE_rpp")
 }
@@ -59,7 +61,7 @@ source = "path:plugins/minify"
     std::fs::create_dir_all(&plugin).unwrap();
     std::fs::write(
         plugin.join("plugin.toml"),
-        "[plugin]\nid = \"minify\"\nversion = \"0.1.0\"\nruntime = \"lua\"\n",
+        "[plugin]\nid = \"minify\"\nversion = \"0.1.0\"\n",
     )
     .unwrap();
     std::fs::write(
@@ -218,4 +220,14 @@ fn clean_rejects_output_outside_project() {
         .expect("run rpp clean");
     assert!(!out.status.success());
     assert!(victim.join("keep.txt").exists());
+}
+
+#[test]
+fn isolated_harness_verifies_cold_and_warm_builds() {
+    let dir = tempfile::tempdir().unwrap();
+    scaffold(dir.path());
+    let report = BuildHarness::new(dir.path()).verify_reproducible().unwrap();
+    assert_eq!(report.warm.processed, 0);
+    assert!(report.warm.changes.written.is_empty());
+    assert_ne!(report.output_digest, [0; 32]);
 }

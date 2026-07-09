@@ -192,7 +192,6 @@ const HELLO_PLUGIN_TOML: &str = r#"[plugin]
 id = "hello"
 version = "0.1.0"
 description = "A starter rpp plugin"
-runtime = "lua"
 entry = "init.lua"
 "#;
 

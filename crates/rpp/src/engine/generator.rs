@@ -43,8 +43,19 @@ pub(crate) struct OutputSet {
 
 /// One generator-side output mutation.
 pub(crate) enum RecordedMutation {
-    Emit { path: String, contents: Vec<u8> },
-    EmitObject { path: String, object: u64 },
+    Emit {
+        path: String,
+        contents: Vec<u8>,
+    },
+    EmitExternal {
+        root: String,
+        path: String,
+        contents: Vec<u8>,
+    },
+    EmitObject {
+        path: String,
+        object: u64,
+    },
     Remove(String),
 }
 
@@ -56,9 +67,11 @@ pub(crate) struct RecordingHost<'a> {
     output: &'a mut OutputSet,
     read_view: OutputSet,
     source_root: PathBuf,
+    source_files: Vec<String>,
     store: &'a ObjectStore,
     plugin_id: String,
     output_owners: &'a mut BTreeMap<String, String>,
+    external_roots: BTreeMap<String, PathBuf>,
     reads: Vec<ReadRecord>,
     pub(crate) mutations: Vec<RecordedMutation>,
     pub(crate) errors: Vec<String>,
@@ -69,17 +82,21 @@ impl<'a> RecordingHost<'a> {
     pub(crate) fn new(
         output: &'a mut OutputSet,
         source_root: PathBuf,
+        source_files: Vec<String>,
         store: &'a ObjectStore,
         plugin_id: impl Into<String>,
         output_owners: &'a mut BTreeMap<String, String>,
+        external_roots: BTreeMap<String, PathBuf>,
     ) -> Self {
         Self {
             read_view: output.clone(),
             output,
             source_root,
+            source_files,
             store,
             plugin_id: plugin_id.into(),
             output_owners,
+            external_roots,
             reads: Vec::new(),
             mutations: Vec::new(),
             errors: Vec::new(),
@@ -122,14 +139,20 @@ impl GeneratorHost for RecordingHost<'_> {
             .collect();
         matched.sort();
 
-        let mut joined = String::new();
-        for p in &matched {
-            joined.push_str(p);
-            joined.push('\n');
-        }
-        let hash = xxh3(joined.as_bytes());
+        let hash = hash_paths(&matched);
         self.record(ReadKind::List, glob_pat.unwrap_or("**").to_string(), hash);
 
+        matched
+    }
+
+    fn list_source_files(&mut self, glob_pat: Option<&str>) -> Vec<String> {
+        let matched = matching_paths(&self.source_files, glob_pat);
+        let hash = hash_paths(&matched);
+        self.record(
+            ReadKind::SourceList,
+            glob_pat.unwrap_or("**").to_string(),
+            hash,
+        );
         matched
     }
 
@@ -185,6 +208,24 @@ impl GeneratorHost for RecordingHost<'_> {
         self.mutations
             .push(RecordedMutation::Remove(path.to_string()));
     }
+
+    fn emit_output(&mut self, root: &str, path: &str, contents: Vec<u8>) {
+        let Some(root_path) = self.external_roots.get(root) else {
+            self.errors
+                .push(format!("unknown output root `{root}` for `{path}`"));
+            return;
+        };
+        if let Err(message) = validate_relative(path).map_err(|e| e.to_string()) {
+            self.errors
+                .push(format!("invalid external output path `{path}`: {message}"));
+            return;
+        }
+        self.mutations.push(RecordedMutation::EmitExternal {
+            root: root_path.to_string_lossy().replace('\\', "/"),
+            path: path.to_string(),
+            contents,
+        });
+    }
 }
 
 /// Replay a recorded read-set against the current output/source state.
@@ -195,6 +236,7 @@ pub(crate) fn read_set_matches(
     reads: &[ReadRecord],
     output: &OutputSet,
     source_root: &std::path::Path,
+    source_files: &[String],
     store: &ObjectStore,
 ) -> bool {
     for record in reads {
@@ -212,12 +254,10 @@ pub(crate) fn read_set_matches(
                     })
                     .collect();
                 matched.sort();
-                let mut joined = String::new();
-                for p in matched {
-                    joined.push_str(p);
-                    joined.push('\n');
-                }
-                xxh3(joined.as_bytes())
+                hash_paths(&matched)
+            }
+            ReadKindRepr::SourceList => {
+                hash_paths(&matching_paths(source_files, Some(&record.key)))
             }
             ReadKindRepr::File => output
                 .files
@@ -234,6 +274,29 @@ pub(crate) fn read_set_matches(
         }
     }
     true
+}
+
+fn matching_paths(paths: &[String], glob_pat: Option<&str>) -> Vec<String> {
+    let mut matched = paths
+        .iter()
+        .filter(|path| {
+            glob_pat
+                .map(|glob_pat| glob_pat == "**" || glob::matches(glob_pat, path))
+                .unwrap_or(true)
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    matched.sort();
+    matched
+}
+
+fn hash_paths<P: AsRef<str>>(paths: &[P]) -> u64 {
+    let mut joined = String::new();
+    for path in paths {
+        joined.push_str(path.as_ref());
+        joined.push('\n');
+    }
+    xxh3(joined.as_bytes())
 }
 
 fn confined_read(root: &std::path::Path, path: &str) -> Option<Vec<u8>> {
@@ -258,6 +321,7 @@ pub(crate) fn apply_generator_mutation(output: &mut OutputSet, mutation: Recorde
                 .files
                 .insert(path, OutputContent::from_object(object));
         }
+        RecordedMutation::EmitExternal { .. } => {}
         RecordedMutation::Remove(path) => {
             output.files.remove(&path);
         }

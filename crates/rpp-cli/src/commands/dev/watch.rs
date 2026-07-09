@@ -167,7 +167,11 @@ fn collect_local_plugin_dirs(
     root: &Path,
 ) {
     for plugin in plugins {
-        if let Some(rest) = plugin.source.strip_prefix("path:") {
+        if let Some(rest) = plugin
+            .source
+            .as_deref()
+            .and_then(|source| source.strip_prefix("path:"))
+        {
             let rest = rest.trim();
             if rest.is_empty() {
                 continue;

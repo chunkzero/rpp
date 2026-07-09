@@ -8,9 +8,9 @@ RPP is a Rust-based toolchain for building and testing Minecraft resource packs.
 - `crates/rpp`: Core library — config (`rpp.toml`), plugin model, sandboxed Lua 5.4 plugin runtime, incremental build engine with content-addressed cache
 - `crates/rpp-fetch`: Plugin source resolution (GitHub + local), lockfile (`rpp.lock`), plugin discovery/search
 - `crates/rpp-squash`: Pack optimization — JSON minify, PNG optimization (oxipng), deterministic zip, external PackSquash support
-- `crates/rpp-wasm`: WASIp2 component plugin host (wasmtime); WIT contract at `crates/rpp-wasm/wit/plugin.wit`
+- `crates/rpp-wasm`: Dynamic WASIp2 component host (wasmtime); the optional process-host contract is at `crates/rpp-wasm/wit/process.wit`
 - `crates/rpp-cli`: The `rpp` binary — init, build, dev server, plugin management
-- `examples/`: Working example pack project and plugin packages (Lua + WASM guest)
+- `examples/`: Working example pack project and Lua plugin packages
 
 ## Build Commands
 
@@ -218,5 +218,5 @@ pub struct Cli {
 - The CLI binary is named `rpp` (from `rpp-cli` crate)
 - The incremental cache lives at `.rpp/cache/` (bincode manifest + content-addressed objects)
 - The project supports custom ignore files (`.rppignore`)
-- WASM guest example crates under `examples/plugins/` are intentionally NOT workspace members
+- WASIp2 fixture crates under crate-local `tests/fixtures/` are intentionally NOT workspace members
 - Prefer package-scoped cargo commands (`-p <crate>`) when iterating

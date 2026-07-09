@@ -2,40 +2,65 @@
 
 use wasmtime::component::ResourceTable;
 use wasmtime::{StoreLimits, StoreLimitsBuilder};
-use wasmtime_wasi::{WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView};
+use wasmtime_wasi::{DirPerms, FilePerms, WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView};
 
-use crate::types::HostCallbacks;
+use crate::types::Permissions;
 
-/// Per-store data: WASI context, resource table, memory limits, the host
-/// callbacks, and a flag tracking whether the generate phase is active.
 pub(crate) struct StoreData {
     pub(crate) wasi: WasiCtx,
     pub(crate) table: ResourceTable,
     pub(crate) limits: StoreLimits,
-    pub(crate) host: Box<dyn HostCallbacks>,
-    pub(crate) in_generate: bool,
+    pub(crate) permissions: Permissions,
 }
 
 impl StoreData {
-    pub(crate) fn new(host: Box<dyn HostCallbacks>, memory_bytes: usize) -> Self {
-        let wasi = WasiCtxBuilder::new()
-            .inherit_stdout()
-            .inherit_stderr()
-            .build();
-        let limits = StoreLimitsBuilder::new()
-            .memory_size(memory_bytes)
-            .memories(8)
-            .tables(64)
-            .table_elements(1_000_000)
-            .instances(128)
-            .build();
-        Self {
-            wasi,
-            table: ResourceTable::new(),
-            limits,
-            host,
-            in_generate: false,
+    pub(crate) fn new(permissions: Permissions, memory_bytes: usize) -> crate::Result<Self> {
+        let mut builder = WasiCtxBuilder::new();
+        if !permissions.random {
+            // Rust WASIp2 components commonly import the random interfaces for
+            // hash-map seeding even when the plugin has no random capability.
+            // Keep those components instantiable while making permissionless
+            // builds reproducible.
+            builder
+                .secure_random(wasmtime_wasi::Deterministic::new(vec![0x52, 0x50, 0x50]))
+                .insecure_random(wasmtime_wasi::Deterministic::new(vec![0x50, 0x50, 0x52]))
+                .insecure_random_seed(0);
         }
+        if permissions.stdio {
+            builder.inherit_stdout().inherit_stderr();
+        }
+        for (name, value) in &permissions.environment {
+            builder.env(name, value);
+        }
+        if permissions.network {
+            builder.inherit_network();
+        }
+        for preopen in &permissions.preopens {
+            let (dir_perms, file_perms) = if preopen.writable {
+                (DirPerms::all(), FilePerms::all())
+            } else {
+                (DirPerms::READ, FilePerms::READ)
+            };
+            builder
+                .preopened_dir(&preopen.host, &preopen.guest, dir_perms, file_perms)
+                .map_err(|source| crate::Error::WasiDirectory {
+                    path: preopen.host.clone(),
+                    source,
+                })?;
+        }
+
+        Ok(Self {
+            wasi: builder.build(),
+            table: ResourceTable::new(),
+            limits: StoreLimitsBuilder::new()
+                .memory_size(memory_bytes)
+                .memories(8)
+                .tables(64)
+                .table_elements(1_000_000)
+                .instances(128)
+                .build(),
+            permissions,
+        })
     }
 }
 

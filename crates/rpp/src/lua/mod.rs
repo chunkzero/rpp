@@ -6,6 +6,7 @@
 
 mod bootstrap;
 mod builtins;
+mod component;
 mod convert;
 mod ctx;
 mod factory;
@@ -13,9 +14,11 @@ mod file;
 mod generator_ctx;
 mod instance;
 mod plugin_builder;
+mod runtime;
 mod sandbox;
 mod traceback;
 
 pub use builtins::LogLevel;
-pub use factory::LuaPluginFactory;
+pub use factory::{LuaPluginFactory, LuaPluginLimits};
 pub use instance::LuaPluginInstance;
+pub use runtime::RuntimeAccess;

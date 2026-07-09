@@ -53,7 +53,9 @@ source = "path:plugins/example"
 
 Build paths must be separate, project-relative directories. Plugin-produced
 paths are normalized relative pack paths and cannot escape the source or output
-roots.
+roots. Plugins may also emit into named external roots explicitly declared by the
+project; RPP atomically replaces owned artifacts, removes only its own stale
+generated files, and preserves handwritten neighbors.
 
 ## Commands
 
@@ -87,10 +89,12 @@ just --list
 just ci
 cargo test -p rpp --features wasm
 cargo clippy -p rpp --features wasm --all-targets -- -D warnings
-just wasm-example
 ```
 
-The WASM guest examples are intentionally outside the Cargo workspace.
+Downstream plugin repositories can use
+`rpp_cli::harness::BuildHarness::verify_reproducible()` for isolated cold/warm
+end-to-end build validation with structured results. `build_no_cache()` covers
+the cache-reset path without discarding external generated-file ownership.
 
 ## License
 

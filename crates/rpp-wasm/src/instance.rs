@@ -1,104 +1,171 @@
-//! Live WASM plugin instances.
+//! Live dynamic component instances.
 
 use std::time::Duration;
 
+use wasmtime::component::{ComponentExportIndex, Instance, Val};
 use wasmtime::Store;
 
-use crate::bindings::RppPlugin;
-use crate::convert::convert_process_result;
-use crate::error::{Error, Result};
 use crate::store::StoreData;
-use crate::types::{HostCallbacks, LogLevel, ProcessResult};
+use crate::{Error, Result, Value};
 
-/// A live, isolated plugin instance bound to one set of host callbacks.
-///
-/// Not `Sync`: drive a single instance from one thread at a time. Create one
-/// instance per worker thread via [`crate::CompiledPlugin::instantiate`].
+/// A live component instance.
 pub struct WasmInstance {
     pub(crate) store: Store<StoreData>,
-    pub(crate) instance: RppPlugin,
+    pub(crate) instance: Instance,
     pub(crate) epoch_ticks: u64,
     pub(crate) deadline: Duration,
 }
 
 impl WasmInstance {
-    /// Run a named processor over a single file.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`Error::Trap`]/[`Error::Timeout`] on a trap/timeout, or
-    /// [`Error::GuestError`] for a guest-reported failure (e.g. an unknown
-    /// processor name rejected by the guest).
-    pub fn process(
-        &mut self,
-        processor: &str,
-        path: &str,
-        contents: &[u8],
-    ) -> Result<ProcessResult> {
-        let file = crate::bindings::guest::FileData {
-            path: path.to_string(),
-            contents: contents.to_vec(),
+    /// Call a flattened export path discovered in [`crate::Schema`].
+    pub fn call(&mut self, path: &str, params: &[Value]) -> Result<Vec<Value>> {
+        let mut parent: Option<ComponentExportIndex> = None;
+        let mut segments = path.split('#').peekable();
+        let function_name = loop {
+            let segment = segments
+                .next()
+                .ok_or_else(|| Error::MissingExport(path.to_string()))?;
+            if segments.peek().is_none() {
+                break segment;
+            }
+            parent = Some(
+                self.instance
+                    .get_export_index(&mut self.store, parent.as_ref(), segment)
+                    .ok_or_else(|| Error::MissingExport(path.to_string()))?,
+            );
         };
-        self.store.set_epoch_deadline(self.epoch_ticks);
-        let result = self
+        let function_index = self
             .instance
-            .rpp_plugin_guest()
-            .call_process(&mut self.store, processor, &file)
-            .map_err(|e| map_timeout(e, self.deadline))?;
-        match result {
-            Ok(r) => Ok(convert_process_result(r)),
-            Err(msg) => Err(Error::GuestError(msg)),
-        }
-    }
+            .get_export_index(&mut self.store, parent.as_ref(), function_name)
+            .ok_or_else(|| Error::MissingExport(path.to_string()))?;
+        let function = self
+            .instance
+            .get_func(&mut self.store, function_index)
+            .ok_or_else(|| Error::MissingExport(path.to_string()))?;
 
-    /// Run the generator phase. During this call the generator-phase host
-    /// callbacks are live.
-    ///
-    /// # Errors
-    ///
-    /// [`Error::Trap`]/[`Error::Timeout`] on trap/timeout, or
-    /// [`Error::GuestError`] for a guest-reported failure.
-    pub fn generate(&mut self) -> Result<()> {
-        self.store.data_mut().in_generate = true;
+        let params = params.iter().cloned().map(to_wasmtime).collect::<Vec<_>>();
+        let result_count = function.ty(&self.store).results().len();
+        let mut results = vec![Val::Bool(false); result_count];
         self.store.set_epoch_deadline(self.epoch_ticks);
-        let result = self
-            .instance
-            .rpp_plugin_guest()
-            .call_generate(&mut self.store)
-            .map_err(|e| map_timeout(e, self.deadline));
-        self.store.data_mut().in_generate = false;
-        match result? {
-            Ok(()) => Ok(()),
-            Err(msg) => Err(Error::GuestError(msg)),
-        }
+        function
+            .call(&mut self.store, &params, &mut results)
+            .map_err(|error| map_timeout(error, self.deadline))?;
+        let converted = results
+            .into_iter()
+            .map(from_wasmtime)
+            .collect::<Result<Vec<_>>>();
+        function
+            .post_return(&mut self.store)
+            .map_err(|error| map_timeout(error, self.deadline))?;
+        converted
     }
 }
 
-/// No-op callbacks used for the throwaway validation instantiation.
-pub(crate) struct NoopCallbacks;
-
-impl HostCallbacks for NoopCallbacks {
-    fn log(&mut self, _level: LogLevel, _message: &str) {}
-    fn list_files(&mut self, _pattern: Option<&str>) -> Vec<String> {
-        Vec::new()
+fn to_wasmtime(value: Value) -> Val {
+    match value {
+        Value::Bool(value) => Val::Bool(value),
+        Value::S8(value) => Val::S8(value),
+        Value::U8(value) => Val::U8(value),
+        Value::S16(value) => Val::S16(value),
+        Value::U16(value) => Val::U16(value),
+        Value::S32(value) => Val::S32(value),
+        Value::U32(value) => Val::U32(value),
+        Value::S64(value) => Val::S64(value),
+        Value::U64(value) => Val::U64(value),
+        Value::Float32(value) => Val::Float32(value),
+        Value::Float64(value) => Val::Float64(value),
+        Value::Char(value) => Val::Char(value),
+        Value::String(value) => Val::String(value),
+        Value::List(values) => Val::List(values.into_iter().map(to_wasmtime).collect()),
+        Value::Record(fields) => Val::Record(
+            fields
+                .into_iter()
+                .map(|(name, value)| (name, to_wasmtime(value)))
+                .collect(),
+        ),
+        Value::Tuple(values) => Val::Tuple(values.into_iter().map(to_wasmtime).collect()),
+        Value::Variant(case, value) => {
+            Val::Variant(case, value.map(|value| Box::new(to_wasmtime(*value))))
+        }
+        Value::Enum(case) => Val::Enum(case),
+        Value::Option(value) => Val::Option(value.map(|value| Box::new(to_wasmtime(*value)))),
+        Value::Result(result) => Val::Result(match result {
+            Ok(value) => Ok(value.map(|value| Box::new(to_wasmtime(*value)))),
+            Err(value) => Err(value.map(|value| Box::new(to_wasmtime(*value)))),
+        }),
+        Value::Flags(flags) => Val::Flags(flags),
     }
-    fn read_file(&mut self, _path: &str) -> Option<Vec<u8>> {
-        None
-    }
-    fn read_source(&mut self, _path: &str) -> Option<Vec<u8>> {
-        None
-    }
-    fn emit_file(&mut self, _path: &str, _contents: Vec<u8>) {}
-    fn remove_file(&mut self, _path: &str) {}
 }
 
-/// Convert a wasmtime call error, distinguishing epoch-deadline traps
-/// (timeouts) from ordinary traps. Used where the per-call deadline is known.
-pub(crate) fn map_timeout(err: wasmtime::Error, deadline: Duration) -> Error {
-    if let Some(trap) = err.downcast_ref::<wasmtime::Trap>() {
-        if *trap == wasmtime::Trap::Interrupt {
-            return Error::Timeout(deadline);
+fn from_wasmtime(value: Val) -> Result<Value> {
+    Ok(match value {
+        Val::Bool(value) => Value::Bool(value),
+        Val::S8(value) => Value::S8(value),
+        Val::U8(value) => Value::U8(value),
+        Val::S16(value) => Value::S16(value),
+        Val::U16(value) => Value::U16(value),
+        Val::S32(value) => Value::S32(value),
+        Val::U32(value) => Value::U32(value),
+        Val::S64(value) => Value::S64(value),
+        Val::U64(value) => Value::U64(value),
+        Val::Float32(value) => Value::Float32(value),
+        Val::Float64(value) => Value::Float64(value),
+        Val::Char(value) => Value::Char(value),
+        Val::String(value) => Value::String(value),
+        Val::List(values) => Value::List(
+            values
+                .into_iter()
+                .map(from_wasmtime)
+                .collect::<Result<_>>()?,
+        ),
+        Val::Record(fields) => Value::Record(
+            fields
+                .into_iter()
+                .map(|(name, value)| Ok((name, from_wasmtime(value)?)))
+                .collect::<Result<_>>()?,
+        ),
+        Val::Tuple(values) => Value::Tuple(
+            values
+                .into_iter()
+                .map(from_wasmtime)
+                .collect::<Result<_>>()?,
+        ),
+        Val::Variant(case, value) => Value::Variant(
+            case,
+            value
+                .map(|value| from_wasmtime(*value).map(Box::new))
+                .transpose()?,
+        ),
+        Val::Enum(case) => Value::Enum(case),
+        Val::Option(value) => Value::Option(
+            value
+                .map(|value| from_wasmtime(*value).map(Box::new))
+                .transpose()?,
+        ),
+        Val::Result(result) => Value::Result(match result {
+            Ok(value) => Ok(value
+                .map(|value| from_wasmtime(*value).map(Box::new))
+                .transpose()?),
+            Err(value) => Err(value
+                .map(|value| from_wasmtime(*value).map(Box::new))
+                .transpose()?),
+        }),
+        Val::Flags(flags) => Value::Flags(flags),
+        Val::Resource(_) | Val::Future(_) | Val::Stream(_) | Val::ErrorContext(_) => {
+            return Err(Error::Value(
+                "resource, future, stream, and error-context values are unsupported".into(),
+            ))
         }
+    })
+}
+
+pub(crate) fn map_timeout(error: wasmtime::Error, deadline: Duration) -> Error {
+    if error
+        .downcast_ref::<wasmtime::Trap>()
+        .is_some_and(|trap| *trap == wasmtime::Trap::Interrupt)
+    {
+        Error::Timeout(deadline)
+    } else {
+        Error::Trap(error)
     }
-    Error::Trap(err)
 }

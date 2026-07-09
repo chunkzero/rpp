@@ -2,10 +2,12 @@
 
 mod common;
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use common::{PluginDir, Project};
 use rpp::engine::Engine;
+use rpp::lua::{LuaPluginFactory, LuaPluginLimits, RuntimeAccess};
 use rpp::model::PluginFactory;
 
 fn build(project: &Project, plugins: Vec<Arc<dyn PluginFactory>>) -> rpp::engine::BuildResult {
@@ -15,6 +17,23 @@ fn build(project: &Project, plugins: Vec<Arc<dyn PluginFactory>>) -> rpp::engine
         .build_engine()
         .unwrap();
     engine.build().unwrap()
+}
+
+fn external_factory(plugin: &PluginDir, root: &std::path::Path) -> Arc<dyn PluginFactory> {
+    let access = RuntimeAccess::sandboxed(root.to_path_buf())
+        .with_outputs(BTreeMap::from([("code".to_string(), "generated".into())]));
+    Arc::new(
+        LuaPluginFactory::load_with_limits_and_access(
+            plugin.path(),
+            toml::Value::Table(Default::default()),
+            "test-pack",
+            None,
+            Some(34),
+            LuaPluginLimits::default(),
+            access,
+        )
+        .unwrap(),
+    )
 }
 
 #[test]
@@ -396,6 +415,59 @@ return plugin
 }
 
 #[test]
+fn lua_generator_discovers_and_loads_dropped_raw_sources() {
+    let project = Project::new();
+    project.write_src("window/z.lua", "z");
+    project.write_src("window/a.lua", "a");
+
+    let plugin = PluginDir::lua(
+        "source-generator",
+        r#"
+local rpp = require("rpp")
+local plugin = rpp.plugin()
+plugin:processor("drop-sources", { files = { "window/**" } }, function(ctx, file)
+    file:drop()
+end)
+plugin:generator("sources", function(ctx)
+    local documents = {}
+    for _, path in ipairs(ctx:source_files("window/**")) do
+        documents[#documents + 1] = path .. "=" .. ctx:read_source(path)
+    end
+    ctx:emit("documents.txt", table.concat(documents, "\n"))
+end)
+return plugin
+"#,
+    );
+
+    let first = build(&project, vec![plugin.factory_arc("")]);
+    assert_eq!(first.generated, 1);
+    assert_eq!(
+        project.read_out("documents.txt").as_deref(),
+        Some("window/a.lua=a\nwindow/z.lua=z")
+    );
+    assert!(!project.out_exists("window/a.lua"));
+
+    let unchanged = build(&project, vec![plugin.factory_arc("")]);
+    assert_eq!(unchanged.generated, 0);
+
+    project.write_src("window/a.lua", "changed");
+    let changed = build(&project, vec![plugin.factory_arc("")]);
+    assert_eq!(changed.generated, 1);
+    assert_eq!(
+        project.read_out("documents.txt").as_deref(),
+        Some("window/a.lua=changed\nwindow/z.lua=z")
+    );
+
+    std::fs::remove_file(project.src().join("window/z.lua")).unwrap();
+    let removed = build(&project, vec![plugin.factory_arc("")]);
+    assert_eq!(removed.generated, 1);
+    assert_eq!(
+        project.read_out("documents.txt").as_deref(),
+        Some("window/a.lua=changed")
+    );
+}
+
+#[test]
 fn clean_removes_output_and_cache() {
     let project = Project::new();
     project.write_src("a.txt", "a");
@@ -443,6 +515,35 @@ return plugin
 
     let result = build(&project, vec![plugin.factory_arc("")]);
     assert_eq!(result.processed, 1);
+}
+
+#[test]
+fn failing_finish_hook_does_not_commit_outputs_or_manifest() {
+    let project = Project::new();
+    project.write_src("a.txt", "a");
+    let plugin = PluginDir::lua(
+        "finish-error",
+        r#"
+local rpp = require("rpp")
+local plugin = rpp.plugin()
+plugin:generator("g", function(ctx)
+    ctx:emit("generated.txt", "generated")
+end)
+plugin:on_finish(function()
+    error("finish failed")
+end)
+return plugin
+"#,
+    );
+    let engine = Engine::builder(project.config())
+        .project_root(project.root())
+        .plugin(plugin.factory_arc(""))
+        .build_engine()
+        .unwrap();
+    let error = engine.build().unwrap_err().to_string();
+    assert!(error.contains("finish failed"), "{error}");
+    assert!(!project.root().join("dist/generated.txt").exists());
+    assert!(!project.root().join(".rpp/cache/manifest.bin").exists());
 }
 
 #[test]
@@ -604,4 +705,91 @@ fn corrupt_cache_object_is_rebuilt() {
     let second = build(&project, Vec::new());
     assert_eq!(second.processed, 1);
     assert_eq!(project.read_out("a.txt").as_deref(), Some("a"));
+}
+
+#[test]
+fn external_outputs_have_durable_stale_ownership_and_clean_support() {
+    let project = Project::new();
+    project.write_src("a.txt", "a");
+    let plugin = PluginDir::lua(
+        "codegen",
+        r#"
+local rpp = require("rpp")
+local plugin = rpp.plugin()
+plugin:generator("codegen", function(ctx)
+    ctx:emit_output("code", "Keep.kt", "keep-v1")
+    ctx:emit_output("code", "Stale.kt", "stale")
+end)
+return plugin
+"#,
+    );
+
+    let first = build(&project, vec![external_factory(&plugin, project.root())]);
+    assert_eq!(first.changes.external.written.len(), 2);
+    std::fs::write(project.root().join("generated/Manual.kt"), "manual").unwrap();
+
+    std::fs::write(
+        plugin.path().join("init.lua"),
+        r#"
+local rpp = require("rpp")
+local plugin = rpp.plugin()
+plugin:generator("codegen", function(ctx)
+    ctx:emit_output("code", "Keep.kt", "keep-v2")
+end)
+return plugin
+"#,
+    )
+    .unwrap();
+    // Simulate `rpp build --no-cache`: ownership deliberately lives outside
+    // this directory and must still remove Stale.kt.
+    std::fs::remove_dir_all(project.root().join(".rpp/cache")).unwrap();
+    let second = build(&project, vec![external_factory(&plugin, project.root())]);
+    assert_eq!(
+        std::fs::read_to_string(project.root().join("generated/Keep.kt")).unwrap(),
+        "keep-v2"
+    );
+    assert!(!project.root().join("generated/Stale.kt").exists());
+    assert!(project.root().join("generated/Manual.kt").exists());
+    assert_eq!(second.changes.external.removed.len(), 1);
+
+    let engine = Engine::builder(project.config())
+        .project_root(project.root())
+        .plugin(external_factory(&plugin, project.root()))
+        .build_engine()
+        .unwrap();
+    engine.clean().unwrap();
+    assert!(!project.root().join("generated/Keep.kt").exists());
+    assert!(project.root().join("generated/Manual.kt").exists());
+}
+
+#[test]
+fn colliding_external_outputs_fail_with_plugin_attribution() {
+    let project = Project::new();
+    project.write_src("a.txt", "a");
+    let make = |id: &str| {
+        PluginDir::lua(
+            id,
+            r#"
+local rpp = require("rpp")
+local plugin = rpp.plugin()
+plugin:generator("g", function(ctx)
+    ctx:emit_output("code", "Same.kt", "generated")
+end)
+return plugin
+"#,
+        )
+    };
+    let first = make("first");
+    let second = make("second");
+    let engine = Engine::builder(project.config())
+        .project_root(project.root())
+        .plugins([
+            external_factory(&first, project.root()),
+            external_factory(&second, project.root()),
+        ])
+        .build_engine()
+        .unwrap();
+    let error = engine.build().unwrap_err().to_string();
+    assert!(error.contains("`first` and `second`"), "{error}");
+    assert!(error.contains("Same.kt"), "{error}");
 }

@@ -3,9 +3,10 @@
 use std::path::Path;
 use std::time::Duration;
 
-use mlua::{Lua, Value};
+use mlua::{Lua, LuaOptions, StdLib, Value};
 
 use crate::error::{Error, Result};
+use crate::lua::runtime::RuntimeAccess;
 use crate::lua::sandbox::{install_limits, run_limited, Deadline, Sandbox};
 use crate::lua::traceback;
 
@@ -25,13 +26,20 @@ pub(crate) fn eval_entry(
     entry_source: &str,
     memory_limit: usize,
     execution_limit: Duration,
+    access: RuntimeAccess,
 ) -> Result<EntryEval> {
-    let lua = Lua::new();
+    let lua = if access.is_native() || access.has_lua(crate::config::LuaCapability::Debug) {
+        // Native/debug mode is explicitly trusted; mlua marks these libraries
+        // unsafe because they can break normal sandbox assumptions.
+        unsafe { Lua::unsafe_new_with(StdLib::ALL, LuaOptions::default()) }
+    } else {
+        Lua::new()
+    };
     let deadline = install_limits(&lua, memory_limit).map_err(|e| Error::PluginLoad {
         plugin: plugin_id.to_string(),
         message: traceback::render(&e),
     })?;
-    let sandbox = Sandbox::new(&lua, plugin_id, root).map_err(|e| Error::PluginLoad {
+    let sandbox = Sandbox::new(&lua, plugin_id, root, access).map_err(|e| Error::PluginLoad {
         plugin: plugin_id.to_string(),
         message: traceback::render(&e),
     })?;

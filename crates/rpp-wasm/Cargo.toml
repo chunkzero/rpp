@@ -9,10 +9,11 @@ authors.workspace = true
 repository.workspace = true
 
 [dependencies]
-wasmtime = { version = "=41.0.0", features = ["component-model", "cranelift", "runtime"] }
+wasmtime = { version = "=41.0.0", features = ["cache", "component-model", "cranelift", "runtime"] }
 wasmtime-wasi = "=41.0.0"
 thiserror = "2"
-semver = "1"
+libc = "0.2"
+sha2 = "0.10"
 
 [dev-dependencies]
-png = "0.18"
+tempfile = "3.13"

@@ -1,35 +1,27 @@
-//! Shared wasmtime engine and compiled plugin handles.
+//! Shared wasmtime engine and compiled component handles.
 
-use std::{
-    path::{Path, PathBuf},
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        Arc,
-    },
-    thread::JoinHandle,
-    time::Duration,
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc, Mutex,
 };
+use std::thread::JoinHandle;
+use std::time::Duration;
 
-use wasmtime::{
-    component::{Component, Linker},
-    Config, Engine, Store,
-};
+use sha2::{Digest, Sha256};
+use wasmtime::component::types::{ComponentItem, Type};
+use wasmtime::component::{Component, Linker, Val};
+use wasmtime::{Config, Engine, Store};
 use wasmtime_wasi::p2;
 
-use crate::bindings::{self, RppPlugin};
-use crate::convert::{convert_info, validate_plugin_info};
-use crate::error::{Error, Result};
-use crate::instance::{map_timeout, NoopCallbacks};
+use crate::instance::map_timeout;
 use crate::store::StoreData;
-use crate::types::{HostCallbacks, Limits, PluginInfo};
-use crate::WasmInstance;
+use crate::types::{Function, Limits, Permissions, Schema, ValueType};
+use crate::{Error, Result, WasmInstance};
 
-/// Granularity of the background epoch ticker. The per-call deadline is
-/// rounded up to a whole number of ticks.
 const EPOCH_TICK: Duration = Duration::from_millis(50);
 
-/// Background thread that increments the engine epoch on a fixed cadence so
-/// per-call deadlines are enforced. Stops and joins on drop.
 struct EpochTicker {
     stop: Arc<AtomicBool>,
     handle: Option<JoinHandle<()>>,
@@ -64,180 +56,372 @@ impl Drop for EpochTicker {
 }
 
 impl Limits {
-    /// Number of epoch ticks corresponding to [`Limits::deadline`] (at least 1).
     pub(crate) fn epoch_ticks(&self) -> u64 {
         let nanos = self.deadline.as_nanos().max(1);
-        let tick = EPOCH_TICK.as_nanos().max(1);
-        nanos.div_ceil(tick).max(1) as u64
+        nanos.div_ceil(EPOCH_TICK.as_nanos().max(1)).max(1) as u64
     }
 }
 
-/// Shared wasmtime engine plus the configuration used to instantiate plugins.
-///
-/// Cloning is cheap (it shares the underlying [`Engine`] and ticker) and an
-/// engine is safe to use from multiple threads.
+/// Shared engine used to compile component libraries.
 #[derive(Clone)]
 pub struct WasmEngine {
     engine: Engine,
-    linker: Arc<Linker<StoreData>>,
     limits: Limits,
-    // Kept alive for the lifetime of the engine; the ticker stops on drop.
     _ticker: Arc<EpochTicker>,
+    components: Arc<Mutex<HashMap<[u8; 32], Component>>>,
 }
 
 impl WasmEngine {
-    /// Construct an engine with default [`Limits`].
+    /// Construct an engine with default limits.
     pub fn new() -> Result<Self> {
-        Self::with_limits(Limits::default())
+        Self::build(Limits::default(), None)
     }
 
-    /// Construct an engine with custom [`Limits`].
+    /// Construct an engine with custom limits.
     pub fn with_limits(limits: Limits) -> Result<Self> {
+        Self::build(limits, None)
+    }
+
+    /// Construct an engine using a persistent Wasmtime compilation cache.
+    pub fn with_cache_dir(cache_dir: impl AsRef<Path>) -> Result<Self> {
+        Self::build(Limits::default(), Some(cache_dir.as_ref()))
+    }
+
+    /// Construct an engine with custom limits and a persistent compilation cache.
+    pub fn with_limits_and_cache(limits: Limits, cache_dir: impl AsRef<Path>) -> Result<Self> {
+        Self::build(limits, Some(cache_dir.as_ref()))
+    }
+
+    fn build(limits: Limits, cache_dir: Option<&Path>) -> Result<Self> {
         let mut config = Config::new();
         config.wasm_component_model(true);
         config.epoch_interruption(true);
+        if let Some(cache_dir) = cache_dir {
+            let cache_dir = if cache_dir.is_absolute() {
+                cache_dir.to_path_buf()
+            } else {
+                std::env::current_dir()
+                    .map_err(|source| Error::Io {
+                        path: PathBuf::from("."),
+                        source,
+                    })?
+                    .join(cache_dir)
+            };
+            let mut cache_config = wasmtime::CacheConfig::new();
+            cache_config.with_directory(cache_dir);
+            let cache = wasmtime::Cache::new(cache_config).map_err(Error::Engine)?;
+            config.cache(Some(cache));
+        }
         let engine = Engine::new(&config).map_err(Error::Engine)?;
-
-        let mut linker: Linker<StoreData> = Linker::new(&engine);
-        p2::add_to_linker_sync(&mut linker).map_err(Error::Engine)?;
-        bindings::rpp::plugin::host::add_to_linker::<_, wasmtime::component::HasSelf<StoreData>>(
-            &mut linker,
-            |data: &mut StoreData| data,
-        )
-        .map_err(Error::Engine)?;
-
         let ticker = EpochTicker::spawn(engine.clone()).map_err(Error::EpochTicker)?;
-
         Ok(Self {
             engine,
-            linker: Arc::new(linker),
             limits,
             _ticker: Arc::new(ticker),
+            components: Arc::new(Mutex::new(HashMap::new())),
         })
     }
 
-    /// The limits applied to instances created from this engine.
-    pub fn limits(&self) -> &Limits {
-        &self.limits
-    }
-
-    /// Compile a component from disk and cache its [`PluginInfo`].
-    ///
-    /// This performs a throwaway instantiation to call `get-info` once. The
-    /// returned [`CompiledPlugin`] is cheap to re-instantiate.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`Error::Io`]/[`Error::Compile`] on read/compile failure,
-    /// [`Error::Instantiate`]/[`Error::Trap`] if the validation instance fails,
-    /// or [`Error::InvalidInfo`] if the plugin reports a malformed id/version.
-    pub fn load(&self, wasm_path: &Path) -> Result<CompiledPlugin> {
+    /// Compile a component and inspect its imports and exported functions.
+    pub fn load(&self, wasm_path: &Path) -> Result<CompiledComponent> {
         let bytes = std::fs::read(wasm_path).map_err(|source| Error::Io {
             path: wasm_path.to_path_buf(),
             source,
         })?;
-        let component = Component::new(&self.engine, &bytes).map_err(|source| Error::Compile {
-            path: wasm_path.to_path_buf(),
-            source,
-        })?;
-
-        let info = self.validate_info(&component)?;
-
-        Ok(CompiledPlugin {
+        let digest: [u8; 32] = Sha256::digest(&bytes).into();
+        let component = {
+            let mut components = self
+                .components
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if let Some(component) = components.get(&digest) {
+                component.clone()
+            } else {
+                let component =
+                    Component::new(&self.engine, &bytes).map_err(|source| Error::Compile {
+                        path: wasm_path.to_path_buf(),
+                        source,
+                    })?;
+                components.insert(digest, component.clone());
+                component
+            }
+        };
+        let schema = schema(&self.engine, &component);
+        Ok(CompiledComponent {
             engine: self.clone(),
             component,
-            info,
+            schema,
             path: wasm_path.to_path_buf(),
+            digest,
         })
     }
 
-    /// Instantiate the component once with no-op callbacks to read `get-info`.
-    fn validate_info(&self, component: &Component) -> Result<PluginInfo> {
-        let mut store = self.new_store(Box::new(NoopCallbacks));
-        let deadline = self.limits.deadline;
-        let instance = RppPlugin::instantiate(&mut store, component, &self.linker)
-            .map_err(|error| map_timeout(error, deadline))?;
-        store.set_epoch_deadline(self.limits.epoch_ticks());
-        let raw = instance
-            .rpp_plugin_guest()
-            .call_get_info(&mut store)
-            .map_err(|error| map_timeout(error, deadline))?;
-        let info = convert_info(raw);
-        validate_plugin_info(&info)?;
-        Ok(info)
-    }
-
-    /// Build a fresh store with an empty WASI context and the configured limits.
-    pub(crate) fn new_store(&self, host: Box<dyn HostCallbacks>) -> Store<StoreData> {
-        let data = StoreData::new(host, self.limits.memory_bytes);
+    pub(crate) fn new_store(&self, permissions: Permissions) -> Result<Store<StoreData>> {
+        let data = StoreData::new(permissions, self.limits.memory_bytes)?;
         let mut store = Store::new(&self.engine, data);
         store.limiter(|data| &mut data.limits);
-        // Trap (rather than yield) when the deadline is exceeded, and arm the
-        // first deadline. It is re-armed before every guest call.
         store.epoch_deadline_trap();
         store.set_epoch_deadline(self.limits.epoch_ticks());
-        store
-    }
-
-    pub(crate) fn linker(&self) -> &Linker<StoreData> {
-        &self.linker
+        Ok(store)
     }
 }
 
-/// A compiled component plus its cached static metadata.
-///
-/// `Send + Sync` and cheap to [`instantiate`](CompiledPlugin::instantiate)
-/// repeatedly (e.g. once per worker thread).
+/// A compiled, reusable component library.
 #[derive(Clone)]
-pub struct CompiledPlugin {
+pub struct CompiledComponent {
     engine: WasmEngine,
     component: Component,
-    info: PluginInfo,
+    schema: Schema,
     path: PathBuf,
+    digest: [u8; 32],
 }
 
-impl CompiledPlugin {
-    /// The plugin's cached static description.
-    pub fn info(&self) -> &PluginInfo {
-        &self.info
-    }
-
-    /// The path the component was loaded from.
+impl CompiledComponent {
+    /// Component binary path.
     pub fn path(&self) -> &Path {
         &self.path
     }
 
-    /// Instantiate a fresh, isolated instance and run `configure` once.
-    ///
-    /// `options_json` is the plugin's options encoded as JSON (`{}` if none).
-    /// `host` receives all host callbacks for this instance.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`Error::Instantiate`] if linking fails, or
-    /// [`Error::Trap`]/[`Error::Timeout`] if `configure` traps or times out.
-    pub fn instantiate(
-        &self,
-        options_json: &str,
-        host: impl HostCallbacks + 'static,
-    ) -> Result<WasmInstance> {
-        let epoch_ticks = self.engine.limits.epoch_ticks();
-        let deadline = self.engine.limits.deadline;
-        let mut store = self.engine.new_store(Box::new(host));
-        let instance = RppPlugin::instantiate(&mut store, &self.component, self.engine.linker())
-            .map_err(|error| map_timeout(error, deadline))?;
+    /// SHA-256 digest of the component binary used for cache identity.
+    pub fn digest(&self) -> [u8; 32] {
+        self.digest
+    }
 
-        store.set_epoch_deadline(epoch_ticks);
-        instance
-            .rpp_plugin_guest()
-            .call_configure(&mut store, options_json)
-            .map_err(|error| map_timeout(error, deadline))?;
+    /// Discovered imports and exported function signatures.
+    pub fn schema(&self) -> &Schema {
+        &self.schema
+    }
 
+    /// Instantiate with an explicit capability set.
+    pub fn instantiate(&self, permissions: Permissions) -> Result<WasmInstance> {
+        validate_imports(&self.schema.imports, &permissions)?;
+        let mut linker = Linker::new(&self.engine.engine);
+        p2::add_to_linker_sync(&mut linker).map_err(Error::Engine)?;
+        add_process_host(&mut linker)?;
+
+        let mut store = self.engine.new_store(permissions)?;
+        let instance = linker
+            .instantiate(&mut store, &self.component)
+            .map_err(|error| map_timeout(error, self.engine.limits.deadline))?;
         Ok(WasmInstance {
             store,
             instance,
-            epoch_ticks,
-            deadline,
+            epoch_ticks: self.engine.limits.epoch_ticks(),
+            deadline: self.engine.limits.deadline,
         })
     }
+}
+
+fn schema(engine: &Engine, component: &Component) -> Schema {
+    let ty = component.component_type();
+    let imports = ty
+        .imports(engine)
+        .map(|(name, _)| name.to_string())
+        .collect();
+    let mut functions = Vec::new();
+    for (name, item) in ty.exports(engine) {
+        collect_functions(engine, name, item, &mut functions);
+    }
+    functions.sort_by(|a, b| a.path.cmp(&b.path));
+    Schema { imports, functions }
+}
+
+fn collect_functions(engine: &Engine, path: &str, item: ComponentItem, output: &mut Vec<Function>) {
+    match item {
+        ComponentItem::ComponentFunc(function) => output.push(Function {
+            path: path.to_string(),
+            params: function
+                .params()
+                .map(|(name, ty)| (name.to_string(), value_type(ty)))
+                .collect(),
+            results: function.results().map(value_type).collect(),
+        }),
+        ComponentItem::ComponentInstance(instance) => {
+            for (name, item) in instance.exports(engine) {
+                collect_functions(engine, &format!("{path}#{name}"), item, output);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn value_type(ty: Type) -> ValueType {
+    match ty {
+        Type::Bool => ValueType::Bool,
+        Type::S8 => ValueType::S8,
+        Type::U8 => ValueType::U8,
+        Type::S16 => ValueType::S16,
+        Type::U16 => ValueType::U16,
+        Type::S32 => ValueType::S32,
+        Type::U32 => ValueType::U32,
+        Type::S64 => ValueType::S64,
+        Type::U64 => ValueType::U64,
+        Type::Float32 => ValueType::Float32,
+        Type::Float64 => ValueType::Float64,
+        Type::Char => ValueType::Char,
+        Type::String => ValueType::String,
+        Type::List(list) => ValueType::List(Box::new(value_type(list.ty()))),
+        Type::Record(record) => ValueType::Record(
+            record
+                .fields()
+                .map(|field| (field.name.to_string(), value_type(field.ty)))
+                .collect(),
+        ),
+        Type::Tuple(tuple) => ValueType::Tuple(tuple.types().map(value_type).collect()),
+        Type::Variant(variant) => ValueType::Variant(
+            variant
+                .cases()
+                .map(|case| (case.name.to_string(), case.ty.map(value_type)))
+                .collect(),
+        ),
+        Type::Enum(enum_) => ValueType::Enum(enum_.names().map(str::to_string).collect()),
+        Type::Option(option) => ValueType::Option(Box::new(value_type(option.ty()))),
+        Type::Result(result) => ValueType::Result {
+            ok: result.ok().map(value_type).map(Box::new),
+            err: result.err().map(value_type).map(Box::new),
+        },
+        Type::Flags(flags) => ValueType::Flags(flags.names().map(str::to_string).collect()),
+        Type::Own(_) | Type::Borrow(_) => ValueType::Unsupported("resource".into()),
+        Type::Future(_) => ValueType::Unsupported("future".into()),
+        Type::Stream(_) => ValueType::Unsupported("stream".into()),
+        Type::ErrorContext => ValueType::Unsupported("error-context".into()),
+    }
+}
+
+fn validate_imports(imports: &[String], permissions: &Permissions) -> Result<()> {
+    for import in imports {
+        let allowed = if import.starts_with("wasi:clocks/") {
+            permissions.clocks
+        } else if import.starts_with("wasi:random/") {
+            true
+        } else if import.starts_with("wasi:sockets/") {
+            permissions.network
+        } else if import.starts_with("wasi:filesystem/") {
+            !permissions.preopens.is_empty()
+        } else if import.starts_with("wasi:cli/environment")
+            || import.starts_with("wasi:cli/exit")
+            || import.starts_with("wasi:cli/std")
+            || import.starts_with("wasi:cli/terminal")
+            || import.starts_with("wasi:io/")
+        {
+            true
+        } else if import.starts_with("rpp:host/process") {
+            permissions.arbitrary_processes || !permissions.processes.is_empty()
+        } else {
+            false
+        };
+        if !allowed {
+            return Err(Error::DeniedCapability(import.clone()));
+        }
+    }
+    Ok(())
+}
+
+fn add_process_host(linker: &mut Linker<StoreData>) -> Result<()> {
+    let mut root = linker.root();
+    let mut process = root
+        .instance("rpp:host/process@0.1.0")
+        .map_err(Error::Engine)?;
+    process
+        .func_new("run", |store, _ty, params, results| {
+            let request = parse_process_request(
+                params
+                    .first()
+                    .ok_or_else(|| wasmtime::Error::msg("missing process request"))?,
+            )?;
+            let result = crate::process::run(&store.data().permissions, request);
+            results[0] = match result {
+                Ok(output) => Val::Result(Ok(Some(Box::new(Val::Record(vec![
+                    ("status".into(), Val::S32(output.status)),
+                    (
+                        "stdout".into(),
+                        Val::List(output.stdout.into_iter().map(Val::U8).collect()),
+                    ),
+                    (
+                        "stderr".into(),
+                        Val::List(output.stderr.into_iter().map(Val::U8).collect()),
+                    ),
+                ]))))),
+                Err(error) => Val::Result(Err(Some(Box::new(Val::String(error))))),
+            };
+            Ok(())
+        })
+        .map_err(Error::Engine)
+}
+
+fn parse_process_request(value: &Val) -> wasmtime::Result<crate::ProcessRequest> {
+    let Val::Record(fields) = value else {
+        return Err(wasmtime::Error::msg("process request must be a record"));
+    };
+    let get = |name: &str| {
+        fields
+            .iter()
+            .find(|(field, _)| field == name)
+            .map(|(_, value)| value)
+            .ok_or_else(|| wasmtime::Error::msg(format!("missing process field `{name}`")))
+    };
+    let Val::String(program) = get("program")? else {
+        return Err(wasmtime::Error::msg("process program must be a string"));
+    };
+    let Val::List(args) = get("args")? else {
+        return Err(wasmtime::Error::msg("process args must be a list"));
+    };
+    let args = args
+        .iter()
+        .map(|value| match value {
+            Val::String(value) => Ok(value.clone()),
+            _ => Err(wasmtime::Error::msg("process argument must be a string")),
+        })
+        .collect::<wasmtime::Result<Vec<_>>>()?;
+    let cwd = match get("cwd")? {
+        Val::Option(Some(value)) => match value.as_ref() {
+            Val::String(value) => Some(PathBuf::from(value)),
+            _ => return Err(wasmtime::Error::msg("process cwd must be a string")),
+        },
+        Val::Option(None) => None,
+        _ => return Err(wasmtime::Error::msg("process cwd must be an option")),
+    };
+    let Val::List(environment) = get("environment")? else {
+        return Err(wasmtime::Error::msg("process environment must be a list"));
+    };
+    let environment = environment
+        .iter()
+        .map(|value| match value {
+            Val::Tuple(values) if values.len() == 2 => match (&values[0], &values[1]) {
+                (Val::String(name), Val::String(value)) => Ok((name.clone(), value.clone())),
+                _ => Err(wasmtime::Error::msg(
+                    "process environment entries must contain strings",
+                )),
+            },
+            _ => Err(wasmtime::Error::msg(
+                "process environment entries must be tuples",
+            )),
+        })
+        .collect::<wasmtime::Result<Vec<_>>>()?;
+    let Val::List(stdin) = get("stdin")? else {
+        return Err(wasmtime::Error::msg("process stdin must be a byte list"));
+    };
+    let stdin = stdin
+        .iter()
+        .map(|value| match value {
+            Val::U8(value) => Ok(*value),
+            _ => Err(wasmtime::Error::msg("process stdin must be a byte list")),
+        })
+        .collect::<wasmtime::Result<Vec<_>>>()?;
+    let timeout = match get("timeout-ms")? {
+        Val::Option(Some(value)) => match value.as_ref() {
+            Val::U64(value) => Some(Duration::from_millis(*value)),
+            _ => return Err(wasmtime::Error::msg("timeout-ms must be u64")),
+        },
+        Val::Option(None) => None,
+        _ => return Err(wasmtime::Error::msg("timeout-ms must be an option")),
+    };
+    Ok(crate::ProcessRequest {
+        program: program.clone(),
+        args,
+        cwd,
+        environment,
+        stdin,
+        timeout,
+    })
 }

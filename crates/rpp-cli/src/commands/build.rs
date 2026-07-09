@@ -48,8 +48,8 @@ pub fn run(dir: &Path, args: BuildArgs) -> Result<()> {
 
     ui::phase("Resolving plugins");
     let resolve_start = Instant::now();
-    let plugin_count = project.user_plugins.plugins.len() + project.config.plugins.len();
     let engine = project.build_engine()?;
+    let plugin_count = engine.plugin_count();
     ui::detail(format!(
         "{plugin_count} plugin{} resolved in {}",
         if plugin_count == 1 { "" } else { "s" },
@@ -91,6 +91,13 @@ fn report_build(result: &BuildResult) {
         result.changes.written.len(),
         result.changes.removed.len()
     ));
+    if !result.changes.external.written.is_empty() || !result.changes.external.removed.is_empty() {
+        ui::detail(format!(
+            "{} external written, {} external removed",
+            result.changes.external.written.len(),
+            result.changes.external.removed.len()
+        ));
+    }
 }
 
 /// Run the squash + zip phase against the materialized output directory.

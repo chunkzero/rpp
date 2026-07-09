@@ -41,7 +41,7 @@ fn scaffold(root: &Path) {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(
             dir.join("plugin.toml"),
-            format!("[plugin]\nid = \"{id}\"\nversion = \"0.1.0\"\nruntime = \"lua\"\n"),
+            format!("[plugin]\nid = \"{id}\"\nversion = \"0.1.0\"\n"),
         )
         .unwrap();
         std::fs::write(
@@ -191,11 +191,52 @@ fn global_directory_plugin_is_copied_and_project_plugin_overrides_it() {
     assert!(!home.join("plugins/shared").exists());
 }
 
+#[test]
+fn project_plugin_can_reference_global_plugin_by_id() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    let home = root.join("home");
+    let global_source = root.join("global-shared");
+    write_option_text_plugin(&global_source, "shared");
+
+    let install = run_with_home(root, &home, &["plugin", "add", "global-shared", "--global"]);
+    assert!(
+        install.status.success(),
+        "global add failed:\n{}",
+        String::from_utf8_lossy(&install.stderr)
+    );
+
+    let project = root.join("project");
+    std::fs::create_dir_all(project.join("src")).unwrap();
+    std::fs::write(project.join("src/value.txt"), "start").unwrap();
+    std::fs::write(
+        project.join("rpp.toml"),
+        "[pack]\nname = \"test\"\n\n[build]\nsource = \"src\"\noutput = \"dist\"\n\n\
+         [[plugin]]\nid = \"shared\"\n[plugin.options]\nvalue = \"project\"\n",
+    )
+    .unwrap();
+
+    let build = run_with_home(&project, &home, &["build", "--no-squash"]);
+    assert!(
+        build.status.success(),
+        "id reference build failed:\n{}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+    assert_eq!(
+        std::fs::read_to_string(project.join("dist/value.txt")).unwrap(),
+        "project"
+    );
+    assert_eq!(
+        std::fs::read_to_string(project.join(".rpp/api/shared.lua")).unwrap(),
+        "---@meta shared\n"
+    );
+}
+
 fn write_text_plugin(root: &Path, id: &str, value: &str) {
     std::fs::create_dir_all(root).unwrap();
     std::fs::write(
         root.join("plugin.toml"),
-        format!("[plugin]\nid = \"{id}\"\nversion = \"0.1.0\"\nruntime = \"lua\"\n"),
+        format!("[plugin]\nid = \"{id}\"\nversion = \"0.1.0\"\n"),
     )
     .unwrap();
     std::fs::write(
@@ -210,4 +251,24 @@ fn write_text_plugin(root: &Path, id: &str, value: &str) {
         ),
     )
     .unwrap();
+}
+
+fn write_option_text_plugin(root: &Path, id: &str) {
+    std::fs::create_dir_all(root.join("luals")).unwrap();
+    std::fs::write(
+        root.join("plugin.toml"),
+        format!("[plugin]\nid = \"{id}\"\nversion = \"0.1.0\"\n"),
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("init.lua"),
+        "local rpp = require(\"rpp\")\n\
+         local plugin = rpp.plugin()\n\
+         plugin:processor(\"replace\", { files = { \"**/*.txt\" } }, function(ctx, file)\n\
+             file.text = ctx.options.value or \"global\"\n\
+         end)\n\
+         return plugin\n",
+    )
+    .unwrap();
+    std::fs::write(root.join("luals/shared.lua"), "---@meta shared\n").unwrap();
 }
