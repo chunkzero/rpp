@@ -236,9 +236,7 @@ mod tests {
     #[test]
     fn rejects_unknown_plugin_id() {
         let overrides = parse(&["missing.enabled=true"]);
-        let error = overrides
-            .validate_plugin_ids(["example"].into_iter())
-            .unwrap_err();
+        let error = overrides.validate_plugin_ids(["example"]).unwrap_err();
         assert!(error.to_string().contains("unknown plugin id"));
         assert!(error.to_string().contains("`missing`"));
     }

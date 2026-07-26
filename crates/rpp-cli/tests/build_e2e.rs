@@ -70,6 +70,9 @@ source = "path:plugins/minify"
 local plugin = rpp.plugin()
 plugin:processor("minify", { files = { "pack.mcmeta", "**/data.json" } }, function(ctx, file)
     local data = rpp.json.decode(file.text)
+    if ctx.options.output ~= nil then
+        data.marker = ctx.options.output.marker
+    end
     file.text = rpp.json.encode(data)
 end)
 return plugin
@@ -152,6 +155,56 @@ fn build_minifies_and_zips_then_caches() {
     // Output and zip still present after the cached build.
     assert!(produced.is_file());
     assert!(zip.is_file());
+}
+
+#[test]
+fn plugin_option_override_reaches_factory_and_invalidates_cache() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    scaffold(root);
+
+    let first = run_build(
+        root,
+        &[
+            "--no-squash",
+            "--plugin-opt",
+            "minify.output.marker=\"first\"",
+        ],
+    );
+    assert!(
+        first.status.success(),
+        "first override build failed:\n{}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+    let output = root.join("dist/assets/minecraft/data.json");
+    let first_body = std::fs::read_to_string(&output).unwrap();
+    assert!(first_body.contains(r#""marker":"first""#));
+
+    let second = run_build(
+        root,
+        &[
+            "--no-squash",
+            "--plugin-opt",
+            "minify.output.marker=\"second\"",
+        ],
+    );
+    assert!(
+        second.status.success(),
+        "second override build failed:\n{}",
+        String::from_utf8_lossy(&second.stderr)
+    );
+    let second_body = std::fs::read_to_string(&output).unwrap();
+    assert!(second_body.contains(r#""marker":"second""#));
+
+    let stdout = String::from_utf8_lossy(&second.stdout);
+    assert!(
+        !stdout.contains("processed 0"),
+        "changed factory options must invalidate cached processor output: {stdout}"
+    );
+    assert!(
+        stdout.contains(r#"plugin options: minify.output.marker="second""#),
+        "active overrides must appear in the build summary: {stdout}"
+    );
 }
 
 #[test]
