@@ -19,6 +19,7 @@ use rpp::model::PluginFactory;
 use rpp_fetch::{Lockfile, Pin, PluginSource, Resolver};
 use rpp_wasm::WasmEngine;
 
+use crate::plugin_options::PluginOptionOverrides;
 use crate::user_plugins::UserPlugins;
 
 /// The config file name.
@@ -35,6 +36,8 @@ pub struct Project {
     pub config: Config,
     /// User-level plugins loaded from `~/.rpp/plugins.toml`.
     pub(crate) user_plugins: UserPlugins,
+    /// Command-line plugin option overrides.
+    pub(crate) plugin_options: PluginOptionOverrides,
 }
 
 /// Resolved plugin identity for list/remove/update matching.
@@ -88,7 +91,19 @@ impl Project {
             root,
             config,
             user_plugins,
+            plugin_options: PluginOptionOverrides::default(),
         })
+    }
+
+    /// Parse and retain command-line plugin option overrides.
+    pub fn set_plugin_options(&mut self, options: &[String]) -> Result<()> {
+        self.plugin_options = PluginOptionOverrides::parse(options)?;
+        Ok(())
+    }
+
+    /// Summary text for active command-line plugin option overrides.
+    pub fn plugin_options_summary(&self) -> Option<String> {
+        self.plugin_options.summary()
     }
 
     /// Path to `rpp.toml`.
@@ -224,6 +239,9 @@ impl Project {
             factories.push(loaded);
         }
 
+        self.plugin_options
+            .validate_plugin_ids(factories.iter().map(|loaded| loaded.id.as_str()))?;
+
         if global_lock_dirty {
             self.user_plugins.ensure_root()?;
             global_lock
@@ -323,10 +341,12 @@ impl Project {
             plugin_cfg.outputs.clone(),
         );
         let limits = rpp::lua::LuaPluginFactory::limits_from_build(&self.config.build);
+        let mut options = plugin_cfg.options.clone();
+        self.plugin_options.apply(&manifest.id, &mut options);
         let factory: Arc<dyn PluginFactory> = Arc::new(
             LuaPluginFactory::load_with_limits_and_access(
                 &resolved.root,
-                plugin_cfg.options.clone(),
+                options,
                 self.config.pack.name.clone(),
                 self.config.pack.description.clone(),
                 self.config.pack.pack_format,

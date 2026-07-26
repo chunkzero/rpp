@@ -19,8 +19,9 @@ use server::serve_http;
 use watch::{local_plugin_dirs, spawn_watcher};
 
 /// Run the dev server (blocks until Ctrl-C).
-pub fn run(dir: &Path) -> Result<()> {
-    let project = Project::discover(dir)?;
+pub fn run(dir: &Path, plugin_options: Vec<String>) -> Result<()> {
+    let mut project = Project::discover(dir)?;
+    project.set_plugin_options(&plugin_options)?;
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()

@@ -5,5 +5,6 @@ pub mod harness;
 pub mod project;
 
 mod luals;
+mod plugin_options;
 mod ui;
 mod user_plugins;

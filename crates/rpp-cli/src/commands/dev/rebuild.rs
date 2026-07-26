@@ -45,6 +45,9 @@ impl DevSession {
             "initial build: {} processed, {} cached, {} generated",
             built.processed, built.cached, built.generated
         ));
+        if let Some(overrides) = self.project.plugin_options_summary() {
+            ui::detail(format!("plugin options: {overrides}"));
+        }
         Ok(())
     }
 
@@ -64,7 +67,9 @@ impl DevSession {
         let started = std::time::Instant::now();
 
         if batch.kind_config {
-            let reloaded = Project::discover(&self.project.root).context("reloading rpp.toml")?;
+            let mut reloaded =
+                Project::discover(&self.project.root).context("reloading rpp.toml")?;
+            reloaded.plugin_options = self.project.plugin_options.clone();
             let topology_changed = self.project.source_dir() != reloaded.source_dir()
                 || self.project.output_dir() != reloaded.output_dir()
                 || self.project.config.dev.host != reloaded.config.dev.host
