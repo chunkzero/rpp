@@ -158,6 +158,30 @@ fn build_minifies_and_zips_then_caches() {
 }
 
 #[test]
+fn no_squash_removes_stale_release_archive() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    scaffold(root);
+
+    assert!(run_build(root, &[]).status.success());
+    let zip = root.join("dist/test-pack.zip");
+    assert!(zip.is_file());
+
+    std::fs::write(
+        root.join("src/pack.mcmeta"),
+        r#"{"pack":{"pack_format":34,"description":"updated"}}"#,
+    )
+    .unwrap();
+    let output = run_build(root, &["--no-squash"]);
+    assert!(
+        output.status.success(),
+        "build failed:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(!zip.exists(), "--no-squash must not leave a stale zip");
+}
+
+#[test]
 fn plugin_option_override_reaches_factory_and_invalidates_cache() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();

@@ -1,13 +1,14 @@
 //! Trusted process execution builtin.
 
 use std::path::PathBuf;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use mlua::{Lua, Table, Value};
 
 use crate::lua::runtime::{Phase, RuntimeAccess};
+use crate::lua::sandbox::Deadline;
 
-pub(crate) fn module(lua: &Lua, access: RuntimeAccess) -> mlua::Result<Table> {
+pub(crate) fn module(lua: &Lua, access: RuntimeAccess, deadline: Deadline) -> mlua::Result<Table> {
     let table = lua.create_table()?;
     table.set(
         "run",
@@ -49,12 +50,12 @@ pub(crate) fn module(lua: &Lua, access: RuntimeAccess) -> mlua::Result<Table> {
                 Value::String(s) => s.as_bytes().to_vec(),
                 _ => return Err(mlua::Error::external("process stdin must be a string")),
             };
-            let timeout = match request.get::<Value>("timeout").unwrap_or(Value::Nil) {
-                Value::Nil => None,
-                Value::Integer(seconds) => Some(Duration::from_secs(seconds as u64)),
-                Value::Number(seconds) => Some(Duration::from_secs_f64(seconds)),
-                _ => return Err(mlua::Error::external("process timeout must be a number")),
-            };
+            let timeout = parse_timeout(request.get::<Value>("timeout").unwrap_or(Value::Nil))?;
+            let remaining = deadline
+                .lock()
+                .and_then(|deadline| deadline.checked_duration_since(Instant::now()))
+                .ok_or_else(|| mlua::Error::runtime("Lua execution deadline exceeded"))?;
+            let timeout = Some(timeout.map_or(remaining, |requested| requested.min(remaining)));
             let cwd = match request.get::<Value>("cwd").unwrap_or(Value::Nil) {
                 Value::Nil => None,
                 Value::String(s) => Some(PathBuf::from(s.to_str()?.as_ref())),
@@ -92,4 +93,70 @@ pub(crate) fn module(lua: &Lua, access: RuntimeAccess) -> mlua::Result<Table> {
         })?,
     )?;
     Ok(table)
+}
+
+fn parse_timeout(value: Value) -> mlua::Result<Option<Duration>> {
+    let seconds = match value {
+        Value::Nil => return Ok(None),
+        Value::Integer(seconds) if seconds >= 0 => seconds as f64,
+        Value::Number(seconds) if seconds.is_finite() && seconds >= 0.0 => seconds,
+        Value::Integer(_) | Value::Number(_) => {
+            return Err(mlua::Error::external(
+                "process timeout must be finite and non-negative",
+            ))
+        }
+        _ => return Err(mlua::Error::external("process timeout must be a number")),
+    };
+    Duration::try_from_secs_f64(seconds)
+        .map(Some)
+        .map_err(|_| mlua::Error::external("process timeout is too large"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rejects_invalid_timeouts() {
+        assert!(parse_timeout(Value::Integer(-1)).is_err());
+        assert!(parse_timeout(Value::Number(f64::NAN)).is_err());
+        assert!(parse_timeout(Value::Number(f64::INFINITY)).is_err());
+    }
+
+    #[cfg(all(feature = "wasm", unix))]
+    #[test]
+    fn process_is_bounded_by_lua_deadline() {
+        use std::collections::BTreeMap;
+
+        use crate::config::{PluginPermissions, SecurityMode};
+
+        let lua = Lua::new();
+        let deadline = std::sync::Arc::new(parking_lot::Mutex::new(Some(
+            Instant::now() + Duration::from_millis(100),
+        )));
+        let access = RuntimeAccess::new(
+            SecurityMode::Trusted,
+            PluginPermissions {
+                process: vec!["/bin/sh".into()],
+                ..Default::default()
+            },
+            std::env::current_dir().unwrap(),
+            BTreeMap::new(),
+            BTreeMap::new(),
+        );
+        access.phase.set(Phase::Generator);
+        let process = module(&lua, access, deadline).unwrap();
+        let request = lua.create_table().unwrap();
+        request.set("program", "/bin/sh").unwrap();
+        request.set("args", vec!["-c", "sleep 2"]).unwrap();
+
+        let started = Instant::now();
+        let error = process
+            .get::<mlua::Function>("run")
+            .unwrap()
+            .call::<Table>(request)
+            .unwrap_err();
+        assert!(error.to_string().contains("timed out"), "{error}");
+        assert!(started.elapsed() < Duration::from_secs(1));
+    }
 }

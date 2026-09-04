@@ -71,10 +71,11 @@ pub(crate) fn sync_output(
                     if let Some(parent) = path.parent() {
                         std::fs::create_dir_all(parent).map_err(|e| Error::io(parent, e))?;
                     }
-                    std::fs::write(&path, bytes).map_err(|e| Error::io(&path, e))?;
+                    crate::util::atomic::write(&path, bytes.as_slice())
+                        .map_err(|e| Error::io(&path, e))?;
                 }
                 OutputContent::Object(key) => {
-                    store.link_or_copy_object(*key, &path)?;
+                    store.copy_object(*key, &path)?;
                 }
             }
             report.written.push(rel.clone());

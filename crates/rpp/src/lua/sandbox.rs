@@ -67,13 +67,14 @@ impl Sandbox {
         plugin_id: &str,
         root: &Path,
         access: RuntimeAccess,
+        deadline: Deadline,
     ) -> mlua::Result<Self> {
         let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
         let env = lua.create_table()?;
 
         install_stdlib(lua, &env, &access)?;
         install_print(lua, &env, plugin_id)?;
-        install_require(lua, &env, plugin_id, &root, access)?;
+        install_require(lua, &env, plugin_id, &root, access, deadline)?;
 
         // `_G` self-reference for plugins that reflect on globals.
         env.set("_G", &env)?;
@@ -228,6 +229,7 @@ fn build_rpp_modules(
     lua: &Lua,
     plugin_id: &str,
     access: RuntimeAccess,
+    deadline: Deadline,
 ) -> mlua::Result<RppModules> {
     let json = builtins::json::module(lua)?;
     let toml = builtins::toml_mod::module(lua)?;
@@ -235,7 +237,7 @@ fn build_rpp_modules(
     let path = builtins::path::module(lua)?;
     let log = builtins::log::table(lua, plugin_id)?;
     let str = builtins::str::module(lua)?;
-    let process = builtins::process::module(lua, access.clone())?;
+    let process = builtins::process::module(lua, access.clone(), deadline)?;
     let component = crate::lua::component::module(lua, access)?;
 
     let root = lua.create_table()?;
@@ -274,8 +276,9 @@ fn install_require(
     plugin_id: &str,
     root: &Path,
     access: RuntimeAccess,
+    deadline: Deadline,
 ) -> mlua::Result<()> {
-    let modules = build_rpp_modules(lua, plugin_id, access)?;
+    let modules = build_rpp_modules(lua, plugin_id, access, deadline)?;
 
     // Loaded-module cache, private to this environment.
     let loaded = lua.create_table()?;

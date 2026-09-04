@@ -45,7 +45,12 @@ pub(crate) fn process_files(ctx: FilePhaseCtx<'_>) -> Result<FilePhaseStats> {
     let mut processed = 0usize;
     let mut cached = 0usize;
     let mut dropped = 0usize;
-    let mut dirty: Vec<(SourceFile, Arc<Vec<ChainStep>>, u64)> = Vec::new();
+    let mut dirty: Vec<(
+        SourceFile,
+        Arc<Vec<ChainStep>>,
+        u64,
+        Option<(Fingerprint, Vec<u8>)>,
+    )> = Vec::new();
 
     for src in sources {
         let chain = chain_for(compiled, &src.rel);
@@ -53,19 +58,16 @@ pub(crate) fn process_files(ctx: FilePhaseCtx<'_>) -> Result<FilePhaseStats> {
         let chain_cacheable = chain.iter().all(|step| step.cacheable);
 
         let prev_entry = prev.and_then(|m| m.files.get(&src.rel));
-        let clean = chain_cacheable
-            && match prev_entry {
-                Some(entry) => {
-                    entry.chain_key == ck
-                        && (src.matches_fast(&entry.fingerprint) || {
-                            match src.fingerprint() {
-                                Ok((fp, _)) => fp.xxh3 == entry.fingerprint.xxh3,
-                                Err(_) => false,
-                            }
-                        })
-                }
-                None => false,
-            };
+        let mut read = None;
+        let clean = if chain_cacheable && prev_entry.is_some_and(|entry| entry.chain_key == ck) {
+            let fingerprinted = src.fingerprint()?;
+            let matches =
+                prev_entry.is_some_and(|entry| fingerprinted.0.xxh3 == entry.fingerprint.xxh3);
+            read = Some(fingerprinted);
+            matches
+        } else {
+            false
+        };
 
         if clean {
             let entry = prev_entry.expect("clean implies prev entry").clone();
@@ -79,7 +81,7 @@ pub(crate) fn process_files(ctx: FilePhaseCtx<'_>) -> Result<FilePhaseStats> {
             }
         }
 
-        dirty.push((src, Arc::new(chain), ck));
+        dirty.push((src, Arc::new(chain), ck, read));
     }
 
     if !dirty.is_empty() {
@@ -87,13 +89,16 @@ pub(crate) fn process_files(ctx: FilePhaseCtx<'_>) -> Result<FilePhaseStats> {
         let mut pending: BTreeMap<String, (u64, Fingerprint)> = BTreeMap::new();
         let mut submitted = 0usize;
 
-        for (src, chain, ck) in &dirty {
-            let (fp, contents) = src.fingerprint()?;
-            pending.insert(src.rel.clone(), (*ck, fp));
+        for (src, chain, ck, read) in dirty {
+            let (fp, contents) = match read {
+                Some(read) => read,
+                None => src.fingerprint()?,
+            };
+            pending.insert(src.rel.clone(), (ck, fp));
             pool.submit(Job {
                 rel: src.rel.clone(),
                 file: crate::model::PackFile::new(src.rel.clone(), contents),
-                chain: Arc::clone(chain),
+                chain,
             })?;
             submitted += 1;
         }

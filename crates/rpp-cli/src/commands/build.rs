@@ -49,6 +49,17 @@ pub fn run(dir: &Path, args: BuildArgs) -> Result<()> {
         }
     }
 
+    if args.no_squash && project.config.build.squash.enabled && project.config.build.squash.zip {
+        let zip = project
+            .output_dir()
+            .join(format!("{}.zip", project.config.pack.name));
+        match std::fs::remove_file(&zip) {
+            Ok(()) => ui::detail(format!("removed stale release archive {}", zip.display())),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error).with_context(|| format!("removing {}", zip.display())),
+        }
+    }
+
     ui::phase("Resolving plugins");
     let resolve_start = Instant::now();
     let engine = project.build_engine()?;

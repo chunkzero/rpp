@@ -68,25 +68,6 @@ impl ObjectStore {
         std::fs::read(path).ok()
     }
 
-    /// Materialize a CAS object at `dest`, preferring a hard link with copy fallback.
-    pub(crate) fn link_or_copy_object(&self, key: u64, dest: &std::path::Path) -> Result<()> {
-        let src = self
-            .object_path_for(key)
-            .ok_or_else(|| Error::Build(format!("missing cache object {key:#x}")))?;
-        if let Some(parent) = dest.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| Error::io(parent, e))?;
-        }
-        if dest.exists() {
-            std::fs::remove_file(dest).map_err(|e| Error::io(dest, e))?;
-        }
-        match std::fs::hard_link(&src, dest) {
-            Ok(()) => Ok(()),
-            Err(_) => std::fs::copy(&src, dest)
-                .map(|_| ())
-                .map_err(|e| Error::io(dest, e)),
-        }
-    }
-
     /// Copy an object to a mutable external destination without hard-linking
     /// it to the immutable CAS entry.
     pub(crate) fn copy_object(&self, key: u64, dest: &std::path::Path) -> Result<()> {

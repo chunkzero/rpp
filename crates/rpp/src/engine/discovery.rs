@@ -33,11 +33,6 @@ impl SourceFile {
         };
         Ok((fp, contents))
     }
-
-    /// Whether `prev` matches this file by the fast path (mtime + size).
-    pub(crate) fn matches_fast(&self, prev: &Fingerprint) -> bool {
-        prev.size == self.size && prev.mtime_ns == self.mtime_ns
-    }
 }
 
 /// Walk `source`, honoring `.rppignore` and the standard ignore files.

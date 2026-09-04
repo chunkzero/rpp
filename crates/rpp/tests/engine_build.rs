@@ -708,6 +708,40 @@ fn corrupt_cache_object_is_rebuilt() {
 }
 
 #[test]
+fn same_size_source_change_with_preserved_mtime_is_rebuilt() {
+    let project = Project::new();
+    project.write_src("a.txt", "aa");
+    build(&project, Vec::new());
+
+    let source = project.src().join("a.txt");
+    let modified = std::fs::metadata(&source).unwrap().modified().unwrap();
+    std::fs::write(&source, "bb").unwrap();
+    std::fs::File::open(&source)
+        .unwrap()
+        .set_times(std::fs::FileTimes::new().set_modified(modified))
+        .unwrap();
+
+    let second = build(&project, Vec::new());
+    assert_eq!(second.processed, 1);
+    assert_eq!(project.read_out("a.txt").as_deref(), Some("bb"));
+}
+
+#[test]
+fn materialized_outputs_do_not_share_writable_cache_inodes() {
+    let project = Project::new();
+    project.write_src("a.txt", "same");
+    project.write_src("b.txt", "same");
+    build(&project, Vec::new());
+
+    std::fs::remove_dir_all(project.root().join("dist")).unwrap();
+    let warm = build(&project, Vec::new());
+    assert_eq!(warm.cached, 2);
+
+    std::fs::write(project.root().join("dist/a.txt"), "changed").unwrap();
+    assert_eq!(project.read_out("b.txt").as_deref(), Some("same"));
+}
+
+#[test]
 fn external_outputs_have_durable_stale_ownership_and_clean_support() {
     let project = Project::new();
     project.write_src("a.txt", "a");
