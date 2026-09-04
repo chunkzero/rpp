@@ -330,3 +330,69 @@ fn example_pack_builds_from_its_own_config() {
         "zip must be reproducible"
     );
 }
+
+#[test]
+fn hash_rename_uses_processed_bytes() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let examples = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/plugins");
+    copy_dir(
+        &examples.join("hash-rename"),
+        &root.join("plugins/hash-rename"),
+    );
+    std::fs::create_dir_all(root.join("plugins/modify")).unwrap();
+    std::fs::write(
+        root.join("plugins/modify/plugin.toml"),
+        "[plugin]\nid = \"modify\"\nversion = \"1.0.0\"\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("plugins/modify/init.lua"),
+        r#"local rpp = require("rpp")
+local plugin = rpp.plugin()
+plugin:processor("modify", { files = { "**/*.png" }, priority = 5 }, function(ctx, file)
+    file.bytes = string.upper(file.bytes)
+end)
+return plugin
+"#,
+    )
+    .unwrap();
+    std::fs::create_dir_all(root.join("src/assets/test/textures/custom")).unwrap();
+    std::fs::write(root.join("src/assets/test/textures/custom/gem.png"), "raw").unwrap();
+    std::fs::write(
+        root.join("rpp.toml"),
+        r#"[pack]
+name = "processed-hash"
+
+[build.squash]
+enabled = false
+
+[[plugin]]
+source = "path:plugins/modify"
+
+[[plugin]]
+source = "path:plugins/hash-rename"
+[plugin.options]
+files = ["assets/*/textures/custom/**/*.png"]
+"#,
+    )
+    .unwrap();
+
+    let output = run_build(root, &[]);
+    assert!(
+        output.status.success(),
+        "build failed:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let map: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(root.join("dist/rename_map.json")).unwrap())
+            .unwrap();
+    let hashed = map["assets/test/textures/custom/gem.png"].as_str().unwrap();
+    assert_eq!(
+        std::fs::read(root.join("dist").join(hashed)).unwrap(),
+        b"RAW"
+    );
+    assert!(!root
+        .join("dist/assets/test/textures/custom/gem.png")
+        .exists());
+}

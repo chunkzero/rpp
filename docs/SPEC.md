@@ -513,8 +513,8 @@ pub fn run_packsquash(binary: &str, pack_dir: &Path, zip_path: &Path, options_fi
   by a checked-in script or tiny valid PNGs committed directly).
 - `examples/plugins/json-minify/` (processor), `examples/plugins/mcmeta-validate/`
   (generator that validates pack.mcmeta + all `*.mcmeta` against pack_format),
-  `examples/plugins/hash-rename/` (processor renaming via content hash, demonstrating
-  `file.path` mutation), `examples/plugins/grayscale-wasm/` (processor backed by a
+  `examples/plugins/hash-rename/` (generator renaming processed output via content
+  hash), `examples/plugins/grayscale-wasm/` (processor backed by a
   WASIp2 component built from a Rust guest crate; `just example-wasm`).
 - Integration tests in the workspace build `examples/pack` end-to-end and assert real
   outputs (minified JSON, zip contents, incremental no-op second build).

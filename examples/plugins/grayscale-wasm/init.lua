@@ -11,7 +11,7 @@ local plugin = rpp.plugin()
 
 plugin:processor("grayscale", {
     files = { "assets/*/textures/**/*.png" },
-    -- Run before hash-rename (priority 10) so fingerprints see the final bytes.
+    -- Hash-renaming runs in the generator phase and sees these final bytes.
     priority = 5,
 }, function(ctx, file)
     local result = grayscale:call("grayscale", file.bytes)
