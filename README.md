@@ -80,7 +80,8 @@ operations and do not run in dev mode.
 - [WASM plugin guide](docs/WASM_PLUGINS.md)
 - [Authoritative specification](docs/SPEC.md)
 
-Working plugins live under [`examples/plugins`](examples/plugins).
+Working plugins live under [`examples/plugins`](examples/plugins), including a
+WASIp2 component plugin (`just example-wasm` builds its guest crate).
 
 ## Development
 

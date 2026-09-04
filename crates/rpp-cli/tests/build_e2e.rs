@@ -246,3 +246,87 @@ fn clean_rejects_output_outside_project() {
     assert!(!out.status.success());
     assert!(victim.join("keep.txt").exists());
 }
+
+fn copy_dir(from: &Path, to: &Path) {
+    std::fs::create_dir_all(to).unwrap();
+    for entry in std::fs::read_dir(from).unwrap() {
+        let entry = entry.unwrap();
+        let name = entry.file_name();
+        if name == "target" || name == ".rpp" || name == "dist" {
+            continue;
+        }
+        let target = to.join(&name);
+        if entry.file_type().unwrap().is_dir() {
+            copy_dir(&entry.path(), &target);
+        } else {
+            std::fs::copy(entry.path(), target).unwrap();
+        }
+    }
+}
+
+/// `examples/pack` builds through the CLI from its own `rpp.toml`, with the
+/// three Lua example plugins and builtin squash.
+#[test]
+fn example_pack_builds_from_its_own_config() {
+    let dir = tempfile::tempdir().unwrap();
+    let examples = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples");
+    copy_dir(&examples.join("pack"), &dir.path().join("pack"));
+    for plugin in ["json-minify", "mcmeta-validate", "hash-rename"] {
+        copy_dir(
+            &examples.join("plugins").join(plugin),
+            &dir.path().join("plugins").join(plugin),
+        );
+    }
+    let root = dir.path().join("pack");
+
+    let out = run_build(&root, &["--jobs", "2"]);
+    assert!(
+        out.status.success(),
+        "first build failed:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    // Loose output: minified JSON, fingerprinted custom texture, rename map.
+    let model =
+        std::fs::read_to_string(root.join("dist/assets/minecraft/models/block/rpp_bricks.json"))
+            .unwrap();
+    assert!(
+        !model.contains('\n'),
+        "model JSON should be minified: {model}"
+    );
+    assert!(!root
+        .join("dist/assets/minecraft/textures/custom/gem.png")
+        .exists());
+    let map: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(root.join("dist/rename_map.json")).unwrap())
+            .unwrap();
+    let hashed = map["assets/minecraft/textures/custom/gem.png"]
+        .as_str()
+        .unwrap();
+    assert!(root.join("dist").join(hashed).is_file(), "{hashed} missing");
+    assert!(
+        !root.join("dist/notes/design.txt").exists(),
+        ".rppignore is honored"
+    );
+
+    // Release zip: deterministic, pack.mcmeta first, no stray archive inside.
+    let zip_path = root.join("dist/rpp-example-pack.zip");
+    let mut archive = zip::ZipArchive::new(std::fs::File::open(&zip_path).unwrap()).unwrap();
+    assert_eq!(archive.by_index(0).unwrap().name(), "pack.mcmeta");
+    assert!(archive.by_name("rpp-example-pack.zip").is_err());
+    let first_bytes = std::fs::read(&zip_path).unwrap();
+
+    let out = run_build(&root, &["--jobs", "2"]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(out.status.success(), "{stdout}");
+    assert!(
+        stdout.contains("processed 0"),
+        "second build must be cached: {stdout}"
+    );
+    assert_eq!(
+        std::fs::read(&zip_path).unwrap(),
+        first_bytes,
+        "zip must be reproducible"
+    );
+}

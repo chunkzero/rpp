@@ -50,6 +50,9 @@ The pipeline in `rpp.toml` runs three local plugins (in
 4. **squash** (built in) — minifies JSON, optimizes the PNGs with oxipng, strips
    junk, and writes a deterministic `dist/rpp-example-pack.zip`.
 
+To also try the WASM-backed processor, run `just example-wasm` once and add
+`source = "path:../plugins/grayscale-wasm"` as another `[[plugin]]`.
+
 > Note: `magic_gem.json` references `minecraft:custom/gem`. After hash-rename the
 > texture file is `gem.<hash>.png`, so a real pack would also rewrite that
 > reference using `rename_map.json` — left as an exercise / a job for another

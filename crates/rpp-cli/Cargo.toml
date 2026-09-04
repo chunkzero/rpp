@@ -42,4 +42,5 @@ open = "5"
 tempfile.workspace = true
 
 [dev-dependencies]
+png = "0.17"
 zip = "8.6"
