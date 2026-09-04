@@ -2324,6 +2324,7 @@ dependencies = [
  "crossbeam-channel",
  "glob",
  "ignore",
+ "libc",
  "md5",
  "mlua",
  "parking_lot",
@@ -2406,7 +2407,6 @@ dependencies = [
 name = "rpp-wasm"
 version = "0.1.0-alpha.0"
 dependencies = [
- "libc",
  "sha2 0.10.9",
  "tempfile",
  "thiserror 2.0.20",

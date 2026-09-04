@@ -14,6 +14,7 @@ mod file;
 mod generator_ctx;
 mod instance;
 mod plugin_builder;
+mod process;
 mod runtime;
 mod sandbox;
 mod traceback;

@@ -24,14 +24,11 @@ pub struct BuildArgs {
     pub no_squash: bool,
     /// Override the worker count (`None` = config / available parallelism).
     pub jobs: Option<usize>,
-    /// Raw `--plugin-opt` values.
-    pub plugin_options: Vec<String>,
 }
 
 /// Run the build command from the current directory.
 pub fn run(dir: &Path, args: BuildArgs) -> Result<()> {
     let mut project = Project::discover(dir)?;
-    project.set_plugin_options(&args.plugin_options)?;
     if let Some(jobs) = args.jobs {
         project.config.build.workers = jobs;
     }
@@ -78,9 +75,6 @@ pub fn run(dir: &Path, args: BuildArgs) -> Result<()> {
         ui::fmt_duration(build_start.elapsed())
     ));
     report_build(&result);
-    if let Some(overrides) = project.plugin_options_summary() {
-        ui::detail(format!("plugin options: {overrides}"));
-    }
 
     let output_dir = project.output_dir().clone();
 

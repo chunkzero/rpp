@@ -89,5 +89,5 @@ process = ["my-tool"]
 ```
 
 `security = "native"` is the unsafe mode: Lua gains native standard-library
-access and WASM process grants become unrestricted. Use it only for trusted
+access and `rpp.process.run` may launch any program. Use it only for trusted
 local tooling.

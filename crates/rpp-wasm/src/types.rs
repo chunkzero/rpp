@@ -52,33 +52,6 @@ pub struct Permissions {
     pub environment: Vec<(String, String)>,
     /// Scoped filesystem preopens.
     pub preopens: Vec<Preopen>,
-    /// Executable names or absolute paths accepted by `rpp:host/process`.
-    pub processes: Vec<String>,
-    /// Permit any executable through `rpp:host/process`.
-    pub arbitrary_processes: bool,
-    /// Default working directory for process calls.
-    pub working_directory: Option<PathBuf>,
-}
-
-/// Structured process invocation shared by Lua and WASM components.
-#[derive(Debug, Clone, Default)]
-#[allow(missing_docs)]
-pub struct ProcessRequest {
-    pub program: String,
-    pub args: Vec<String>,
-    pub cwd: Option<PathBuf>,
-    pub environment: Vec<(String, String)>,
-    pub stdin: Vec<u8>,
-    pub timeout: Option<Duration>,
-}
-
-/// Captured process completion.
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[allow(missing_docs)]
-pub struct ProcessOutput {
-    pub status: i32,
-    pub stdout: Vec<u8>,
-    pub stderr: Vec<u8>,
 }
 
 /// A description of a component value type.

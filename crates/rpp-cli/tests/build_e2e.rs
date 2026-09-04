@@ -6,8 +6,6 @@
 use std::path::Path;
 use std::process::Command;
 
-use rpp_cli::harness::BuildHarness;
-
 fn rpp_bin() -> &'static str {
     env!("CARGO_BIN_EXE_rpp")
 }
@@ -182,56 +180,6 @@ fn no_squash_removes_stale_release_archive() {
 }
 
 #[test]
-fn plugin_option_override_reaches_factory_and_invalidates_cache() {
-    let dir = tempfile::tempdir().unwrap();
-    let root = dir.path();
-    scaffold(root);
-
-    let first = run_build(
-        root,
-        &[
-            "--no-squash",
-            "--plugin-opt",
-            "minify.output.marker=\"first\"",
-        ],
-    );
-    assert!(
-        first.status.success(),
-        "first override build failed:\n{}",
-        String::from_utf8_lossy(&first.stderr)
-    );
-    let output = root.join("dist/assets/minecraft/data.json");
-    let first_body = std::fs::read_to_string(&output).unwrap();
-    assert!(first_body.contains(r#""marker":"first""#));
-
-    let second = run_build(
-        root,
-        &[
-            "--no-squash",
-            "--plugin-opt",
-            "minify.output.marker=\"second\"",
-        ],
-    );
-    assert!(
-        second.status.success(),
-        "second override build failed:\n{}",
-        String::from_utf8_lossy(&second.stderr)
-    );
-    let second_body = std::fs::read_to_string(&output).unwrap();
-    assert!(second_body.contains(r#""marker":"second""#));
-
-    let stdout = String::from_utf8_lossy(&second.stdout);
-    assert!(
-        !stdout.contains("processed 0"),
-        "changed factory options must invalidate cached processor output: {stdout}"
-    );
-    assert!(
-        stdout.contains(r#"plugin options: minify.output.marker="second""#),
-        "active overrides must appear in the build summary: {stdout}"
-    );
-}
-
-#[test]
 fn clean_removes_output_and_cache() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
@@ -297,14 +245,4 @@ fn clean_rejects_output_outside_project() {
         .expect("run rpp clean");
     assert!(!out.status.success());
     assert!(victim.join("keep.txt").exists());
-}
-
-#[test]
-fn isolated_harness_verifies_cold_and_warm_builds() {
-    let dir = tempfile::tempdir().unwrap();
-    scaffold(dir.path());
-    let report = BuildHarness::new(dir.path()).verify_reproducible().unwrap();
-    assert_eq!(report.warm.processed, 0);
-    assert!(report.warm.changes.written.is_empty());
-    assert_ne!(report.output_digest, [0; 32]);
 }

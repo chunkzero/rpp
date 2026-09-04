@@ -19,7 +19,6 @@ use rpp::model::PluginFactory;
 use rpp_fetch::{Lockfile, Pin, PluginSource, Resolver};
 use rpp_wasm::WasmEngine;
 
-use crate::plugin_options::PluginOptionOverrides;
 use crate::user_plugins::UserPlugins;
 
 /// The config file name.
@@ -36,8 +35,6 @@ pub struct Project {
     pub config: Config,
     /// User-level plugins loaded from `~/.rpp/plugins.toml`.
     pub(crate) user_plugins: UserPlugins,
-    /// Command-line plugin option overrides.
-    pub(crate) plugin_options: PluginOptionOverrides,
 }
 
 /// Resolved plugin identity for list/remove/update matching.
@@ -91,19 +88,7 @@ impl Project {
             root,
             config,
             user_plugins,
-            plugin_options: PluginOptionOverrides::default(),
         })
-    }
-
-    /// Parse and retain command-line plugin option overrides.
-    pub fn set_plugin_options(&mut self, options: &[String]) -> Result<()> {
-        self.plugin_options = PluginOptionOverrides::parse(options)?;
-        Ok(())
-    }
-
-    /// Summary text for active command-line plugin option overrides.
-    pub fn plugin_options_summary(&self) -> Option<String> {
-        self.plugin_options.summary()
     }
 
     /// Path to `rpp.toml`.
@@ -239,9 +224,6 @@ impl Project {
             factories.push(loaded);
         }
 
-        self.plugin_options
-            .validate_plugin_ids(factories.iter().map(|loaded| loaded.id.as_str()))?;
-
         if global_lock_dirty {
             self.user_plugins.ensure_root()?;
             global_lock
@@ -254,10 +236,26 @@ impl Project {
                 .with_context(|| format!("writing {}", project_lock_path.display()))?;
         }
 
+        self.write_plugin_stubs(&factories);
+
         Ok(ResolvedFactories {
             factories: factories.into_iter().map(|loaded| loaded.factory).collect(),
             wasm_engine: shared_wasm,
         })
+    }
+
+    /// Refresh editor definitions shipped by plugins (`luals/*.lua`) into
+    /// `.rpp/api`. Best-effort: failures are reported, never fatal.
+    fn write_plugin_stubs(&self, factories: &[LoadedFactory]) {
+        let api_dir = self.root.join(".rpp").join("api");
+        let mut owners = BTreeMap::new();
+        for loaded in factories {
+            if let Err(error) =
+                crate::luals::write_plugin_stubs(&api_dir, &loaded.id, &loaded.root, &mut owners)
+            {
+                tracing::warn!("plugin `{}` editor definitions: {error:#}", loaded.id);
+            }
+        }
     }
 
     fn resolve_factory(
@@ -307,8 +305,6 @@ impl Project {
             )
         })?;
         let id = manifest.id.clone();
-        let _ =
-            crate::luals::write_plugin_stubs(&self.root.join(".rpp").join("api"), &resolved.root);
 
         let engine = if manifest.components.is_empty() {
             shared_wasm.clone()
@@ -341,8 +337,7 @@ impl Project {
             plugin_cfg.outputs.clone(),
         );
         let limits = rpp::lua::LuaPluginFactory::limits_from_build(&self.config.build);
-        let mut options = plugin_cfg.options.clone();
-        self.plugin_options.apply(&manifest.id, &mut options);
+        let options = plugin_cfg.options.clone();
         let factory: Arc<dyn PluginFactory> = Arc::new(
             LuaPluginFactory::load_with_limits_and_access(
                 &resolved.root,
@@ -356,7 +351,12 @@ impl Project {
             .with_context(|| format!("loading Lua plugin `{}`", manifest.id))?,
         );
 
-        Ok(LoadedFactory { id, factory, scope })
+        Ok(LoadedFactory {
+            id,
+            root: resolved.root,
+            factory,
+            scope,
+        })
     }
 
     /// The absolute output directory.
@@ -443,6 +443,7 @@ struct ResolvedFactories {
 
 struct LoadedFactory {
     id: String,
+    root: PathBuf,
     factory: Arc<dyn PluginFactory>,
     scope: PluginScope,
 }

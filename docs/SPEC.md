@@ -481,8 +481,7 @@ pub fn run_packsquash(binary: &str, pack_dir: &Path, zip_path: &Path, options_fi
 - Integration tests in the workspace build `examples/pack` end-to-end and assert real
   outputs (minified JSON, zip contents, incremental no-op second build).
 
-Plugin projects can depend on the `rpp-cli` library in integration tests and use
-`rpp_cli::harness::BuildHarness`. The harness ignores user-global plugins, fixes the
-worker count, returns structured results/digests, and can verify two byte-identical
-cold builds followed by a no-op warm build. `build_no_cache` matches the CLI's
-cache-only reset while retaining durable external-output ownership.
+Plugin projects can depend on the `rpp-cli` library in integration tests:
+`rpp_cli::project::Project::discover_isolated` loads a project without user-global
+plugins, and `build_engine()` returns the engine whose `build()` reports structured
+results (counts plus written/removed paths, including external outputs).
