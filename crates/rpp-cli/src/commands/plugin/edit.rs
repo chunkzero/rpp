@@ -64,7 +64,8 @@ pub fn add_plugin(toml_text: &str, entry: PluginEntry) -> Result<String> {
 /// resolve their `plugin.toml` relative to `project_root`).
 ///
 /// Returns `(updated_text, removed_source)` where `removed_source` is `None`
-/// when nothing matched.
+/// when the removed entry has no source or nothing matched. Unmatched input
+/// is returned unchanged.
 pub fn remove_plugin(
     toml_text: &str,
     id_or_source: &str,
@@ -73,7 +74,7 @@ pub fn remove_plugin(
     let mut doc: DocumentMut = toml_text.parse().context("parsing rpp.toml for editing")?;
 
     let Some(array) = doc.get_mut("plugin").and_then(Item::as_array_of_tables_mut) else {
-        return Ok((doc.to_string(), None));
+        return Ok((toml_text.to_owned(), None));
     };
 
     let mut found_index = None;
@@ -94,6 +95,8 @@ pub fn remove_plugin(
 
     if let Some(i) = found_index {
         array.remove(i);
+    } else {
+        return Ok((toml_text.to_owned(), None));
     }
     Ok((doc.to_string(), removed_source))
 }

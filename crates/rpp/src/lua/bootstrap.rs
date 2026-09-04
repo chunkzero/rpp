@@ -40,13 +40,18 @@ pub(crate) fn eval_entry(
         plugin: plugin_id.to_string(),
         message: traceback::render(&e),
     })?;
-    let sandbox =
-        Sandbox::new(&lua, plugin_id, root, access, Arc::clone(&deadline)).map_err(|e| {
-            Error::PluginLoad {
-                plugin: plugin_id.to_string(),
-                message: traceback::render(&e),
-            }
-        })?;
+    let sandbox = Sandbox::new(
+        &lua,
+        plugin_id,
+        root,
+        access,
+        Arc::clone(&deadline),
+        memory_limit,
+    )
+    .map_err(|e| Error::PluginLoad {
+        plugin: plugin_id.to_string(),
+        message: traceback::render(&e),
+    })?;
     let value = eval_entry_in_lua(
         &lua,
         &sandbox,

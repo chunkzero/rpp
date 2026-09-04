@@ -143,8 +143,33 @@ pub fn copy_plugin_dir(source: &Path, destination: &Path) -> Result<()> {
         }
         None => None,
     };
-    std::fs::rename(staging.keep(), destination)
-        .with_context(|| format!("installing plugin directory {}", destination.display()))?;
+    install_staged(staging.path(), destination, previous)
+}
+
+fn install_staged(
+    staging: &Path,
+    destination: &Path,
+    mut previous: Option<tempfile::TempDir>,
+) -> Result<()> {
+    if let Err(install_error) = std::fs::rename(staging, destination) {
+        if let Some(old) = previous
+            .as_ref()
+            .map(|previous| previous.path().join("old"))
+        {
+            if let Err(rollback_error) = std::fs::rename(&old, destination) {
+                let backup = previous.take().expect("previous install exists").keep();
+                return Err(install_error).with_context(|| {
+                    format!(
+                        "installing {}; restoring the previous install also failed ({rollback_error}); backup retained at {}",
+                        destination.display(),
+                        backup.join("old").display()
+                    )
+                });
+            }
+        }
+        return Err(install_error)
+            .with_context(|| format!("installing plugin directory {}", destination.display()));
+    }
     drop(previous);
     Ok(())
 }
@@ -205,6 +230,28 @@ mod tests {
         assert!(std::fs::read_to_string(destination.join("plugin.toml"))
             .unwrap()
             .contains("v2"));
+    }
+
+    #[test]
+    fn failed_install_restores_previous_package() {
+        let root = tempfile::tempdir().unwrap();
+        let destination = root.path().join("plugin");
+        std::fs::create_dir(&destination).unwrap();
+        std::fs::write(destination.join("plugin.toml"), "old").unwrap();
+
+        let previous = tempfile::Builder::new()
+            .prefix(".replaced-")
+            .tempdir_in(root.path())
+            .unwrap();
+        std::fs::rename(&destination, previous.path().join("old")).unwrap();
+
+        assert!(
+            install_staged(&root.path().join("missing"), &destination, Some(previous)).is_err()
+        );
+        assert_eq!(
+            std::fs::read_to_string(destination.join("plugin.toml")).unwrap(),
+            "old"
+        );
     }
 
     #[test]

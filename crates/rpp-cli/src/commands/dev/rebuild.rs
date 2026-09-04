@@ -81,6 +81,13 @@ impl DevSession {
             self.watcher
                 .set_plugin_dirs(local_plugin_dirs(&reloaded))
                 .context("updating watched plugin directories")?;
+            if self.project.config.build.wasm.memory_limit_mb
+                != reloaded.config.build.wasm.memory_limit_mb
+                || self.project.config.build.wasm.execution_deadline_seconds
+                    != reloaded.config.build.wasm.execution_deadline_seconds
+            {
+                self.wasm_engine = None;
+            }
             self.project = reloaded;
         }
 

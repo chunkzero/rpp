@@ -270,7 +270,7 @@ fn remove(dir: &Path, id_or_source: &str, global: bool) -> Result<()> {
         .or(plugin.id.as_deref())
         .unwrap_or(id_or_source);
     let (updated, removed_source) = remove_plugin(&text, remove_key, &project.root)?;
-    if removed_source.is_none() {
+    if updated == text {
         return Err(anyhow!("no plugin matching `{id_or_source}` found"));
     }
     atomic::write(&config_path, &updated)?;
