@@ -76,7 +76,14 @@ pub(crate) fn process_files(ctx: FilePhaseCtx<'_>) -> Result<FilePhaseStats> {
 
         if clean {
             let entry = candidate.expect("clean implies prev entry").clone();
-            if materialize_file_entry(store, &entry, output, source_owners, &src.rel)? {
+            if materialize_file_entry(
+                store,
+                &engine.output,
+                &entry,
+                output,
+                source_owners,
+                &src.rel,
+            )? {
                 if entry.outputs.is_empty() {
                     dropped += 1;
                 }
@@ -90,7 +97,11 @@ pub(crate) fn process_files(ctx: FilePhaseCtx<'_>) -> Result<FilePhaseStats> {
     }
 
     if !dirty.is_empty() {
-        let pool = WorkerPool::new(engine.worker_count(), Arc::clone(factories));
+        // Workers (and their Lua states) persist across builds of one engine;
+        // a failed build discards them so no broken worker is reused.
+        let mut pool_slot = engine.pool.lock();
+        let pool = pool_slot
+            .get_or_insert_with(|| WorkerPool::new(engine.worker_count(), Arc::clone(factories)));
         let mut pending: BTreeMap<String, (u64, Fingerprint)> = BTreeMap::new();
         let mut submitted = 0usize;
 
@@ -111,11 +122,19 @@ pub(crate) fn process_files(ctx: FilePhaseCtx<'_>) -> Result<FilePhaseStats> {
         let mut outcomes = Vec::with_capacity(submitted);
         for _ in 0..submitted {
             let outcome = match pool.recv() {
-                Some(r) => r?,
-                None => return Err(Error::Build("worker pool closed early".into())),
+                Some(Ok(outcome)) => outcome,
+                Some(Err(error)) => {
+                    *pool_slot = None;
+                    return Err(error);
+                }
+                None => {
+                    *pool_slot = None;
+                    return Err(Error::Build("worker pool closed early".into()));
+                }
             };
             outcomes.push(outcome);
         }
+        drop(pool_slot);
         outcomes.sort_by(|a, b| outcome_rel(a).cmp(outcome_rel(b)));
 
         for outcome in outcomes {
@@ -129,7 +148,7 @@ pub(crate) fn process_files(ctx: FilePhaseCtx<'_>) -> Result<FilePhaseStats> {
                     super::cache_replay::claim_source_output(source_owners, &file.path, &rel)?;
                     output.files.insert(
                         file.path.clone(),
-                        super::generator::OutputContent::Bytes(file.contents),
+                        super::generator::OutputContent::Bytes(Arc::new(file.contents)),
                     );
                     new_manifest.files.insert(
                         rel,
@@ -162,8 +181,6 @@ pub(crate) fn process_files(ctx: FilePhaseCtx<'_>) -> Result<FilePhaseStats> {
                 }
             }
         }
-
-        pool.shutdown();
     }
 
     Ok(FilePhaseStats {

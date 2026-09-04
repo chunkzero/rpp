@@ -78,11 +78,6 @@ impl WorkerPool {
     pub(crate) fn recv(&self) -> Option<JobResult> {
         self.result_rx.recv().ok()
     }
-
-    /// Close the job channel and join all workers.
-    pub(crate) fn shutdown(self) {
-        drop(self);
-    }
 }
 
 impl Drop for WorkerPool {

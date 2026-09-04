@@ -57,13 +57,15 @@ pub(crate) fn sync_output(
 
         let needs_write = match content {
             OutputContent::Bytes(bytes) => match std::fs::read(&path) {
-                Ok(existing) => existing != *bytes,
+                Ok(existing) => existing != **bytes,
                 Err(_) => true,
             },
             OutputContent::Object(key) => match std::fs::read(&path) {
                 Ok(existing) => crate::util::hash::xxh3(&existing) != *key,
                 Err(_) => true,
             },
+            // Verified against the destination during cache replay.
+            OutputContent::Linked(_) => false,
         };
 
         if needs_write {
@@ -75,7 +77,7 @@ pub(crate) fn sync_output(
                     crate::util::atomic::write(&path, bytes.as_slice())
                         .map_err(|e| Error::io(&path, e))?;
                 }
-                OutputContent::Object(key) => {
+                OutputContent::Object(key) | OutputContent::Linked(key) => {
                     store.copy_object(*key, &path)?;
                 }
             }

@@ -704,8 +704,16 @@ fn corrupt_cache_object_is_rebuilt() {
         .path();
     std::fs::write(object, "corrupt").unwrap();
 
+    // The output directory still holds the right bytes, so this is a hit.
     let second = build(&project, Vec::new());
-    assert_eq!(second.processed, 1);
+    assert_eq!(second.cached, 1);
+    assert_eq!(project.read_out("a.txt").as_deref(), Some("a"));
+
+    // Once the output is gone the corrupt object cannot be materialized and
+    // the file is reprocessed.
+    std::fs::remove_dir_all(project.root().join("dist")).unwrap();
+    let third = build(&project, Vec::new());
+    assert_eq!(third.processed, 1);
     assert_eq!(project.read_out("a.txt").as_deref(), Some("a"));
 }
 
