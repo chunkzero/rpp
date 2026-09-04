@@ -8,11 +8,12 @@ use std::time::Duration;
 use rpp_wasm::{Error, Limits, Permissions, Value, WasmEngine};
 
 fn target_installed() -> bool {
-    Command::new("rustc")
-        .args(["--print", "target-libdir", "--target", "wasm32-wasip2"])
-        .output()
-        .map(|output| output.status.success())
-        .unwrap_or(false)
+    let Ok(output) = Command::new("rustc").args(["--print", "sysroot"]).output() else {
+        return false;
+    };
+    Path::new(String::from_utf8_lossy(&output.stdout).trim())
+        .join("lib/rustlib/wasm32-wasip2/lib")
+        .is_dir()
 }
 
 fn fixture(name: &str) -> PathBuf {
@@ -50,7 +51,7 @@ fn compile_fixture(crate_dir: &Path, stem: &str) -> Option<BuiltFixture> {
         .env("CARGO_TARGET_DIR", target.path())
         .args([
             "build",
-            "--offline",
+            "--locked",
             "--release",
             "--target",
             "wasm32-wasip2",

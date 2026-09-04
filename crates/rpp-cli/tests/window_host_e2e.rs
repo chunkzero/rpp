@@ -13,13 +13,12 @@ fn fixture() -> PathBuf {
 }
 
 fn wasip2_available() -> bool {
-    let Ok(output) = Command::new("rustc")
-        .args(["--print", "target-libdir", "--target", "wasm32-wasip2"])
-        .output()
-    else {
+    let Ok(output) = Command::new("rustc").args(["--print", "sysroot"]).output() else {
         return false;
     };
-    output.status.success() && Path::new(String::from_utf8_lossy(&output.stdout).trim()).is_dir()
+    Path::new(String::from_utf8_lossy(&output.stdout).trim())
+        .join("lib/rustlib/wasm32-wasip2/lib")
+        .is_dir()
 }
 
 fn build_component(target_dir: &Path, v2: bool) -> PathBuf {
@@ -29,7 +28,6 @@ fn build_component(target_dir: &Path, v2: bool) -> PathBuf {
         .args([
             "build",
             "--locked",
-            "--offline",
             "--target",
             "wasm32-wasip2",
         ])

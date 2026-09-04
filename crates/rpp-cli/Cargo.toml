@@ -13,34 +13,33 @@ name = "rpp"
 path = "src/main.rs"
 
 [dependencies]
-rpp = { path = "../rpp", features = ["wasm", "tracing"] }
-rpp-fetch = { path = "../rpp-fetch" }
-rpp-squash = { path = "../rpp-squash" }
-rpp-wasm = { path = "../rpp-wasm" }
+rpp = { workspace = true, features = ["wasm", "tracing"] }
+rpp-fetch.workspace = true
+rpp-squash.workspace = true
+rpp-wasm.workspace = true
 
-anyhow = "1.0"
+anyhow.workspace = true
 clap = { version = "4.5", features = ["derive"] }
-toml = "0.9"
+toml.workspace = true
 toml_edit = "0.22"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-sha2 = "0.10"
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
 
-tracing = "0.1"
+tracing.workspace = true
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 console = "0.15"
 dialoguer = "0.11"
-dirs = "5"
+dirs.workspace = true
 
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal", "time", "fs", "net"] }
 tokio-stream = { version = "0.1", features = ["sync"] }
 axum = "0.7"
 tower-http = { version = "0.6", features = ["fs"] }
-notify = "6"
 notify-debouncer-full = "0.3"
 open = "5"
-tempfile = "3.13"
+tempfile.workspace = true
 
 [dev-dependencies]
 zip = "8.6"
