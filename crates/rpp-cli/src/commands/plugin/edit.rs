@@ -17,6 +17,8 @@ pub struct PluginEntry {
     pub r#ref: Option<String>,
     /// Optional `subdir`.
     pub subdir: Option<String>,
+    /// Optional `origin`: the directory a global install was copied from.
+    pub origin: Option<String>,
 }
 
 /// Append a `[[plugin]]` entry to `rpp.toml` text, returning the updated text.
@@ -46,6 +48,9 @@ pub fn add_plugin(toml_text: &str, entry: PluginEntry) -> Result<String> {
     }
     if let Some(s) = entry.subdir {
         table["subdir"] = toml_edit::value(s);
+    }
+    if let Some(origin) = entry.origin {
+        table["origin"] = toml_edit::value(origin);
     }
     array.push(table);
 
@@ -150,6 +155,7 @@ pretty = false
                 source: "github:example/atlas".into(),
                 r#ref: Some("v1.0.0".into()),
                 subdir: Some("plugins/atlas".into()),
+                origin: None,
             },
         )
         .unwrap();
@@ -172,6 +178,7 @@ pretty = false
                 source: "path:plugins/json-minify".into(),
                 r#ref: None,
                 subdir: None,
+                origin: None,
             },
         )
         .unwrap_err();
@@ -187,6 +194,7 @@ pretty = false
                 source: "github:a/b".into(),
                 r#ref: None,
                 subdir: None,
+                origin: None,
             },
         )
         .unwrap();

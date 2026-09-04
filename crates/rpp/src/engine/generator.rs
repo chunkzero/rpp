@@ -162,19 +162,15 @@ impl GeneratorHost for RecordingHost<'_> {
     }
 
     fn emit(&mut self, path: &str, contents: Vec<u8>) {
-        match claim_output(self.output_owners, path, &self.plugin_id) {
-            Ok(()) => {}
-            Err(ClaimError::InvalidPath(message)) => {
-                self.errors
-                    .push(format!("invalid emit path `{path}`: {message}"));
-                return;
-            }
-            Err(ClaimError::Taken { previous }) => {
-                self.errors
-                    .push(format!("output `{path}` already claimed by `{previous}`"));
-                return;
-            }
+        // Generators overwrite: a later generator (or this one, emitting the
+        // same path twice) replaces processor output and earlier emits.
+        if let Err(message) = validate_relative(path) {
+            self.errors
+                .push(format!("invalid emit path `{path}`: {message}"));
+            return;
         }
+        self.output_owners
+            .insert(path.to_string(), self.plugin_id.clone());
         self.output
             .files
             .insert(path.to_string(), OutputContent::Bytes(contents.clone()));

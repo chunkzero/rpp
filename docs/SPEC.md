@@ -63,6 +63,14 @@ source = "src"                   # pack source dir (contains pack.mcmeta, assets
 output = "dist"                  # output dir; zip goes to dist/<name>.zip
 workers = 0                      # 0 = available_parallelism
 
+[build.lua]
+memory_limit_mb = 256            # per Lua state
+execution_deadline_seconds = 30  # per Lua call
+
+[build.wasm]
+memory_limit_mb = 512            # per component instance
+execution_deadline_seconds = 60  # per component call
+
 [build.squash]
 enabled = true
 engine = "builtin"               # "builtin" | "packsquash"

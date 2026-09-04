@@ -80,7 +80,13 @@ impl WorkerPool {
     }
 
     /// Close the job channel and join all workers.
-    pub(crate) fn shutdown(mut self) {
+    pub(crate) fn shutdown(self) {
+        drop(self);
+    }
+}
+
+impl Drop for WorkerPool {
+    fn drop(&mut self) {
         self.job_tx = None;
         for worker in self.workers.drain(..) {
             let _ = worker.join();

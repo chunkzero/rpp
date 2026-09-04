@@ -45,6 +45,9 @@ impl LuaPluginInstance {
     pub(crate) fn new(factory: LuaPluginFactory) -> Result<Self> {
         let plugin_id = factory.id().to_string();
         let (entry_name, entry_source) = factory.entry();
+        // One access policy per instance; the builtins installed by
+        // `eval_entry` and this instance's phase writes share its phase cell.
+        let access = factory.access();
         let eval = eval_entry(
             &plugin_id,
             factory.root(),
@@ -52,7 +55,7 @@ impl LuaPluginInstance {
             entry_source,
             factory.memory_limit(),
             factory.execution_limit(),
-            factory.access(),
+            access.clone(),
         )?;
 
         let builder = extract_builder(&plugin_id, eval.value)?;
@@ -81,7 +84,7 @@ impl LuaPluginInstance {
             on_finish,
             deadline: eval.deadline,
             execution_limit: factory.execution_limit(),
-            access: factory.access(),
+            access,
             _sandbox_env: eval.sandbox.env,
         })
     }

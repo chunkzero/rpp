@@ -372,3 +372,42 @@ file.text = table.concat({
     .unwrap();
     assert_eq!(String::from_utf8(out).unwrap(), "true|true|hi|a-b-c");
 }
+
+#[test]
+fn granted_load_stays_inside_the_sandbox() {
+    use rpp::config::{LuaCapability, SecurityMode};
+    use rpp::lua::{LuaPluginFactory, LuaPluginLimits, PackInfo, RuntimeAccess};
+
+    let p = PluginDir::lua(
+        "loader",
+        r#"
+local rpp = require("rpp")
+local plugin = rpp.plugin()
+plugin:processor("t", { files = { "**/*" } }, function(ctx, file)
+    local chunk = assert(load("return io, os, require"))
+    local io_value, os_value, require_value = chunk()
+    file.text = tostring(io_value) .. "," .. tostring(os_value) .. "," .. type(require_value)
+end)
+return plugin
+"#,
+    );
+    let mut access = RuntimeAccess::sandboxed(".".into());
+    access.security = SecurityMode::Trusted;
+    access.permissions.lua = vec![LuaCapability::Load];
+    let factory = LuaPluginFactory::load(
+        p.path(),
+        toml::Value::Table(Default::default()),
+        PackInfo {
+            name: "pack".into(),
+            description: None,
+            format: None,
+        },
+        LuaPluginLimits::default(),
+        access,
+    )
+    .unwrap();
+    let mut inst = factory.instantiate().unwrap();
+    let mut file = PackFile::new("in.txt", Vec::new());
+    inst.process("t", &mut file).unwrap();
+    assert_eq!(file.contents, b"nil,nil,function");
+}

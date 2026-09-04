@@ -53,13 +53,8 @@ pub(crate) fn materialize_generator_mutations(
     for mutation in mutations {
         match mutation {
             GeneratorMutation::Emit(out) => {
-                claim_output(output_owners, &out.path, plugin_id).map_err(|error| match error {
-                    ClaimError::InvalidPath(message) => Error::Build(message),
-                    ClaimError::Taken { previous } => Error::Build(format!(
-                        "output `{}` already claimed by `{previous}`",
-                        out.path
-                    )),
-                })?;
+                crate::util::path::validate_relative(&out.path).map_err(Error::Build)?;
+                output_owners.insert(out.path.clone(), plugin_id.to_string());
                 output
                     .files
                     .insert(out.path.clone(), OutputContent::Object(out.object));

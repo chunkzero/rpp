@@ -233,9 +233,9 @@ impl Engine {
         let mut changes = finalize::sync_output(&self.config, &self.output, &output, &store)?;
         changes.external = external::sync(&self.project_root, &new_manifest, &store)?;
 
+        new_manifest.save(&manifest_path)?;
         let live = finalize::collect_live_objects(&new_manifest);
         store.gc(&live)?;
-        new_manifest.save(&manifest_path)?;
 
         Ok(BuildResult {
             processed: file_stats.processed,

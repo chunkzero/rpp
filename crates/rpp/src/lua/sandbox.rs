@@ -174,20 +174,21 @@ fn install_stdlib(lua: &Lua, env: &Table, access: &RuntimeAccess) -> mlua::Resul
         env.set("os", value)?;
     }
     if access.has_lua(crate::config::LuaCapability::Load) {
-        for name in ["load", "loadfile", "dofile"] {
-            let value: Value = g.get(name)?;
-            if !value.is_nil() {
-                env.set(name, value)?;
-            }
-        }
+        install_loaders(lua, env)?;
     }
     if access.has_lua(crate::config::LuaCapability::Debug) {
         let value: Value = g.get("debug")?;
         env.set("debug", value)?;
     }
     if access.has_lua(crate::config::LuaCapability::Package) {
-        let value: Value = g.get("package")?;
-        env.set("package", value)?;
+        // Search paths only: `loadlib`/`cpath` would load native code and
+        // `loaded`/`preload`/`searchers` reach the real global table.
+        let source: Table = g.get("package")?;
+        let package = lua.create_table()?;
+        for name in ["path", "config", "searchpath"] {
+            package.set(name, source.get::<Value>(name)?)?;
+        }
+        env.set("package", package)?;
     }
 
     // `collectgarbage` stub (accepts and ignores arguments, returns 0).
@@ -196,6 +197,110 @@ fn install_stdlib(lua: &Lua, env: &Table, access: &RuntimeAccess) -> mlua::Resul
         lua.create_function(|_, _: Variadic<Value>| Ok(0i64))?,
     )?;
 
+    Ok(())
+}
+
+/// Install `load`, `loadfile`, and `dofile` bound to the sandbox `_ENV`.
+///
+/// Lua's own versions default a chunk's `_ENV` to the real global table, which
+/// would hand a plugin `io`/`os` it was never granted.
+fn install_loaders(lua: &Lua, env: &Table) -> mlua::Result<()> {
+    fn compile(lua: &Lua, source: Vec<u8>, name: &str, env: Table) -> mlua::Result<(Value, Value)> {
+        match lua
+            .load(source)
+            .set_name(name)
+            .set_environment(env)
+            .into_function()
+        {
+            Ok(function) => Ok((Value::Function(function), Value::Nil)),
+            Err(error) => Ok((
+                Value::Nil,
+                Value::String(lua.create_string(error.to_string())?),
+            )),
+        }
+    }
+
+    let load_env = env.clone();
+    env.set(
+        "load",
+        lua.create_function(
+            move |lua,
+                  (chunk, name, _mode, chunk_env): (
+                Value,
+                Option<String>,
+                Value,
+                Option<Table>,
+            )| {
+                let source = match chunk {
+                    Value::String(text) => text.as_bytes().to_vec(),
+                    Value::Function(reader) => {
+                        let mut source = Vec::new();
+                        loop {
+                            match reader.call::<Value>(())? {
+                                Value::String(piece) if !piece.as_bytes().is_empty() => {
+                                    source.extend_from_slice(&piece.as_bytes())
+                                }
+                                _ => break,
+                            }
+                        }
+                        source
+                    }
+                    other => {
+                        return Err(mlua::Error::external(format!(
+                            "load expects a string or function, got {}",
+                            other.type_name()
+                        )))
+                    }
+                };
+                let name = name.unwrap_or_else(|| "=(load)".into());
+                compile(
+                    lua,
+                    source,
+                    &name,
+                    chunk_env.unwrap_or_else(|| load_env.clone()),
+                )
+            },
+        )?,
+    )?;
+
+    let loadfile_env = env.clone();
+    env.set(
+        "loadfile",
+        lua.create_function(
+            move |lua, (path, _mode, chunk_env): (String, Value, Option<Table>)| {
+                let source = match std::fs::read(&path) {
+                    Ok(source) => source,
+                    Err(error) => {
+                        return Ok((
+                            Value::Nil,
+                            Value::String(
+                                lua.create_string(format!("cannot open {path}: {error}"))?,
+                            ),
+                        ))
+                    }
+                };
+                compile(
+                    lua,
+                    source,
+                    &format!("@{path}"),
+                    chunk_env.unwrap_or_else(|| loadfile_env.clone()),
+                )
+            },
+        )?,
+    )?;
+
+    let dofile_env = env.clone();
+    env.set(
+        "dofile",
+        lua.create_function(move |lua, path: String| {
+            let source = std::fs::read(&path)
+                .map_err(|error| mlua::Error::external(format!("cannot open {path}: {error}")))?;
+            lua.load(source)
+                .set_name(format!("@{path}"))
+                .set_environment(dofile_env.clone())
+                .call::<mlua::MultiValue>(())
+        })?,
+    )?;
     Ok(())
 }
 

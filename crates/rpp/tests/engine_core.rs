@@ -169,8 +169,12 @@ fn colliding_generator_outputs_fail() {
         ])
         .build_engine()
         .unwrap();
-    let err = engine.build().unwrap_err().to_string();
-    assert!(err.contains("already claimed"), "{err}");
+    engine.build().unwrap();
+    assert_eq!(
+        std::fs::read(project.root().join("dist/same.txt")).unwrap(),
+        b"second",
+        "a later generator overwrites an earlier generator's emit"
+    );
 }
 
 #[test]

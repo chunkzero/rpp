@@ -10,21 +10,23 @@ use tokio::sync::{broadcast, mpsc};
 use crate::project::Project;
 use crate::ui;
 
-use super::watch::{local_plugin_dirs, ChangeBatch};
+use super::watch::{local_plugin_dirs, ChangeBatch, DevWatcher};
 
 /// Dev-server state reused across incremental rebuilds.
 pub struct DevSession {
     project: Project,
     engine: Option<Engine>,
     wasm_engine: Option<WasmEngine>,
+    watcher: DevWatcher,
 }
 
 impl DevSession {
-    pub fn new(project: Project) -> Self {
+    pub fn new(project: Project, watcher: DevWatcher) -> Self {
         Self {
             project,
             engine: None,
             wasm_engine: None,
+            watcher,
         }
     }
 
@@ -65,16 +67,20 @@ impl DevSession {
 
         if batch.kind_config {
             let reloaded = Project::discover(&self.project.root).context("reloading rpp.toml")?;
-            let topology_changed = self.project.source_dir() != reloaded.source_dir()
+            // The served directory, watched source tree, and listening address
+            // are fixed for the session; everything else reloads in place.
+            let fixed_changed = self.project.source_dir() != reloaded.source_dir()
                 || self.project.output_dir() != reloaded.output_dir()
                 || self.project.config.dev.host != reloaded.config.dev.host
-                || self.project.config.dev.port != reloaded.config.dev.port
-                || local_plugin_dirs(&self.project) != local_plugin_dirs(&reloaded);
-            if topology_changed {
+                || self.project.config.dev.port != reloaded.config.dev.port;
+            if fixed_changed {
                 anyhow::bail!(
-                    "source, output, dev address, or local plugin paths changed; restart `rpp dev`"
+                    "`build.source`, `build.output`, or `[dev]` changed; restart `rpp dev` to apply"
                 );
             }
+            self.watcher
+                .set_plugin_dirs(local_plugin_dirs(&reloaded))
+                .context("updating watched plugin directories")?;
             self.project = reloaded;
         }
 
@@ -129,7 +135,11 @@ pub async fn rebuild_loop(
     mut fs_rx: mpsc::UnboundedReceiver<ChangeBatch>,
     reload_tx: broadcast::Sender<String>,
 ) {
-    while let Some(batch) = fs_rx.recv().await {
+    while let Some(mut batch) = fs_rx.recv().await {
+        // Changes that arrived during the previous rebuild fold into one pass.
+        while let Ok(more) = fs_rx.try_recv() {
+            batch.merge(more);
+        }
         let session = Arc::clone(&session);
         let result = tokio::task::spawn_blocking(move || {
             let mut guard = session.blocking_lock();
