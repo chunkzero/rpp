@@ -19,14 +19,21 @@ pub(crate) enum OutputContent {
     /// A CAS object that must be materialized into the output directory.
     Object(u64),
     /// A CAS object whose bytes already sit at the output path on disk.
-    Linked(u64),
+    Linked {
+        key: u64,
+        path: PathBuf,
+    },
 }
 
 impl OutputContent {
     pub(crate) fn load_bytes(&self, store: &ObjectStore) -> Option<Vec<u8>> {
         match self {
             Self::Bytes(bytes) => Some(bytes.as_ref().clone()),
-            Self::Object(key) | Self::Linked(key) => store.get(*key),
+            Self::Object(key) => store.get(*key),
+            Self::Linked { key, path } => std::fs::read(path)
+                .ok()
+                .filter(|bytes| xxh3(bytes) == *key)
+                .or_else(|| store.get(*key)),
         }
     }
 
@@ -35,7 +42,8 @@ impl OutputContent {
     fn content_hash(&self, store: &ObjectStore) -> Option<u64> {
         match self {
             Self::Bytes(bytes) => Some(xxh3(bytes)),
-            Self::Object(key) | Self::Linked(key) => store.contains(*key).then_some(*key),
+            Self::Object(key) => store.contains(*key).then_some(*key),
+            Self::Linked { key, .. } => Some(*key),
         }
     }
 }

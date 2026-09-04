@@ -101,7 +101,8 @@ pub(crate) fn process_files(ctx: FilePhaseCtx<'_>) -> Result<FilePhaseStats> {
         // a failed build discards them so no broken worker is reused.
         let mut pool_slot = engine.pool.lock();
         let pool = pool_slot
-            .get_or_insert_with(|| WorkerPool::new(engine.worker_count(), Arc::clone(factories)));
+            .take()
+            .unwrap_or_else(|| WorkerPool::new(engine.worker_count(), Arc::clone(factories)));
         let mut pending: BTreeMap<String, (u64, Fingerprint)> = BTreeMap::new();
         let mut submitted = 0usize;
 
@@ -124,16 +125,15 @@ pub(crate) fn process_files(ctx: FilePhaseCtx<'_>) -> Result<FilePhaseStats> {
             let outcome = match pool.recv() {
                 Some(Ok(outcome)) => outcome,
                 Some(Err(error)) => {
-                    *pool_slot = None;
                     return Err(error);
                 }
                 None => {
-                    *pool_slot = None;
                     return Err(Error::Build("worker pool closed early".into()));
                 }
             };
             outcomes.push(outcome);
         }
+        *pool_slot = Some(pool);
         drop(pool_slot);
         outcomes.sort_by(|a, b| outcome_rel(a).cmp(outcome_rel(b)));
 
@@ -193,5 +193,58 @@ pub(crate) fn process_files(ctx: FilePhaseCtx<'_>) -> Result<FilePhaseStats> {
 fn outcome_rel(outcome: &JobOutcome) -> &str {
     match outcome {
         JobOutcome::Produced { rel, .. } | JobOutcome::Dropped { rel } => rel,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn submission_read_error_discards_pending_results() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("src");
+        std::fs::create_dir(&source).unwrap();
+        std::fs::write(source.join("a.txt"), "old").unwrap();
+        std::fs::write(source.join("b.txt"), "b").unwrap();
+        let sources = super::super::discovery::discover(&source).unwrap();
+        std::fs::remove_file(source.join("b.txt")).unwrap();
+        let config = crate::config::Config::parse(
+            r#"[pack]
+name = "test"
+"#,
+            "rpp.toml",
+        )
+        .unwrap();
+        let engine = Engine::builder(config)
+            .project_root(dir.path())
+            .build_engine()
+            .unwrap();
+        let store = ObjectStore::open(dir.path().join(".rpp/cache/objects")).unwrap();
+        let mut manifest = Manifest::empty(0);
+        let mut output = super::super::generator::OutputSet {
+            files: BTreeMap::new(),
+        };
+        let mut owners = BTreeMap::new();
+        let result = process_files(FilePhaseCtx {
+            engine: &engine,
+            compiled: &engine.compiled,
+            sources,
+            store: &store,
+            prev: None,
+            new_manifest: &mut manifest,
+            output: &mut output,
+            source_owners: &mut owners,
+            factories: &engine.factories,
+        });
+        assert!(result.is_err());
+        assert!(engine.pool.lock().is_none());
+
+        std::fs::write(source.join("a.txt"), "new").unwrap();
+        engine.build().unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("dist/a.txt")).unwrap(),
+            "new"
+        );
     }
 }

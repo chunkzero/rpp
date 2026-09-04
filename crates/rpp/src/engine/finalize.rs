@@ -65,7 +65,7 @@ pub(crate) fn sync_output(
                 Err(_) => true,
             },
             // Verified against the destination during cache replay.
-            OutputContent::Linked(_) => false,
+            OutputContent::Linked { .. } => false,
         };
 
         if needs_write {
@@ -77,7 +77,7 @@ pub(crate) fn sync_output(
                     crate::util::atomic::write(&path, bytes.as_slice())
                         .map_err(|e| Error::io(&path, e))?;
                 }
-                OutputContent::Object(key) | OutputContent::Linked(key) => {
+                OutputContent::Object(key) | OutputContent::Linked { key, .. } => {
                     store.copy_object(*key, &path)?;
                 }
             }

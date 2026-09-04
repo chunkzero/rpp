@@ -18,11 +18,13 @@ fn cached_content(
     rel: &str,
     key: u64,
 ) -> Option<OutputContent> {
-    let on_disk = std::fs::read(output_dir.join(rel))
-        .map(|existing| xxh3(&existing) == key)
-        .unwrap_or(false);
+    let path = output_dir.join(rel);
+    let on_disk = std::fs::symlink_metadata(&path).is_ok_and(|metadata| metadata.is_file())
+        && std::fs::read(&path)
+            .map(|existing| xxh3(&existing) == key)
+            .unwrap_or(false);
     if on_disk {
-        Some(OutputContent::Linked(key))
+        Some(OutputContent::Linked { key, path })
     } else if store.contains(key) {
         Some(OutputContent::Object(key))
     } else {
