@@ -18,6 +18,7 @@ struct UserPluginManifest {
 }
 
 /// The user-level plugin store under `~/.rpp`.
+#[derive(Default)]
 pub struct UserPlugins {
     pub root: PathBuf,
     pub plugins: Vec<PluginConfig>,

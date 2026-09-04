@@ -45,31 +45,11 @@ pub(crate) struct FileEntry {
     pub(crate) outputs: Vec<OutputRef>,
 }
 
-/// Serializable form of [`ReadKind`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) enum ReadKindRepr {
-    List,
-    SourceList,
-    File,
-    Source,
-}
-
-impl From<ReadKind> for ReadKindRepr {
-    fn from(k: ReadKind) -> Self {
-        match k {
-            ReadKind::List => ReadKindRepr::List,
-            ReadKind::SourceList => ReadKindRepr::SourceList,
-            ReadKind::File => ReadKindRepr::File,
-            ReadKind::Source => ReadKindRepr::Source,
-        }
-    }
-}
-
 /// A single recorded generator dependency.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct ReadRecord {
     /// What kind of read this was.
-    pub(crate) kind: ReadKindRepr,
+    pub(crate) kind: ReadKind,
     /// The query key (glob for List, path for File/Source).
     pub(crate) key: String,
     /// Hash of the read result, used to detect changes on replay.

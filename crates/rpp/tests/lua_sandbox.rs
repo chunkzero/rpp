@@ -9,7 +9,7 @@ use rpp::model::{PackFile, PluginFactory};
 fn run(entry: &str, input: &str) -> Result<Vec<u8>, String> {
     let p = PluginDir::lua("t", entry);
     let options: toml::Value = toml::Value::Table(Default::default());
-    let factory = match rpp::lua::LuaPluginFactory::load(p.path(), options, "pack", None, None) {
+    let factory = match common::load_plugin(p.path(), options) {
         Ok(f) => f,
         Err(e) => return Err(format!("{e}")),
     };
@@ -285,13 +285,7 @@ plugin:processor("t", { files = { "*.txt" } }, function() end)
 return plugin
 "#,
     );
-    let Err(err) = rpp::lua::LuaPluginFactory::load(
-        p.path(),
-        toml::Value::Table(toml::map::Map::new()),
-        "pack",
-        None,
-        None,
-    ) else {
+    let Err(err) = common::load_plugin(p.path(), toml::Value::Table(toml::map::Map::new())) else {
         panic!("expected duplicate processor registration to fail at load");
     };
     let msg = format!("{err}");
@@ -310,13 +304,7 @@ plugin:generator("b", function() end)
 return plugin
 "#,
     );
-    let Err(err) = rpp::lua::LuaPluginFactory::load(
-        p.path(),
-        toml::Value::Table(toml::map::Map::new()),
-        "pack",
-        None,
-        None,
-    ) else {
+    let Err(err) = common::load_plugin(p.path(), toml::Value::Table(toml::map::Map::new())) else {
         panic!("expected duplicate generator registration to fail at load");
     };
     let msg = format!("{err}");
@@ -336,28 +324,15 @@ return rpp.plugin()
 
     let mut a = toml::map::Map::new();
     a.insert("flag".into(), toml::Value::Boolean(true));
-    let f1 = rpp::lua::LuaPluginFactory::load(p.path(), toml::Value::Table(a), "pack", None, None)
-        .expect("load");
+    let f1 = common::load_plugin(p.path(), toml::Value::Table(a)).expect("load");
 
-    let f2 = rpp::lua::LuaPluginFactory::load(
-        p.path(),
-        toml::Value::Table(toml::map::Map::new()),
-        "pack",
-        None,
-        None,
-    )
-    .expect("load");
+    let f2 =
+        common::load_plugin(p.path(), toml::Value::Table(toml::map::Map::new())).expect("load");
 
     assert_ne!(f1.cache_key(), f2.cache_key());
 
-    let f3 = rpp::lua::LuaPluginFactory::load(
-        p.path(),
-        toml::Value::Table(toml::map::Map::new()),
-        "pack",
-        None,
-        None,
-    )
-    .expect("load");
+    let f3 =
+        common::load_plugin(p.path(), toml::Value::Table(toml::map::Map::new())).expect("load");
     assert_eq!(f2.cache_key(), f3.cache_key());
 }
 

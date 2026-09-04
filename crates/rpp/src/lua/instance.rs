@@ -23,13 +23,13 @@ use crate::model::{BuildStats, GeneratorHost, PackFile, PluginFactory, ProcessOu
 /// Holds its own [`Lua`] state with a sandboxed environment. The registered
 /// processor/generator/hook handlers are retained for the lifetime of the
 /// instance.
-pub struct LuaPluginInstance {
+pub(crate) struct LuaPluginInstance {
     lua: Lua,
     plugin_id: String,
     pack: PackInfo,
     options: toml::Value,
     processors: HashMap<String, Function>,
-    generator: Option<Function>,
+    generator: Option<(String, Function)>,
     on_start: Option<Function>,
     on_finish: Option<Function>,
     deadline: Deadline,
@@ -62,7 +62,10 @@ impl LuaPluginInstance {
         for p in &inner.processors {
             processors.insert(p.def.name.clone(), p.handler.clone());
         }
-        let generator = inner.generator.as_ref().map(|g| g.handler.clone());
+        let generator = inner
+            .generator
+            .as_ref()
+            .map(|g| (g.name.clone(), g.handler.clone()));
         let on_start = inner.on_start.clone();
         let on_finish = inner.on_finish.clone();
         drop(inner);
@@ -145,7 +148,7 @@ impl crate::model::PluginInstance for LuaPluginInstance {
     }
 
     fn generate(&mut self, host: &mut dyn GeneratorHost) -> Result<()> {
-        let Some(handler) = self.generator.clone() else {
+        let Some((name, handler)) = self.generator.clone() else {
             return Ok(());
         };
 
@@ -158,7 +161,7 @@ impl crate::model::PluginInstance for LuaPluginInstance {
         })
         .map_err(|e| Error::Generator {
             plugin: plugin_id,
-            message: traceback::render(&e),
+            message: format!("generator `{name}`: {}", traceback::render(&e)),
         });
         self.access.phase.set(Phase::Load);
         result

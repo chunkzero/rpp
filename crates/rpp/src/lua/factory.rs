@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::config::{BuildConfig, LuaConfig};
+use crate::config::LuaConfig;
 use crate::error::{Error, Result};
 use crate::lua::bootstrap::eval_entry;
 use crate::lua::ctx::PackInfo;
@@ -35,25 +35,12 @@ impl Default for LuaPluginLimits {
     }
 }
 
-impl LuaPluginLimits {
-    /// Read limits from `[build.lua]`; zero values keep the sandbox defaults.
-    pub fn from_build_config(build: &BuildConfig) -> Self {
-        Self::from_lua_config(&build.lua)
-    }
-
-    /// Read limits from `[build.lua]`; zero values keep the sandbox defaults.
-    pub fn from_lua_config(lua: &LuaConfig) -> Self {
+impl From<&LuaConfig> for LuaPluginLimits {
+    /// Read limits from `[build.lua]` (validated non-zero by `Config::load`).
+    fn from(lua: &LuaConfig) -> Self {
         Self {
-            memory_limit: if lua.memory_limit_mb == 0 {
-                DEFAULT_MEMORY_LIMIT
-            } else {
-                lua.memory_limit_mb as usize * 1024 * 1024
-            },
-            execution_limit: if lua.execution_deadline_seconds == 0 {
-                DEFAULT_EXECUTION_LIMIT
-            } else {
-                Duration::from_secs(lua.execution_deadline_seconds)
-            },
+            memory_limit: lua.memory_limit_mb as usize * 1024 * 1024,
+            execution_limit: Duration::from_secs(lua.execution_deadline_seconds),
         }
     }
 }
@@ -68,7 +55,6 @@ pub struct LuaPluginFactory {
 
 struct Shared {
     id: String,
-    version: String,
     root: PathBuf,
     entry: String,
     entry_source: String,
@@ -83,60 +69,16 @@ struct Shared {
 }
 
 impl LuaPluginFactory {
-    /// Read sandbox limits from `[build.lua]`.
-    pub fn limits_from_build(build: &BuildConfig) -> LuaPluginLimits {
-        LuaPluginLimits::from_build_config(build)
-    }
-
     /// Load a Lua plugin from its package directory and validate it.
     ///
     /// Reads `plugin.toml`, runs the entry script in a throwaway sandbox to
     /// extract processor definitions and detect a generator, and computes the
-    /// cache key. `pack` carries pack metadata for `ctx.pack`.
+    /// cache key. `pack` carries pack metadata for `ctx.pack`; `access` is the
+    /// host capability policy from the `[[plugin]]` entry.
     pub fn load(
         dir: impl AsRef<Path>,
         options: toml::Value,
-        pack_name: impl Into<String>,
-        pack_description: Option<String>,
-        pack_format: Option<u32>,
-    ) -> Result<Self> {
-        Self::load_with_limits(
-            dir,
-            options,
-            pack_name,
-            pack_description,
-            pack_format,
-            LuaPluginLimits::default(),
-        )
-    }
-
-    /// Like [`Self::load`], but with explicit sandbox resource limits.
-    pub fn load_with_limits(
-        dir: impl AsRef<Path>,
-        options: toml::Value,
-        pack_name: impl Into<String>,
-        pack_description: Option<String>,
-        pack_format: Option<u32>,
-        limits: LuaPluginLimits,
-    ) -> Result<Self> {
-        Self::load_with_limits_and_access(
-            dir,
-            options,
-            pack_name,
-            pack_description,
-            pack_format,
-            limits,
-            RuntimeAccess::sandboxed(PathBuf::from(".")),
-        )
-    }
-
-    /// Like [`Self::load_with_limits`], but with explicit host capabilities.
-    pub fn load_with_limits_and_access(
-        dir: impl AsRef<Path>,
-        options: toml::Value,
-        pack_name: impl Into<String>,
-        pack_description: Option<String>,
-        pack_format: Option<u32>,
+        pack: PackInfo,
         limits: LuaPluginLimits,
         access: RuntimeAccess,
     ) -> Result<Self> {
@@ -160,12 +102,6 @@ impl LuaPluginFactory {
             message: format!("cannot read entry `{}`: {e}", manifest.entry),
         })?;
 
-        let pack = PackInfo {
-            name: pack_name.into(),
-            description: pack_description,
-            format: pack_format,
-        };
-
         let cache_key = compute_cache_key(&root, &manifest, &options, &access)?;
 
         // Validation load: extract processor defs and generator presence.
@@ -181,7 +117,6 @@ impl LuaPluginFactory {
         Ok(LuaPluginFactory {
             shared: Arc::new(Shared {
                 id: manifest.id,
-                version: manifest.version.to_string(),
                 root,
                 entry: manifest.entry,
                 entry_source,
@@ -232,10 +167,6 @@ impl PluginFactory for LuaPluginFactory {
         &self.shared.id
     }
 
-    fn version(&self) -> &str {
-        &self.shared.version
-    }
-
     fn cache_key(&self) -> u64 {
         self.shared.cache_key
     }
@@ -256,8 +187,8 @@ impl PluginFactory for LuaPluginFactory {
         self.shared.access.is_deterministic()
     }
 
-    fn output_roots(&self) -> &std::collections::BTreeMap<String, PathBuf> {
-        &self.shared.access.outputs
+    fn output_roots(&self) -> std::collections::BTreeMap<String, PathBuf> {
+        self.shared.access.outputs.clone()
     }
 
     fn instantiate(&self) -> Result<Box<dyn PluginInstance>> {

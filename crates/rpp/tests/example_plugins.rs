@@ -18,7 +18,7 @@ use std::sync::Arc;
 
 use rpp::config::Config;
 use rpp::engine::{BuildResult, Engine};
-use rpp::lua::LuaPluginFactory;
+use rpp::lua::{LuaPluginFactory, LuaPluginLimits, PackInfo, RuntimeAccess};
 use rpp::model::PluginFactory;
 
 use tempfile::TempDir;
@@ -101,9 +101,15 @@ fn plugin(name: &str, options_toml: &str) -> Arc<dyn PluginFactory> {
     let factory = LuaPluginFactory::load(
         &dir,
         options,
-        "rpp-example-pack",
-        Some("A tiny but complete Minecraft resource pack, built end-to-end by rpp.".into()),
-        Some(34),
+        PackInfo {
+            name: "rpp-example-pack".into(),
+            description: Some(
+                "A tiny but complete Minecraft resource pack, built end-to-end by rpp.".into(),
+            ),
+            format: Some(34),
+        },
+        LuaPluginLimits::default(),
+        RuntimeAccess::sandboxed(".".into()),
     )
     .unwrap_or_else(|e| panic!("load plugin {name}: {e}"));
     Arc::new(factory)

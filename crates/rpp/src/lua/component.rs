@@ -199,7 +199,7 @@ fn lua_to_wasm(value: Value, ty: &ValueType) -> Result<WasmValue, String> {
             }
             WasmValue::Float32(narrowed)
         }
-        ValueType::Float64 => WasmValue::Float64(as_f64(value)?),
+        ValueType::Float64 => WasmValue::Float64(as_number(value)?),
         ValueType::Char => {
             let s = as_string(value)?;
             let mut chars = s.chars();
@@ -574,11 +574,6 @@ fn as_number(value: Value) -> Result<f64, String> {
         Value::Number(value) => Ok(value),
         other => Err(expected("number", &other)),
     }
-}
-
-#[cfg(feature = "wasm")]
-fn as_f64(value: Value) -> Result<f64, String> {
-    as_number(value)
 }
 
 #[cfg(feature = "wasm")]

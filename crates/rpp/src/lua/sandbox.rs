@@ -145,7 +145,6 @@ fn install_stdlib(lua: &Lua, env: &Table, access: &RuntimeAccess) -> mlua::Resul
         "rawset",
         "rawequal",
         "rawlen",
-        "unpack",
     ] {
         let value: Value = g.get(name)?;
         if !value.is_nil() {

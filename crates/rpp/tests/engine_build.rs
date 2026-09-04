@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use common::{PluginDir, Project};
 use rpp::engine::Engine;
-use rpp::lua::{LuaPluginFactory, LuaPluginLimits, RuntimeAccess};
+use rpp::lua::{LuaPluginFactory, LuaPluginLimits, PackInfo, RuntimeAccess};
 use rpp::model::PluginFactory;
 
 fn build(project: &Project, plugins: Vec<Arc<dyn PluginFactory>>) -> rpp::engine::BuildResult {
@@ -23,12 +23,14 @@ fn external_factory(plugin: &PluginDir, root: &std::path::Path) -> Arc<dyn Plugi
     let access = RuntimeAccess::sandboxed(root.to_path_buf())
         .with_outputs(BTreeMap::from([("code".to_string(), "generated".into())]));
     Arc::new(
-        LuaPluginFactory::load_with_limits_and_access(
+        LuaPluginFactory::load(
             plugin.path(),
             toml::Value::Table(Default::default()),
-            "test-pack",
-            None,
-            Some(34),
+            PackInfo {
+                name: "test-pack".into(),
+                description: None,
+                format: Some(34),
+            },
             LuaPluginLimits::default(),
             access,
         )

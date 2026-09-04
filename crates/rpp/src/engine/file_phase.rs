@@ -45,32 +45,37 @@ pub(crate) fn process_files(ctx: FilePhaseCtx<'_>) -> Result<FilePhaseStats> {
     let mut processed = 0usize;
     let mut cached = 0usize;
     let mut dropped = 0usize;
-    let mut dirty: Vec<(
+    // Dirty files carry their fingerprint and contents when the clean check
+    // already had to read them, so they are hashed at most once.
+    type Dirty = (
         SourceFile,
         Arc<Vec<ChainStep>>,
         u64,
         Option<(Fingerprint, Vec<u8>)>,
-    )> = Vec::new();
+    );
+    let mut dirty: Vec<Dirty> = Vec::new();
 
     for src in sources {
         let chain = chain_for(compiled, &src.rel);
         let ck = chain_key(&chain);
         let chain_cacheable = chain.iter().all(|step| step.cacheable);
 
-        let prev_entry = prev.and_then(|m| m.files.get(&src.rel));
+        let candidate = prev
+            .and_then(|m| m.files.get(&src.rel))
+            .filter(|entry| chain_cacheable && entry.chain_key == ck);
         let mut read = None;
-        let clean = if chain_cacheable && prev_entry.is_some_and(|entry| entry.chain_key == ck) {
-            let fingerprinted = src.fingerprint()?;
-            let matches =
-                prev_entry.is_some_and(|entry| fingerprinted.0.xxh3 == entry.fingerprint.xxh3);
-            read = Some(fingerprinted);
-            matches
-        } else {
-            false
+        let clean = match candidate {
+            Some(entry) => {
+                let (fp, contents) = src.fingerprint()?;
+                let same = fp.xxh3 == entry.fingerprint.xxh3;
+                read = Some((fp, contents));
+                same
+            }
+            None => false,
         };
 
         if clean {
-            let entry = prev_entry.expect("clean implies prev entry").clone();
+            let entry = candidate.expect("clean implies prev entry").clone();
             if materialize_file_entry(store, &entry, output, source_owners, &src.rel)? {
                 if entry.outputs.is_empty() {
                     dropped += 1;
@@ -124,7 +129,7 @@ pub(crate) fn process_files(ctx: FilePhaseCtx<'_>) -> Result<FilePhaseStats> {
                     super::cache_replay::claim_source_output(source_owners, &file.path, &rel)?;
                     output.files.insert(
                         file.path.clone(),
-                        super::generator::OutputContent::from_bytes(file.contents),
+                        super::generator::OutputContent::Bytes(file.contents),
                     );
                     new_manifest.files.insert(
                         rel,

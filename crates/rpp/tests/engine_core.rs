@@ -58,10 +58,6 @@ impl PluginFactory for MockFactory {
         &self.id
     }
 
-    fn version(&self) -> &str {
-        "1.0.0"
-    }
-
     fn cache_key(&self) -> u64 {
         self.key
     }

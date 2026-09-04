@@ -3,9 +3,9 @@
 use std::collections::BTreeMap;
 
 use crate::cache::{FileEntry, GeneratorMutation, ObjectStore};
-use crate::error::Result;
+use crate::error::{Error, Result};
 
-use super::generator::{apply_generator_mutation, OutputContent, OutputSet, RecordedMutation};
+use super::generator::{claim_output, ClaimError, OutputContent, OutputSet};
 
 /// Materialize file-processor cache outputs into the in-memory output set.
 ///
@@ -18,17 +18,14 @@ pub(crate) fn materialize_file_entry(
     source_owners: &mut BTreeMap<String, String>,
     source_rel: &str,
 ) -> Result<bool> {
-    for out in &entry.outputs {
-        if !store.contains(out.object) {
-            return Ok(false);
-        }
+    if entry.outputs.iter().any(|out| !store.contains(out.object)) {
+        return Ok(false);
     }
-
     for out in &entry.outputs {
         claim_source_output(source_owners, &out.path, source_rel)?;
         output
             .files
-            .insert(out.path.clone(), OutputContent::from_object(out.object));
+            .insert(out.path.clone(), OutputContent::Object(out.object));
     }
     Ok(true)
 }
@@ -44,37 +41,32 @@ pub(crate) fn materialize_generator_mutations(
     output_owners: &mut BTreeMap<String, String>,
     plugin_id: &str,
 ) -> Result<bool> {
-    for mutation in mutations {
-        match mutation {
-            GeneratorMutation::Emit(out) => {
-                if !store.contains(out.object) {
-                    return Ok(false);
-                }
-            }
-            GeneratorMutation::EmitExternal { object, .. } => {
-                if !store.contains(*object) {
-                    return Ok(false);
-                }
-            }
-            GeneratorMutation::Remove(_) => {}
-        }
+    let missing = mutations.iter().any(|mutation| match mutation {
+        GeneratorMutation::Emit(out) => !store.contains(out.object),
+        GeneratorMutation::EmitExternal { object, .. } => !store.contains(*object),
+        GeneratorMutation::Remove(_) => false,
+    });
+    if missing {
+        return Ok(false);
     }
 
     for mutation in mutations {
         match mutation {
             GeneratorMutation::Emit(out) => {
-                claim_generator_output(output_owners, &out.path, plugin_id)?;
-                apply_generator_mutation(
-                    output,
-                    RecordedMutation::EmitObject {
-                        path: out.path.clone(),
-                        object: out.object,
-                    },
-                );
+                claim_output(output_owners, &out.path, plugin_id).map_err(|error| match error {
+                    ClaimError::InvalidPath(message) => Error::Build(message),
+                    ClaimError::Taken { previous } => Error::Build(format!(
+                        "output `{}` already claimed by `{previous}`",
+                        out.path
+                    )),
+                })?;
+                output
+                    .files
+                    .insert(out.path.clone(), OutputContent::Object(out.object));
             }
             GeneratorMutation::Remove(path) => {
                 output_owners.remove(path);
-                apply_generator_mutation(output, RecordedMutation::Remove(path.clone()));
+                output.files.remove(path);
             }
             GeneratorMutation::EmitExternal { .. } => {}
         }
@@ -82,30 +74,16 @@ pub(crate) fn materialize_generator_mutations(
     Ok(true)
 }
 
+/// Claim `output` for the processor chain of `source`.
 pub(crate) fn claim_source_output(
     owners: &mut BTreeMap<String, String>,
     output: &str,
     source: &str,
 ) -> Result<()> {
-    crate::util::path::validate_relative(output).map_err(crate::error::Error::Build)?;
-    if let Some(previous) = owners.insert(output.to_string(), source.to_string()) {
-        return Err(crate::error::Error::Build(format!(
+    claim_output(owners, output, source).map_err(|error| match error {
+        ClaimError::InvalidPath(message) => Error::Build(message),
+        ClaimError::Taken { previous } => Error::Build(format!(
             "source files `{previous}` and `{source}` both produce `{output}`"
-        )));
-    }
-    Ok(())
-}
-
-fn claim_generator_output(
-    owners: &mut BTreeMap<String, String>,
-    output: &str,
-    plugin_id: &str,
-) -> Result<()> {
-    crate::util::path::validate_relative(output).map_err(crate::error::Error::Build)?;
-    if let Some(previous) = owners.insert(output.to_string(), plugin_id.to_string()) {
-        return Err(crate::error::Error::Build(format!(
-            "output `{output}` already claimed by `{previous}`"
-        )));
-    }
-    Ok(())
+        )),
+    })
 }

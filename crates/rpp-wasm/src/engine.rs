@@ -151,8 +151,6 @@ impl WasmEngine {
             engine: self.clone(),
             component,
             schema,
-            path: wasm_path.to_path_buf(),
-            digest,
         })
     }
 
@@ -172,21 +170,9 @@ pub struct CompiledComponent {
     engine: WasmEngine,
     component: Component,
     schema: Schema,
-    path: PathBuf,
-    digest: [u8; 32],
 }
 
 impl CompiledComponent {
-    /// Component binary path.
-    pub fn path(&self) -> &Path {
-        &self.path
-    }
-
-    /// SHA-256 digest of the component binary used for cache identity.
-    pub fn digest(&self) -> [u8; 32] {
-        self.digest
-    }
-
     /// Discovered imports and exported function signatures.
     pub fn schema(&self) -> &Schema {
         &self.schema

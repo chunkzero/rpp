@@ -23,7 +23,6 @@ mod finalize;
 mod generator;
 mod keys;
 mod result;
-mod sync;
 mod worker;
 
 use std::collections::BTreeMap;
@@ -150,16 +149,6 @@ impl Engine {
             project_root: PathBuf::from("."),
             factories: Vec::new(),
         }
-    }
-
-    /// The resolved source directory.
-    pub fn source_dir(&self) -> &Path {
-        &self.source
-    }
-
-    /// The resolved output directory.
-    pub fn output_dir(&self) -> &Path {
-        &self.output
     }
 
     /// Number of effective plugins after project/global override resolution.
@@ -294,34 +283,33 @@ impl Engine {
             let plugin_id = factory.id().to_string();
             let plugin_key = factory.cache_key();
 
-            let replayed = prev
+            let replayable = prev
                 .and_then(|m| m.generators.get(&plugin_id))
-                .filter(|_| factory.cacheable_generator())
-                .filter(|prev_entry| prev_entry.plugin_key == plugin_key)
-                .filter(|prev_entry| {
-                    read_set_matches(
-                        &prev_entry.read_set,
-                        output,
-                        &self.source,
-                        source_files,
-                        store,
-                    )
-                })
-                .map(|prev_entry| {
-                    materialize_generator_mutations(
-                        store,
-                        &prev_entry.mutations,
-                        output,
-                        output_owners,
-                        &plugin_id,
-                    )
-                    .map(|ok| (ok, prev_entry.clone()))
-                })
-                .transpose()?
-                .and_then(|(ok, entry)| ok.then_some(entry));
-            if let Some(prev_entry) = replayed {
-                new_manifest.generators.insert(plugin_id, prev_entry);
-                continue;
+                .filter(|entry| {
+                    factory.cacheable_generator()
+                        && entry.plugin_key == plugin_key
+                        && read_set_matches(
+                            &entry.read_set,
+                            output,
+                            &self.source,
+                            source_files,
+                            store,
+                        )
+                });
+            if let Some(prev_entry) = replayable {
+                let materialized = materialize_generator_mutations(
+                    store,
+                    &prev_entry.mutations,
+                    output,
+                    output_owners,
+                    &plugin_id,
+                )?;
+                if materialized {
+                    new_manifest
+                        .generators
+                        .insert(plugin_id, prev_entry.clone());
+                    continue;
+                }
             }
 
             let mut host = RecordingHost::new(
@@ -331,7 +319,7 @@ impl Engine {
                 store,
                 &plugin_id,
                 output_owners,
-                factory.output_roots().clone(),
+                factory.output_roots(),
             );
             instances[index].generate(&mut host)?;
             if !host.errors.is_empty() {
@@ -353,12 +341,6 @@ impl Engine {
                             path,
                             object,
                         }));
-                    }
-                    RecordedMutation::EmitObject { .. } => {
-                        return Err(Error::Build(
-                            "internal error: fresh generator run produced a cached object ref"
-                                .into(),
-                        ));
                     }
                     RecordedMutation::EmitExternal {
                         root,

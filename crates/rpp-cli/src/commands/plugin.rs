@@ -10,9 +10,7 @@ use dialoguer::{theme::ColorfulTheme, Select};
 use rpp::config::PluginConfig;
 use rpp_fetch::{search, Lockfile, PluginSource, Resolver};
 
-use crate::project::{
-    find_plugin_by_id_or_source, resolve_plugin_meta, validate_plugin_dir, Project,
-};
+use crate::project::{resolve_plugin_meta, validate_plugin_dir, Project};
 use crate::ui;
 use crate::user_plugins::{copy_plugin_dir, UserPlugins};
 
@@ -148,7 +146,8 @@ fn add_project(dir: &Path, source: &str, ref_: Option<&str>, subdir: Option<&str
     let (id, version) = validate_plugin_dir(&resolved.root)?;
 
     let config_path = project.config_path();
-    let text = std::fs::read_to_string(&config_path)?;
+    let text = std::fs::read_to_string(&config_path)
+        .with_context(|| format!("reading {}", config_path.display()))?;
     let updated = add_plugin(
         &text,
         PluginEntry {
@@ -252,12 +251,13 @@ fn remove(dir: &Path, id_or_source: &str, global: bool) -> Result<()> {
     }
     let project = Project::discover(dir)?;
     let config_path = project.config_path();
-    let text = std::fs::read_to_string(&config_path)?;
+    let text = std::fs::read_to_string(&config_path)
+        .with_context(|| format!("reading {}", config_path.display()))?;
     let lock_path = project.lock_path();
     let mut lock = Lockfile::load(&lock_path)?;
     let resolver = Resolver::new(&project.root).context("initializing resolver")?;
 
-    let plugin = find_plugin_by_id_or_source(&project, id_or_source, &lock, &resolver)?
+    let plugin = find_plugin_in(&project.config.plugins, id_or_source, &lock, &resolver)?
         .ok_or_else(|| anyhow!("no plugin matching `{id_or_source}` found"))?;
 
     let remove_key = plugin
