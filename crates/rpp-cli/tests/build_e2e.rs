@@ -265,7 +265,7 @@ fn copy_dir(from: &Path, to: &Path) {
 }
 
 /// `examples/pack` builds through the CLI from its own `rpp.toml`, with the
-/// three Lua example plugins and builtin squash.
+/// shared Lua plugins, the pack-local catalog plugin, and builtin squash.
 #[test]
 fn example_pack_builds_from_its_own_config() {
     let dir = tempfile::tempdir().unwrap();
@@ -310,11 +310,44 @@ fn example_pack_builds_from_its_own_config() {
         ".rppignore is honored"
     );
 
+    let read_json = |path: &str| -> serde_json::Value {
+        serde_json::from_str(&std::fs::read_to_string(root.join(path)).unwrap()).unwrap()
+    };
+    let reference = format!(
+        "minecraft:{}",
+        hashed
+            .strip_prefix("assets/minecraft/textures/")
+            .unwrap()
+            .strip_suffix(".png")
+            .unwrap()
+    );
+    assert_eq!(
+        read_json("dist/assets/minecraft/models/item/magic_gem.json")["textures"]["layer0"],
+        reference
+    );
+    assert_eq!(
+        read_json("dist/assets/rpp/models/item/ember_gem.json")["textures"]["layer0"],
+        reference
+    );
+    assert_eq!(
+        read_json("dist/assets/rpp/lang/en_us.json")["item.rpp.ember_gem"],
+        "Ember Gem"
+    );
+    let catalog = read_json("generated/catalog/items.json");
+    assert_eq!(catalog["items"]["ember_gem"]["model"], "rpp:item/ember_gem");
+    assert_eq!(catalog["items"]["ember_gem"]["texture"], reference);
+    assert!(!root.join("dist/items/ember_gem.lua").exists());
+
     // Release zip: deterministic, pack.mcmeta first, no stray archive inside.
     let zip_path = root.join("dist/rpp-example-pack.zip");
     let mut archive = zip::ZipArchive::new(std::fs::File::open(&zip_path).unwrap()).unwrap();
     assert_eq!(archive.by_index(0).unwrap().name(), "pack.mcmeta");
     assert!(archive.by_name("rpp-example-pack.zip").is_err());
+    assert!(archive.by_name("items/ember_gem.lua").is_err());
+    assert!(archive.by_name("generated/catalog/items.json").is_err());
+    assert!(archive
+        .by_name("assets/rpp/models/item/ember_gem.json")
+        .is_ok());
     let first_bytes = std::fs::read(&zip_path).unwrap();
 
     let out = run_build(&root, &["--jobs", "2"]);
@@ -329,6 +362,33 @@ fn example_pack_builds_from_its_own_config() {
         first_bytes,
         "zip must be reproducible"
     );
+    assert_eq!(read_json("generated/catalog/items.json"), catalog);
+
+    // A source rename invalidates the list dependency and removes stale assets.
+    std::fs::remove_file(root.join("src/items/ember_gem.lua")).unwrap();
+    std::fs::write(
+        root.join("src/items/frost_gem.lua"),
+        r#"return { name = "Frost Gem", texture = "minecraft:custom/gem" }"#,
+    )
+    .unwrap();
+    let out = run_build(&root, &["--jobs", "2"]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(!root
+        .join("dist/assets/rpp/models/item/ember_gem.json")
+        .exists());
+    assert!(root
+        .join("dist/assets/rpp/models/item/frost_gem.json")
+        .is_file());
+    let language = read_json("dist/assets/rpp/lang/en_us.json");
+    assert_eq!(language["item.rpp.frost_gem"], "Frost Gem");
+    assert!(language.get("item.rpp.ember_gem").is_none());
+    let updated = read_json("generated/catalog/items.json");
+    assert!(updated["items"].get("ember_gem").is_none());
+    assert_eq!(updated["items"]["frost_gem"]["model"], "rpp:item/frost_gem");
 }
 
 #[test]
