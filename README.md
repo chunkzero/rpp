@@ -10,6 +10,9 @@ server with live-reload events.
 
 ## Quick Start
 
+First complete the [development setup](#development) to install the pinned tools.
+The commands below assume mise is activated; otherwise prefix them with `mise exec --`.
+
 ```bash
 cargo build --release
 target/release/rpp init my-pack --yes
@@ -85,12 +88,39 @@ WASIp2 component plugin (`just example-wasm` builds its guest crate).
 
 ## Development
 
+Install [mise](https://mise.jdx.dev/getting-started.html) and a C compiler and native
+linker (for example, `build-essential` on Ubuntu or Xcode Command Line Tools on
+macOS). RPP's `mlua` dependency builds bundled Lua 5.4 from C source, and the final
+Rust executable needs a native linker.
+
+From the repository root:
+
 ```bash
-just --list
-just ci
-cargo test -p rpp --features wasm
-cargo clippy -p rpp --features wasm --all-targets -- -D warnings
+mise trust
+mise install
+mise exec -- just --list
+mise exec -- just check-crate rpp
 ```
+
+`mise.toml` pins Rust and just and installs rustfmt, Clippy, and the `wasm32-wasip2`
+target. The workspace's supported Rust baseline is 1.96.0. Keep the manifest baseline
+and mise toolchain pin aligned when updating Rust, and run `just verify-wasm`
+before adopting a new toolchain: guest imports must remain compatible with the sandbox. With mise activated in your shell,
+you can run `just` and `cargo` directly.
+
+Use `just check-crate <crate>`, `just lint-crate <crate>`, and
+`just test-crate <crate> <test-filter>` while iterating. Check and lint recipes accept
+Cargo feature flags. `just check-features` checks the core library independently in
+its core-only, default Lua, and Lua + WASM + tracing configurations.
+
+Run `just verify-wasm` for component host and CLI integration tests. It fails when
+the guest target is missing, instead of allowing those tests to skip. Guest crates
+have their own committed lockfiles outside the workspace.
+
+Run `just ci` before publishing substantial changes. GitHub Actions runs the same
+format, lint, feature, and workspace test checks, including WASM prerequisites.
+Verification commands use `--locked`; update lockfiles deliberately when changing
+dependencies.
 
 ## License
 

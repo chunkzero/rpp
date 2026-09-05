@@ -3,18 +3,23 @@
 #![allow(dead_code)]
 
 use std::path::{Path, PathBuf};
+#[cfg(feature = "lua")]
 use std::sync::Arc;
 
+#[cfg(feature = "lua")]
 use rpp::lua::{LuaPluginFactory, LuaPluginLimits, PackInfo, RuntimeAccess};
+#[cfg(feature = "lua")]
 use rpp::model::PluginFactory;
 
 use tempfile::TempDir;
 
 /// A scratch directory for a plugin package.
+#[cfg(feature = "lua")]
 pub struct PluginDir {
     pub dir: TempDir,
 }
 
+#[cfg(feature = "lua")]
 impl PluginDir {
     /// Create a Lua plugin package with the given id and entry source.
     pub fn lua(id: &str, entry: &str) -> Self {
@@ -99,6 +104,7 @@ impl Project {
 }
 
 /// Load a sandboxed Lua plugin with default limits and test pack metadata.
+#[cfg(feature = "lua")]
 pub fn load_plugin(dir: &Path, options: toml::Value) -> rpp::Result<LuaPluginFactory> {
     LuaPluginFactory::load(
         dir,

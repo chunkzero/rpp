@@ -4,6 +4,7 @@ description = "Core library for the rpp Minecraft resource pack build tool"
 
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
@@ -38,3 +39,19 @@ default = ["lua"]
 tracing = ["dep:tracing"]
 lua = ["dep:mlua"]
 wasm = ["dep:rpp-wasm"]
+
+[[test]]
+name = "engine_build"
+required-features = ["lua"]
+
+[[test]]
+name = "example_plugins"
+required-features = ["lua"]
+
+[[test]]
+name = "lua_processor"
+required-features = ["lua"]
+
+[[test]]
+name = "lua_sandbox"
+required-features = ["lua"]

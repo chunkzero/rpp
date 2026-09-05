@@ -1,59 +1,56 @@
-# AGENTS.md
+# RPP (Resource Pack Processor)
 
-Guidelines for agents working in the RPP (Resource Pack Processor) repository.
+Rust tooling for building Minecraft resource packs with incremental Lua and WASIp2 plugins.
 
-## Project Overview
+## General guidelines
 
-RPP is a Rust toolchain for building Minecraft resource packs. The design document is
-`docs/SPEC.md`; read it before architectural changes. Workspace:
+- Do not edit AGENTS.md or CLAUDE.md unless explicitly asked. Keep their guidance consistent.
+- Read `docs/SPEC.md` before architectural changes; it defines the project contracts.
+- Keep solutions simple and public APIs narrow. Avoid speculative abstractions.
+- Preserve unrelated changes and ask before destructive actions outside the requested scope.
+- `rpp-fetch`, `rpp-squash`, and `rpp-wasm` are standalone and do not depend on `rpp`.
+  `rpp` optionally depends on `rpp-wasm`; `rpp-cli` composes the workspace crates.
 
-- `crates/rpp`: core library. `config` (`rpp.toml`), `manifest` (`plugin.toml`), `model`
-  (runtime-agnostic plugin traits), `lua` (sandboxed Lua 5.4 runtime and builtins),
-  `engine` (incremental build: discovery, file phase, generators, output sync), `cache`
-  (bincode manifest + content-addressed object store under `.rpp/cache/`).
-- `crates/rpp-fetch`: plugin source resolution (GitHub + local), `rpp.lock`, plugin search.
-- `crates/rpp-squash`: JSON minify, PNG optimization (oxipng), deterministic zip, external
-  PackSquash.
-- `crates/rpp-wasm`: WASIp2 component host on wasmtime.
-- `crates/rpp-cli`: the `rpp` binary (init, build, dev server, plugin management,
-  component bindgen).
-- `examples/`: an example pack project and example plugin packages.
+## Tooling
 
-Dependency direction: `rpp-fetch`, `rpp-squash`, `rpp-wasm` do not depend on `rpp`.
-`rpp` optionally depends on `rpp-wasm` (feature `wasm`). `rpp-cli` depends on all of them.
+- Run `mise install` after tool pins change. Use `mise exec -- <command>` when mise
+  is not activated in the shell. `mise.toml` pins Rust, its components/targets, and just.
+- Run `just --list` for tasks. Prefer scoped checks during development:
+  - `just check-crate rpp` (accepts Cargo feature flags).
+  - `just lint-crate rpp` (accepts Cargo feature flags).
+  - `just test-crate rpp <test-filter>`.
+- Run `just fmt` to format and `just fmt-check` to check formatting.
+- `just check-features` checks core-only, default Lua, and Lua + WASM + tracing builds.
+- `just verify-wasm` exercises WASM host and CLI integrations and requires `wasm32-wasip2`.
+  Guest fixture crates are outside the workspace; individual tests may skip without that target.
+- Run `just ci` before publishing substantial changes. Avoid full suites or rebuilds
+  between individual edits. CI is the source of truth; do not rely on pre-commit hooks.
+- Keep Cargo.lock files committed; verification uses `--locked`.
+- Check for existing dev servers before starting one, and stop resources you start.
 
-## Commands
+## Code style
 
-```bash
-just --list                 # task runner; `just ci` = fmt-check + lint + test
-cargo check --workspace --all-targets
-cargo test -p rpp           # prefer package-scoped commands when iterating
-cargo test -p rpp --features wasm
-cargo clippy --workspace --all-targets -- -D warnings
-cargo fmt --all
-cargo run -p rpp-cli -- <args>
-```
+- Rust edition 2021, standard rustfmt, 100 columns.
+- Group imports as std, external crates, then crate/super, separated by blank lines.
+- Libraries use `thiserror` with `Error` and `Result<T>`; the CLI uses `anyhow` with
+  context on I/O errors. Use `tracing` for logging and the CLI's `ui` module for display.
+- Use `pub(crate)` for internals, `///` for public APIs, and `dep:` for optional dependencies.
+- Keep shared dependency versions in `[workspace.dependencies]`.
+- Write focused behavior tests. Keep comments sparse and about current behavior.
+- Lua plugins use vendored Lua 5.4, not LuaJIT.
 
-WASM tests build guest fixture crates under `crates/*/tests/fixtures/` (not workspace
-members) with `--target wasm32-wasip2`. They skip when that target is not installed
-(`rustup target add wasm32-wasip2`).
+## Git
 
-## Code Style
+- Use Conventional Commits for commits and PR titles.
+- When merging a PR, use squash merge.
+- Do not revert unrelated changes.
+- Summarize changes, validation results, and known limitations when handing work back.
 
-- Standard `cargo fmt`; edition 2021; 100 column lines.
-- Imports in three groups separated by blank lines: std, external crates, `crate::`/`super::`.
-- Libraries define errors with `thiserror` (main type `Error`, alias
-  `pub type Result<T> = std::result::Result<T, Error>`). The CLI uses `anyhow` with
-  `.context()` on I/O.
-- Logging via `tracing`; the CLI's `ui` module handles user-facing output.
-- `pub(crate)` for internal items; feature gates use `dep:` optional dependencies.
-- Shared dependency versions live in `[workspace.dependencies]` in the root `Cargo.toml`.
-- Document public APIs with `///`. Use `//` sparingly and only for behavior, not history.
+## Glossary
 
-## Notes
-
-- `mlua` uses vendored **Lua 5.4** (features `lua54, vendored, serde, send`), not LuaJIT.
-- The incremental cache lives at `.rpp/cache/`; external generated-file ownership at
-  `.rpp/external-outputs.bin`.
-- Source trees honor `.rppignore`.
-- `crates/rpp` features: `lua` (default), `wasm`, `tracing`.
+- **Processor:** a plugin operation applied to each matching file in the file phase.
+- **Generator:** a sequential plugin operation that reads files and emits outputs after processing.
+- **Component:** a WASIp2 module exposed to Lua through declared, typed WIT exports.
+- **Cache replay:** reuse of prior outputs when tracked inputs and plugin keys still match.
+- **External output:** a generated file in a declared root outside the pack output directory;
+  RPP tracks ownership separately so cleanup preserves handwritten neighbors.
