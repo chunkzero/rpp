@@ -300,3 +300,59 @@ enabled = false
     let result = run(dir.path(), &["plugin", "remove", "window"]);
     assert!(!result.status.success());
 }
+
+#[test]
+fn cached_subdir_add_and_remove_keep_config_and_lock_aligned() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let cache = root.join("cache");
+    std::fs::write(root.join("rpp.toml"), "[pack]\nname = \"p\"\n").unwrap();
+    let mut lock = rpp_fetch::Lockfile::new();
+    for (subdir, id) in [("a", "alpha"), ("b", "beta")] {
+        write_text_plugin(
+            &cache.join(format!("github/owner/repo/commit/{subdir}")),
+            id,
+            id,
+        );
+        lock.upsert(rpp_fetch::LockedPlugin {
+            source: "github:owner/repo".into(),
+            ref_: "main".into(),
+            requested_ref: None,
+            commit: "commit".into(),
+            subdir: Some(subdir.into()),
+        });
+    }
+    lock.save(&root.join("rpp.lock")).unwrap();
+    let run_cached = |args: &[&str]| {
+        let result = Command::new(rpp_bin())
+            .current_dir(root)
+            .env("RPP_HOME", root.join("home"))
+            .env("RPP_CACHE_DIR", &cache)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+    };
+    for subdir in [" ./a// ", " ./b// "] {
+        run_cached(&[
+            "plugin",
+            "add",
+            "github:owner/repo.git",
+            "--subdir",
+            subdir,
+            "--project",
+        ]);
+    }
+    run_cached(&["plugin", "remove", "beta"]);
+    let config = rpp::config::Config::load(root.join("rpp.toml")).unwrap();
+    assert_eq!(config.plugins.len(), 1);
+    assert_eq!(config.plugins[0].subdir.as_deref(), Some("a"));
+    let lock = rpp_fetch::Lockfile::load(&root.join("rpp.lock")).unwrap();
+    assert_eq!(lock.plugins().len(), 1);
+    assert_eq!(lock.plugins()[0].subdir.as_deref(), Some("a"));
+    assert!(lock.get_for("github:owner/repo", None, Some("a")).is_some());
+}

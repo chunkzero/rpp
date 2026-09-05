@@ -4,16 +4,12 @@
 //! the documented schema. The `squash` and `dev` sections are parsed into plain
 //! structs here and consumed by other crates (`rpp-squash`, the dev server).
 
-mod source;
-
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
-
-pub use source::{PluginSourceSpec, SourceParseError};
 
 /// The fully parsed `rpp.toml`.
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -347,13 +343,6 @@ pub(crate) fn empty_table() -> toml::Value {
 }
 
 impl PluginConfig {
-    /// Parse [`Self::source`] into a structured [`PluginSourceSpec`].
-    pub fn parse_source(&self) -> Option<std::result::Result<PluginSourceSpec, SourceParseError>> {
-        self.source.as_ref().map(|source| {
-            PluginSourceSpec::parse(source, self.r#ref.as_deref(), self.subdir.as_deref())
-        })
-    }
-
     /// Human-readable identity for diagnostics.
     pub fn label(&self) -> &str {
         self.source
@@ -459,17 +448,8 @@ fn validate_plugin_identity(plugin: &PluginConfig, path: &Path) -> Result<()> {
             path: path.to_path_buf(),
             message: format!("plugin id `{id}` is invalid"),
         }),
-        (None, Some(source)) => {
-            if let Err(e) =
-                PluginSourceSpec::parse(source, plugin.r#ref.as_deref(), plugin.subdir.as_deref())
-            {
-                return Err(Error::Config {
-                    path: path.to_path_buf(),
-                    message: format!("plugin source `{source}`: {e}"),
-                });
-            }
-            Ok(())
-        }
+        // Source grammar is owned by rpp-fetch and validated during resolution.
+        (None, Some(_)) => Ok(()),
         (Some(_), Some(_)) => Err(Error::Config {
             path: path.to_path_buf(),
             message: "plugin entries must set either `id` or `source`, not both".into(),
@@ -694,14 +674,6 @@ subdir = "plugins/atlas"
         assert!(!cfg.build.squash.zip);
         assert_eq!(cfg.dev.host, "0.0.0.0");
         assert_eq!(cfg.plugins.len(), 2);
-        assert!(matches!(
-            cfg.plugins[0].parse_source().unwrap().unwrap(),
-            PluginSourceSpec::Path { .. }
-        ));
-        assert!(matches!(
-            cfg.plugins[1].parse_source().unwrap().unwrap(),
-            PluginSourceSpec::GitHub { .. }
-        ));
     }
 
     #[test]
@@ -713,7 +685,6 @@ subdir = "plugins/atlas"
         .unwrap();
         assert_eq!(cfg.plugins[0].id.as_deref(), Some("window"));
         assert!(cfg.plugins[0].source.is_none());
-        assert!(cfg.plugins[0].parse_source().is_none());
     }
 
     #[test]

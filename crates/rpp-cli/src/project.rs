@@ -270,11 +270,7 @@ impl Project {
 
         let canonical = source.canonical();
         let locked = lockfile
-            .get_for(
-                &canonical,
-                plugin_cfg.r#ref.as_deref(),
-                plugin_cfg.subdir.as_deref(),
-            )
+            .get_for(&canonical, source.requested_ref(), source.subdir())
             .cloned();
         let resolved = resolver
             .resolve(&source, locked.as_ref())
@@ -282,7 +278,7 @@ impl Project {
 
         if let Some(pinned) = &resolved.pinned {
             let prev = lockfile.record_resolved(&source, &resolved);
-            if pin_changed(prev.as_ref(), pinned, plugin_cfg.subdir.as_deref()) {
+            if pin_changed(prev.as_ref(), pinned, source.subdir()) {
                 *lock_dirty = true;
             }
         }
@@ -390,11 +386,7 @@ pub fn resolve_plugin_meta(
     let canonical = parsed.canonical();
 
     let locked = lock
-        .get_for(
-            &canonical,
-            plugin.r#ref.as_deref(),
-            plugin.subdir.as_deref(),
-        )
+        .get_for(&canonical, parsed.requested_ref(), parsed.subdir())
         .cloned();
     if matches!(parsed, PluginSource::GitHub { .. }) && locked.is_none() {
         return Ok(None);

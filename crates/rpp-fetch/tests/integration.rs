@@ -350,6 +350,7 @@ fn pin_short_circuit_makes_zero_network_calls() {
     let lock = LockedPlugin {
         source: "github:example/rpp-plugins".to_string(),
         ref_: "v1.2.0".to_string(),
+        requested_ref: Some("v1.2.0".to_string()),
         commit: SHA.to_string(),
         subdir: None,
     };
@@ -466,6 +467,7 @@ fn lockfile_round_trip_end_to_end() {
     lock.upsert(LockedPlugin {
         source: "github:example/rpp-plugins".to_string(),
         ref_: "v1.2.0".to_string(),
+        requested_ref: Some("v1.2.0".to_string()),
         commit: SHA.to_string(),
         subdir: Some("plugins/atlas".to_string()),
     });

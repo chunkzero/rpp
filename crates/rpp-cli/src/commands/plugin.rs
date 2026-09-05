@@ -134,14 +134,16 @@ fn add_project(dir: &Path, source: &str, ref_: Option<&str>, subdir: Option<&str
     let source = normalize_source(source, dir)?;
     let parsed = PluginSource::parse(&source, ref_, subdir)
         .with_context(|| format!("invalid plugin source `{source}`"))?;
-    let canonical = parsed.canonical();
 
     let resolver = Resolver::new(&project.root).context("initializing resolver")?;
     let lock_path = project.lock_path();
     let mut lock = Lockfile::load(&lock_path)?;
 
     let resolved = resolver
-        .resolve(&parsed, lock.get_for(&canonical, ref_, subdir))
+        .resolve(
+            &parsed,
+            lock.get_for(&parsed.canonical(), parsed.requested_ref(), parsed.subdir()),
+        )
         .with_context(|| format!("resolving plugin `{source}`"))?;
 
     let (id, version) = validate_plugin_dir(&resolved.root)?;
@@ -179,9 +181,11 @@ fn add_global(dir: &Path, source: &str, ref_: Option<&str>, subdir: Option<&str>
     let resolver_root = absolute_dir(dir)?;
     let resolver = Resolver::new(&resolver_root).context("initializing resolver")?;
     let mut lock = user.lockfile()?;
-    let canonical = parsed.canonical();
     let resolved = resolver
-        .resolve(&parsed, lock.get_for(&canonical, ref_, subdir))
+        .resolve(
+            &parsed,
+            lock.get_for(&parsed.canonical(), parsed.requested_ref(), parsed.subdir()),
+        )
         .with_context(|| format!("resolving plugin `{source}`"))?;
     let (id, version) = validate_plugin_dir(&resolved.root)?;
 
@@ -217,6 +221,7 @@ fn add_global(dir: &Path, source: &str, ref_: Option<&str>, subdir: Option<&str>
 }
 
 fn normalize_source(source: &str, dir: &Path) -> Result<String> {
+    let source = source.trim();
     if source.starts_with("path:") || source.starts_with("github:") {
         return Ok(source.to_string());
     }
@@ -261,32 +266,22 @@ fn remove(dir: &Path, id_or_source: &str, global: bool) -> Result<()> {
     let mut lock = Lockfile::load(&lock_path)?;
     let resolver = Resolver::new(&project.root).context("initializing resolver")?;
 
-    let plugin = find_plugin_in(&project.config.plugins, id_or_source, &lock, &resolver)?
+    let index = find_plugin_in(&project.config.plugins, id_or_source, &lock, &resolver)?
         .ok_or_else(|| anyhow!("no plugin matching `{id_or_source}` found"))?;
 
-    let remove_key = plugin
-        .source
-        .as_deref()
-        .or(plugin.id.as_deref())
-        .unwrap_or(id_or_source);
-    let (updated, removed_source) = remove_plugin(&text, remove_key, &project.root)?;
-    if updated == text {
-        return Err(anyhow!("no plugin matching `{id_or_source}` found"));
-    }
+    let plugin = &project.config.plugins[index];
+    let updated = edit::remove_plugin_at(&text, index)?;
+    let removed_source = plugin.source.as_deref();
     atomic::write(&config_path, &updated)?;
 
     if let Some(removed_source) = removed_source {
         if let Ok(parsed) = PluginSource::parse(
-            &removed_source,
+            removed_source,
             plugin.r#ref.as_deref(),
             plugin.subdir.as_deref(),
         ) {
             if lock
-                .remove_for(
-                    &parsed.canonical(),
-                    plugin.r#ref.as_deref(),
-                    plugin.subdir.as_deref(),
-                )
+                .remove_for(&parsed.canonical(), parsed.requested_ref(), parsed.subdir())
                 .is_some()
             {
                 lock.save(&lock_path)?;
@@ -303,28 +298,24 @@ fn remove_global(id_or_source: &str) -> Result<()> {
     let text = user.manifest_text()?;
     let mut lock = user.lockfile()?;
     let resolver = Resolver::new(&user.root).context("initializing resolver")?;
-    let plugin = find_plugin_in(&user.plugins, id_or_source, &lock, &resolver)?
+    let index = find_plugin_in(&user.plugins, id_or_source, &lock, &resolver)?
         .ok_or_else(|| anyhow!("no global plugin matching `{id_or_source}` found"))?;
+    let plugin = &user.plugins[index];
     let meta = resolve_plugin_meta(plugin, &lock, &resolver)?;
     let Some(source) = plugin.source.as_deref() else {
         return Err(anyhow!("global plugin `{id_or_source}` has no source"));
     };
-    let (updated, removed_source) = remove_plugin(&text, source, &user.root)?;
-    let removed_source = removed_source
-        .ok_or_else(|| anyhow!("no global plugin matching `{id_or_source}` found"))?;
+    let updated = edit::remove_plugin_at(&text, index)?;
+    let removed_source = source;
     atomic::write(&user.manifest_path(), updated)?;
 
     if let Ok(parsed) = PluginSource::parse(
-        &removed_source,
+        removed_source,
         plugin.r#ref.as_deref(),
         plugin.subdir.as_deref(),
     ) {
         if lock
-            .remove_for(
-                &parsed.canonical(),
-                plugin.r#ref.as_deref(),
-                plugin.subdir.as_deref(),
-            )
+            .remove_for(&parsed.canonical(), parsed.requested_ref(), parsed.subdir())
             .is_some()
         {
             lock.save(&user.lock_path())?;
@@ -389,13 +380,7 @@ fn list_plugins(
         });
         let pin = parsed
             .as_ref()
-            .and_then(|p| {
-                lock.get_for(
-                    &p.canonical(),
-                    plugin.r#ref.as_deref(),
-                    plugin.subdir.as_deref(),
-                )
-            })
+            .and_then(|p| lock.get_for(&p.canonical(), p.requested_ref(), p.subdir()))
             .map(|l| format!("{}@{}", l.ref_, short_commit(&l.commit)));
 
         let id_ver = match resolve_plugin_meta(plugin, &lock, &resolver)? {
@@ -492,19 +477,26 @@ fn update_plugins(
     id_or_source: Option<&str>,
 ) -> Result<(usize, bool)> {
     let resolver = Resolver::new(resolver_root).context("initializing resolver")?;
+    update_plugins_with_resolver(plugins, lock_path, id_or_source, &resolver)
+}
+
+fn update_plugins_with_resolver(
+    plugins: &[PluginConfig],
+    lock_path: &Path,
+    id_or_source: Option<&str>,
+    resolver: &Resolver,
+) -> Result<(usize, bool)> {
     let mut lock = Lockfile::load(lock_path)?;
     let mut changed = 0usize;
     let mut matched = false;
 
-    for plugin in plugins {
-        if let Some(target) = id_or_source {
-            let matches = plugin.source.as_deref() == Some(target)
-                || plugin.id.as_deref() == Some(target)
-                || find_plugin_in(plugins, target, &lock, &resolver)?
-                    .is_some_and(|p| p.label() == plugin.label());
-            if !matches {
-                continue;
-            }
+    let selected = id_or_source
+        .map(|target| find_plugin_in(plugins, target, &lock, resolver))
+        .transpose()?
+        .flatten();
+    for (index, plugin) in plugins.iter().enumerate() {
+        if id_or_source.is_some() && selected != Some(index) {
+            continue;
         }
         matched = true;
 
@@ -539,25 +531,31 @@ fn update_plugins(
     Ok((changed, matched))
 }
 
-fn find_plugin_in<'a>(
-    plugins: &'a [PluginConfig],
+fn find_plugin_in(
+    plugins: &[PluginConfig],
     id_or_source: &str,
     lock: &Lockfile,
     resolver: &Resolver,
-) -> Result<Option<&'a PluginConfig>> {
-    for plugin in plugins {
-        if plugin.source.as_deref() == Some(id_or_source)
+) -> Result<Option<usize>> {
+    let mut selected = None;
+    for (index, plugin) in plugins.iter().enumerate() {
+        let matches = if plugin.source.as_deref() == Some(id_or_source)
             || plugin.id.as_deref() == Some(id_or_source)
         {
-            return Ok(Some(plugin));
-        }
-        if let Some(meta) = resolve_plugin_meta(plugin, lock, resolver)? {
-            if meta.id == id_or_source || meta.canonical == id_or_source {
-                return Ok(Some(plugin));
-            }
+            true
+        } else {
+            resolve_plugin_meta(plugin, lock, resolver)?
+                .is_some_and(|meta| meta.id == id_or_source || meta.canonical == id_or_source)
+        };
+        if matches {
+            anyhow::ensure!(
+                selected.is_none(),
+                "multiple plugins match `{id_or_source}`; select a plugin id"
+            );
+            selected = Some(index);
         }
     }
-    Ok(None)
+    Ok(selected)
 }
 
 fn run_search(query: &str) -> Result<()> {
@@ -575,4 +573,116 @@ fn run_search(query: &str) -> Result<()> {
 
 fn short_commit(commit: &str) -> String {
     commit.chars().take(8).collect()
+}
+
+#[cfg(test)]
+mod identity_tests {
+    use super::*;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+
+    #[test]
+    fn cached_repository_entries_add_select_update_and_remove_independently() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let cache = root.join("cache");
+        for commit in ["old", "new"] {
+            for (subdir, id) in [("a", "alpha"), ("b", "beta")] {
+                let package = cache.join(format!("github/owner/repo/{commit}/{subdir}"));
+                std::fs::create_dir_all(&package).unwrap();
+                std::fs::write(
+                    package.join("plugin.toml"),
+                    format!("[plugin]\nid = \"{id}\"\nversion = \"1.0.0\"\n"),
+                )
+                .unwrap();
+                std::fs::write(package.join("init.lua"), "return require('rpp').plugin()").unwrap();
+            }
+        }
+        let mut text = "[pack]\nname = \"test\"\n".to_string();
+        let mut lock = Lockfile::new();
+        for subdir in ["a", "b"] {
+            let entry = PluginEntry {
+                source: "github:owner/repo.git".into(),
+                r#ref: Some(" main ".into()),
+                subdir: Some(format!(" ./{subdir}// ")),
+                origin: None,
+            };
+            text = add_plugin(&text, entry.clone()).unwrap();
+            assert!(add_plugin(&text, entry).is_err());
+            lock.upsert(rpp_fetch::LockedPlugin {
+                source: "github:owner/repo".into(),
+                ref_: "main".into(),
+                requested_ref: Some("main".into()),
+                commit: "old".into(),
+                subdir: Some(subdir.into()),
+            });
+        }
+        let lock_path = root.join("rpp.lock");
+        lock.save(&lock_path).unwrap();
+        // Exercise raw modifiers from an existing handwritten configuration as well.
+        text = text
+            .replace("subdir = \"b\"", "subdir = \" ./b// \"")
+            .replace("ref = \"main\"", "ref = \" main \"");
+        let config = rpp::config::Config::parse(&text, "rpp.toml").unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let resolver = Resolver::new(root)
+            .unwrap()
+            .with_cache_root(&cache)
+            .with_http_config(rpp_fetch::HttpConfig::with_base(format!(
+                "http://{}",
+                listener.local_addr().unwrap()
+            )));
+        assert_eq!(
+            find_plugin_in(&config.plugins, "beta", &lock, &resolver).unwrap(),
+            Some(1)
+        );
+        assert!(find_plugin_in(&config.plugins, "github:owner/repo", &lock, &resolver).is_err());
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                .unwrap();
+            let mut request = [0; 4096];
+            let read = stream.read(&mut request).unwrap();
+            assert!(String::from_utf8_lossy(&request[..read])
+                .starts_with("GET /repos/owner/repo/commits/main "));
+            let body = r#"{"sha":"new"}"#;
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            )
+            .unwrap();
+        });
+        assert_eq!(
+            update_plugins_with_resolver(&config.plugins, &lock_path, Some("beta"), &resolver)
+                .unwrap(),
+            (1, true)
+        );
+        server.join().unwrap();
+        let mut lock = Lockfile::load(&lock_path).unwrap();
+        assert_eq!(
+            lock.get_for("github:owner/repo", Some("main"), Some("a"))
+                .unwrap()
+                .commit,
+            "old"
+        );
+        assert_eq!(
+            lock.get_for("github:owner/repo", Some("main"), Some("b"))
+                .unwrap()
+                .commit,
+            "new"
+        );
+        let index = find_plugin_in(&config.plugins, "beta", &lock, &resolver)
+            .unwrap()
+            .unwrap();
+        let updated = edit::remove_plugin_at(&text, index).unwrap();
+        let remaining = rpp::config::Config::parse(&updated, "rpp.toml").unwrap();
+        assert_eq!(remaining.plugins.len(), 1);
+        assert_eq!(remaining.plugins[0].subdir.as_deref(), Some("a"));
+        lock.remove_for("github:owner/repo", Some("main"), Some("b"))
+            .unwrap();
+        assert_eq!(lock.plugins().len(), 1);
+        assert_eq!(lock.plugins()[0].subdir.as_deref(), Some("a"));
+    }
 }

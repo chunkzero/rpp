@@ -52,8 +52,8 @@ impl PluginSource {
             })?;
 
         match scheme {
-            "path" => Self::parse_path(s, body, ref_, subdir),
-            "github" => Self::parse_github(s, body, ref_, subdir),
+            "path" => Self::parse_path(s, body.trim(), ref_, subdir),
+            "github" => Self::parse_github(s, body.trim(), ref_, subdir),
             other => Err(Error::InvalidSource {
                 source_str: s.to_string(),
                 reason: format!("unknown scheme `{other}` (expected `path` or `github`)"),
@@ -116,7 +116,10 @@ impl PluginSource {
 
         let subdir = match subdir {
             Some(d) if d.trim().is_empty() => None,
-            Some(d) => Some(normalize_subdir(s, d)?),
+            Some(d) => {
+                let normalized = normalize_subdir(s, d.trim())?;
+                (!normalized.is_empty()).then_some(normalized)
+            }
             None => None,
         };
 
@@ -126,6 +129,22 @@ impl PluginSource {
             ref_,
             subdir,
         })
+    }
+
+    /// The normalized requested ref; `None` selects the default branch.
+    pub fn requested_ref(&self) -> Option<&str> {
+        match self {
+            Self::GitHub { ref_, .. } => ref_.as_deref(),
+            Self::Path { .. } => None,
+        }
+    }
+
+    /// The normalized repository subdirectory.
+    pub fn subdir(&self) -> Option<&str> {
+        match self {
+            Self::GitHub { subdir, .. } => subdir.as_deref(),
+            Self::Path { .. } => None,
+        }
     }
 
     /// The canonical source string (the value stored in the lockfile `source`
@@ -174,6 +193,24 @@ fn normalize_subdir(s: &str, subdir: &str) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn normalizes_source_and_modifiers_together() {
+        assert_eq!(
+            PluginSource::parse(
+                " github:owner/repo.git ",
+                Some(" main "),
+                Some(" ./plugins//atlas/ ")
+            )
+            .unwrap(),
+            PluginSource::parse("github:owner/repo", Some("main"), Some("plugins/atlas")).unwrap()
+        );
+        assert_eq!(
+            PluginSource::parse("github:owner/repo", None, Some(" ./ ")).unwrap(),
+            PluginSource::parse("github:owner/repo", None, None).unwrap()
+        );
+        assert!(PluginSource::parse("path:   ", None, None).is_err());
+    }
 
     #[test]
     fn parses_path_source() {

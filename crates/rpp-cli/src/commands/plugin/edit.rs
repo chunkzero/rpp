@@ -23,11 +23,16 @@ pub struct PluginEntry {
 
 /// Append a `[[plugin]]` entry to `rpp.toml` text, returning the updated text.
 ///
-/// Fails if an entry with the same `source` already exists.
+/// Fails if an entry with the same normalized source, ref, and subdir exists.
 pub fn add_plugin(toml_text: &str, entry: PluginEntry) -> Result<String> {
     let mut doc: DocumentMut = toml_text.parse().context("parsing rpp.toml for editing")?;
 
-    if plugin_sources(&doc).iter().any(|s| s == &entry.source) {
+    let identity = PluginSource::parse(
+        &entry.source,
+        entry.r#ref.as_deref(),
+        entry.subdir.as_deref(),
+    )?;
+    if plugin_sources(&doc)?.contains(&identity) {
         bail!(
             "a plugin with source `{}` is already configured",
             entry.source
@@ -42,11 +47,11 @@ pub fn add_plugin(toml_text: &str, entry: PluginEntry) -> Result<String> {
         .context("`plugin` is not an array of tables")?;
 
     let mut table = Table::new();
-    table["source"] = toml_edit::value(entry.source);
-    if let Some(r) = entry.r#ref {
+    table["source"] = toml_edit::value(identity.canonical());
+    if let Some(r) = identity.requested_ref() {
         table["ref"] = toml_edit::value(r);
     }
-    if let Some(s) = entry.subdir {
+    if let Some(s) = identity.subdir() {
         table["subdir"] = toml_edit::value(s);
     }
     if let Some(origin) = entry.origin {
@@ -87,9 +92,12 @@ pub fn remove_plugin(
             || source
                 .is_some_and(|source| plugin_id_matches(table, source, project_root, id_or_source))
         {
+            anyhow::ensure!(
+                found_index.is_none(),
+                "multiple plugins match `{id_or_source}`; select a plugin id"
+            );
             found_index = Some(i);
             removed_source = source.map(str::to_string);
-            break;
         }
     }
 
@@ -99,6 +107,23 @@ pub fn remove_plugin(
         return Ok((toml_text.to_owned(), None));
     }
     Ok((doc.to_string(), removed_source))
+}
+
+/// Remove the exact entry selected by the command's resolver.
+pub(super) fn remove_plugin_at(toml_text: &str, index: usize) -> Result<String> {
+    let mut doc: DocumentMut = toml_text
+        .parse()
+        .context("parsing plugin manifest for editing")?;
+    let array = doc
+        .get_mut("plugin")
+        .and_then(Item::as_array_of_tables_mut)
+        .context("plugin entries disappeared before editing")?;
+    anyhow::ensure!(
+        index < array.len(),
+        "selected plugin entry disappeared before editing"
+    );
+    array.remove(index);
+    Ok(doc.to_string())
 }
 
 /// Whether the plugin entry's resolved id equals `target`.
@@ -125,14 +150,23 @@ fn plugin_id_matches(table: &Table, source: &str, project_root: &Path, target: &
     false
 }
 
-/// Collect the `source` strings of all configured plugins.
-fn plugin_sources(doc: &DocumentMut) -> Vec<String> {
+/// Collect normalized source identities of all configured plugins.
+fn plugin_sources(doc: &DocumentMut) -> Result<Vec<PluginSource>> {
     let Some(array) = doc.get("plugin").and_then(Item::as_array_of_tables) else {
-        return Vec::new();
+        return Ok(Vec::new());
     };
     array
         .iter()
-        .filter_map(|t| t.get("source").and_then(|v| v.as_str()).map(str::to_string))
+        .filter_map(|t| {
+            t.get("source").and_then(|v| v.as_str()).map(|source| {
+                PluginSource::parse(
+                    source,
+                    t.get("ref").and_then(Item::as_str),
+                    t.get("subdir").and_then(Item::as_str),
+                )
+                .map_err(Into::into)
+            })
+        })
         .collect()
 }
 

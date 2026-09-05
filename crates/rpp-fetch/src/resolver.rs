@@ -135,7 +135,9 @@ impl Resolver {
         // Pin short-circuit: if a lock pins a commit already cached, return with
         // zero network calls when possible.
         if let Some(lock) = locked.filter(|lock| {
-            lock.subdir.as_deref() == subdir && ref_.is_none_or(|requested| lock.ref_ == requested)
+            lock.source == format!("github:{owner}/{repo}")
+                && lock.subdir.as_deref() == subdir
+                && lock.requested_ref.as_deref() == ref_
         }) {
             let root = self.ensure_cached_commit(&client, owner, repo, &lock.commit, subdir)?;
             return Ok(ResolvedPlugin {
@@ -246,6 +248,7 @@ impl Lockfile {
         self.upsert(LockedPlugin {
             source: source.canonical(),
             ref_: pin.ref_.clone(),
+            requested_ref: source.requested_ref().map(str::to_string),
             commit: pin.commit.clone(),
             subdir: subdir.clone(),
         })
