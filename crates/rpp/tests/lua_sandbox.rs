@@ -467,3 +467,144 @@ fn process_execution_requires_a_grant() {
     .unwrap_err();
     assert!(err.contains("process permissions"), "{err}");
 }
+
+#[test]
+fn serde_json_preserves_container_identity_and_null() {
+    for input in [
+        "{}",
+        "[]",
+        "null",
+        r#"{"empty":{},"array":[],"n":null}"#,
+        r#"[1,null,3,{"nested":[{},[],null]}]"#,
+    ] {
+        let output = run(
+            &processor_wrap("file.text = rpp.json.encode(rpp.json.decode(file.text))"),
+            input,
+        )
+        .unwrap();
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&output).unwrap(),
+            serde_json::from_str::<serde_json::Value>(input).unwrap()
+        );
+    }
+    let output = run(
+        &processor_wrap(
+            r#"
+local array = rpp.json.decode('[1]')
+array[1] = nil
+local object = rpp.json.decode('{"a":1}')
+object.a = nil
+assert(rpp.json.decode('null') == rpp.json.null)
+file.text = rpp.json.encode({array, object, rpp.json.array(), rpp.json.object(), rpp.json.null})
+"#,
+        ),
+        "",
+    )
+    .unwrap();
+    assert_eq!(output, b"[[],{},[],{},null]");
+}
+
+#[test]
+fn serde_constructors_and_plain_tables_have_explicit_contract() {
+    let output = run(
+        &processor_wrap(
+            r#"
+local child = rpp.json.object({ok = true})
+file.text = rpp.json.encode({plain = {}, array = rpp.json.array({1, 2}), shared = {child, child}})
+"#,
+        ),
+        "",
+    )
+    .unwrap();
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&output).unwrap(),
+        serde_json::json!({"plain": {}, "array": [1, 2], "shared": [{"ok": true}, {"ok": true}]})
+    );
+    for table in [
+        "rpp.json.array({named = 1})",
+        "rpp.json.object({1})",
+        "{[2] = 1}",
+        "{[1] = 1, ['1'] = 2}",
+    ] {
+        let err = run(
+            &processor_wrap(&format!("file.text = rpp.json.encode({table})")),
+            "",
+        )
+        .unwrap_err();
+        assert!(err.contains("json encode error"), "{err}");
+    }
+}
+
+#[test]
+fn serde_toml_preserves_empty_containers_and_rejects_null() {
+    let error = run(&processor_wrap("rpp.toml.decode(file.text)"), "n = inf").unwrap_err();
+    assert!(error.contains("non-finite"), "{error}");
+    let input = "empty = {}\narray = []\nnested = [{a = []}, {}]\ndate = 2024-01-02T03:04:05Z\n";
+    let output = run(
+        &processor_wrap("file.text = rpp.toml.encode(rpp.toml.decode(file.text))"),
+        input,
+    )
+    .unwrap();
+    assert_eq!(
+        toml::from_str::<toml::Value>(std::str::from_utf8(&output).unwrap()).unwrap(),
+        toml::from_str::<toml::Value>(input).unwrap()
+    );
+    for value in [
+        "rpp.json.null",
+        "{n = rpp.json.null}",
+        "{a = {1, rpp.json.null, 3}}",
+    ] {
+        let err = run(
+            &processor_wrap(&format!("file.text = rpp.toml.encode({value})")),
+            "",
+        )
+        .unwrap_err();
+        assert!(err.contains("toml encode error"), "{err}");
+    }
+}
+
+#[test]
+fn serde_conversion_limits_return_errors_in_subprocess() {
+    const CHILD: &str = "RPP_SERDE_LIMIT_CHILD";
+    if std::env::var_os(CHILD).is_some() {
+        for module in ["json", "toml"] {
+            for (setup, message) in [
+                ("local t = {}; t.self = t", "cyclic table"),
+                ("local t = {}; local child = t; for i = 1, 1000 do child.next = {}; child = child.next end", "maximum nesting depth"),
+                ("local t = {}; local child = t; for i = 1, 20 do local next = {}; child[1] = next; child[2] = next; child = next end", "maximum value count"),
+            ] {
+                let error = run(&processor_wrap(&format!("{setup}\nfile.text = rpp.{module}.encode(t)")), "").unwrap_err();
+                assert!(error.contains(message), "{error}");
+                assert!(error.contains("in.txt"), "{error}");
+            }
+            let input = if module == "json" {
+                format!("{}0{}", "[".repeat(1000), "]".repeat(1000))
+            } else {
+                format!("a = {}0{}", "[".repeat(1000), "]".repeat(1000))
+            };
+            let error = run(
+                &processor_wrap(&format!("rpp.{module}.decode(file.text)")),
+                &input,
+            )
+            .unwrap_err();
+            assert!(error.contains("decode error"), "{error}");
+        }
+        return;
+    }
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "serde_conversion_limits_return_errors_in_subprocess",
+            "--nocapture",
+        ])
+        .env(CHILD, "1")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "subprocess {}\n{}\n{}",
+        output.status,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}

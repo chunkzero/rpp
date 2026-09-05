@@ -151,6 +151,7 @@ fn rpp_module() -> String {
 ---@field pretty boolean|nil Pretty-print with indentation (default false).
 
 ---@class rpp.Json
+---@field null lightuserdata JSON null sentinel; unlike nil, retains table entries.
 local Json = {}
 ---@param str string
 ---@return any value
@@ -159,6 +160,14 @@ function Json.decode(str) end
 ---@param opts rpp.JsonOpts|nil
 ---@return string
 function Json.encode(value, opts) end
+---Mark a table as an object, or create an empty object. Replaces its metatable.
+---@param value table|nil
+---@return table
+function Json.object(value) end
+---Mark a table as an array, or create an empty array. Requires consecutive keys 1..n.
+---@param value table|nil
+---@return table
+function Json.array(value) end
 
 ---@class rpp.Toml
 local Toml = {}
@@ -168,6 +177,14 @@ function Toml.decode(str) end
 ---@param value any
 ---@return string
 function Toml.encode(value) end
+---Mark a table as an object, or create an empty object. Replaces its metatable.
+---@param value table|nil
+---@return table
+function Toml.object(value) end
+---Mark a table as an array, or create an empty array. Requires consecutive keys 1..n.
+---@param value table|nil
+---@return table
+function Toml.array(value) end
 
 ---@class rpp.Hash
 local Hash = {}

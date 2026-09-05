@@ -1,12 +1,14 @@
 //! `rpp.json` builtin: serde-backed JSON decode/encode.
 
-use mlua::{Lua, LuaSerdeExt, Table, Value};
+use mlua::{Lua, Table, Value};
 
-use crate::lua::convert::lua_to_json;
+use crate::lua::convert::{constructors, json_to_lua, lua_to_json};
 
 /// Build the `rpp.json` module table.
 pub(crate) fn module(lua: &Lua) -> mlua::Result<Table> {
     let t = lua.create_table()?;
+    constructors(lua, &t)?;
+    t.set("null", Value::NULL)?;
 
     t.set(
         "decode",
@@ -14,7 +16,8 @@ pub(crate) fn module(lua: &Lua) -> mlua::Result<Table> {
             let text = text.to_str()?;
             let value: serde_json::Value = serde_json::from_str(&text)
                 .map_err(|e| mlua::Error::external(format!("json decode error: {e}")))?;
-            lua.to_value(&value)
+            json_to_lua(lua, &value)
+                .map_err(|e| mlua::Error::external(format!("json decode error: {e}")))
         })?,
     )?;
 
