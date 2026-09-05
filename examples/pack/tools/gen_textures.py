@@ -40,8 +40,8 @@ EMBER_HOT = (255, 230, 120, 255)
 EMBER_DK = (180, 70, 20, 255)
 
 
-def write_png(path, pixels):
-    """Write ``pixels`` (a 16x16 list of rows of RGBA tuples) as a PNG."""
+def write_png(path, pixels, width=SIZE, height=SIZE):
+    """Write ``pixels`` (rows of RGBA tuples) as an 8-bit RGBA PNG."""
     raw = bytearray()
     for row in pixels:
         raw.append(0)  # filter type 0 (None) for each scanline
@@ -54,7 +54,7 @@ def write_png(path, pixels):
         return out + struct.pack(">I", crc)
 
     sig = b"\x89PNG\r\n\x1a\n"
-    ihdr = struct.pack(">IIBBBBB", SIZE, SIZE, 8, 6, 0, 0, 0)  # 8-bit RGBA
+    ihdr = struct.pack(">IIBBBBB", width, height, 8, 6, 0, 0, 0)
     idat = zlib.compress(bytes(raw), 9)
 
     os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -147,32 +147,9 @@ def main():
     tall = []
     for frame in frames:
         tall.extend(frame)
-    # write_png expects square; write a custom tall image here.
-    write_png_tall(os.path.join(tex, "block", "ember.png"), tall, SIZE, SIZE * 4)
+    write_png(os.path.join(tex, "block", "ember.png"), tall, SIZE, SIZE * 4)
     print("textures written under", tex)
 
-
-def write_png_tall(path, pixels, width, height):
-    raw = bytearray()
-    for row in pixels:
-        raw.append(0)
-        for (r, g, b, a) in row:
-            raw += bytes((r, g, b, a))
-
-    def chunk(tag, data):
-        out = struct.pack(">I", len(data)) + tag + data
-        crc = zlib.crc32(tag + data) & 0xFFFFFFFF
-        return out + struct.pack(">I", crc)
-
-    sig = b"\x89PNG\r\n\x1a\n"
-    ihdr = struct.pack(">IIBBBBB", width, height, 8, 6, 0, 0, 0)
-    idat = zlib.compress(bytes(raw), 9)
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "wb") as f:
-        f.write(sig)
-        f.write(chunk(b"IHDR", ihdr))
-        f.write(chunk(b"IDAT", idat))
-        f.write(chunk(b"IEND", b""))
 
 
 if __name__ == "__main__":

@@ -36,11 +36,11 @@ fn canonical_json(value: &serde_json::Value) -> String {
     }
 }
 
-/// Build-relevant `[build]` fields for the global cache key (excludes squash).
+/// Build-relevant `[build]` fields for the global cache key. Outputs are
+/// content-addressed, so the output path and squash settings are excluded.
 #[derive(Serialize)]
 struct BuildKeySection<'a> {
     source: String,
-    output: String,
     lua: &'a crate::config::LuaConfig,
 }
 
@@ -58,7 +58,6 @@ fn path_key(path: &std::path::Path) -> String {
 fn build_key_section(build: &BuildConfig) -> BuildKeySection<'_> {
     BuildKeySection {
         source: path_key(&build.source),
-        output: path_key(&build.output),
         lua: &build.lua,
     }
 }

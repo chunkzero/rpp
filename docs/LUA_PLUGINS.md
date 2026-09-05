@@ -101,7 +101,8 @@ Builtins are `rpp.json`, `rpp.toml`, `rpp.hash`, `rpp.path`, `rpp.log`,
 `io`, `os`, `math.random`, `debug`, dynamic loading, C module loading,
 unrestricted filesystem access, or process execution. Trusted/native modes can
 grant more capability through project config. Lua states have memory and
-execution limits. Tracebacks name plugin-local and source modules with stable
+per-call execution limits, set by `[build.lua] memory_limit_mb` and
+`execution_deadline_seconds` in `rpp.toml`. Tracebacks name plugin-local and source modules with stable
 package-relative paths.
 
 See [`examples/plugins`](../examples/plugins) for complete plugins.
