@@ -475,7 +475,13 @@ configuration/plugin changes, and `rpp clean`. Only paths recorded as RPP-owned 
 removed; unrelated files beside generated artifacts are preserved. Replacements are
 published atomically from sibling temporary files and are never hard-linked to the
 immutable CAS. External-output collisions are build errors with both plugin ids in the
-diagnostic.
+diagnostic. Before pack synchronization, RPP validates external destinations and
+stages all external writes, then persists ownership of both previous and planned
+outputs. Publication removes stale paths and atomically replaces staged files; only
+after success does ownership shrink to the new generation. If publication fails,
+retry or clean uses the retained ownership to account for partially published files.
+Staging or initial ownership persistence failures leave published files unchanged.
+This is recoverable publication, not a transaction across filesystems.
 
 Build and clean validate filesystem destinations before mutation. Pack output,
 bookkeeping paths, and external roots inside the project must not pass through

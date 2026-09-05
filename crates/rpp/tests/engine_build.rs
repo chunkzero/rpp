@@ -837,6 +837,8 @@ return plugin
 fn colliding_external_outputs_fail_with_plugin_attribution() {
     let project = Project::new();
     project.write_src("a.txt", "a");
+    build(&project, Vec::new());
+    project.write_src("a.txt", "changed");
     let make = |id: &str| {
         PluginDir::lua(
             id,
@@ -863,6 +865,8 @@ return plugin
     let error = engine.build().unwrap_err().to_string();
     assert!(error.contains("`first` and `second`"), "{error}");
     assert!(error.contains("Same.kt"), "{error}");
+    assert_eq!(project.read_out("a.txt").as_deref(), Some("a"));
+    assert!(!project.root().join("generated/Same.kt").exists());
 }
 
 #[cfg(unix)]
