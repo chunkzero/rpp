@@ -2,8 +2,8 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::LazyLock;
 
-use once_cell::sync::Lazy;
 use regex::Regex;
 use semver::Version;
 use serde::Deserialize;
@@ -12,8 +12,8 @@ use crate::error::{Error, Result};
 use crate::util::path::validate_relative;
 
 /// Plugin id grammar: `^[a-z0-9][a-z0-9_-]*$`.
-static ID_REGEX: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"^[a-z0-9][a-z0-9_-]*$").expect("static id regex is valid"));
+static ID_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^[a-z0-9][a-z0-9_-]*$").expect("static id regex is valid"));
 
 /// A validated `plugin.toml` manifest.
 #[derive(Debug, Clone)]

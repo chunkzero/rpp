@@ -46,10 +46,24 @@ impl GlobSet {
     }
 }
 
+/// A single compiled glob pattern.
+pub(crate) struct Glob(Pattern);
+
+impl Glob {
+    /// Returns true if `path` (forward-slash relative) matches.
+    pub(crate) fn matches(&self, path: &str) -> bool {
+        self.0.matches_with(path, OPTIONS)
+    }
+}
+
+/// Compile one glob pattern.
+pub(crate) fn compile(pattern: &str) -> Result<Glob, String> {
+    Pattern::new(pattern)
+        .map(Glob)
+        .map_err(|e| format!("invalid glob `{pattern}`: {e}"))
+}
+
 /// Match a single glob pattern against a path (forward-slash relative).
 pub(crate) fn matches(pattern: &str, path: &str) -> bool {
-    match Pattern::new(pattern) {
-        Ok(p) => p.matches_with(path, OPTIONS),
-        Err(_) => false,
-    }
+    compile(pattern).is_ok_and(|glob| glob.matches(path))
 }

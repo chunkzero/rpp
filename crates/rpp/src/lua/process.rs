@@ -1,24 +1,49 @@
-//! Structured external-process execution.
+//! Trusted external-process execution for `rpp.process.run`.
 
 use std::io::{Read, Write};
+use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crate::{Permissions, ProcessOutput, ProcessRequest};
+use crate::lua::runtime::RuntimeAccess;
 
 const MAX_CAPTURE: usize = 16 * 1024 * 1024;
 
+/// A structured process invocation requested by a plugin.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct ProcessRequest {
+    pub program: String,
+    pub args: Vec<String>,
+    pub cwd: Option<PathBuf>,
+    pub environment: Vec<(String, String)>,
+    pub stdin: Vec<u8>,
+    pub timeout: Option<Duration>,
+}
+
+/// Captured process completion.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ProcessOutput {
+    pub status: i32,
+    pub stdout: Vec<u8>,
+    pub stderr: Vec<u8>,
+}
+
+/// Run `request` under the plugin's access policy. The child inherits nothing
+/// from the host environment except variables the policy explicitly grants,
+/// and runs in the project root unless the request names a directory.
 pub(crate) fn run(
-    permissions: &Permissions,
+    access: &RuntimeAccess,
     request: ProcessRequest,
 ) -> Result<ProcessOutput, String> {
-    if !permissions.arbitrary_processes
-        && !permissions
-            .processes
+    let native = access.is_native();
+    let permitted = native
+        || access
+            .permissions
+            .process
             .iter()
-            .any(|allowed| allowed == &request.program)
-    {
+            .any(|allowed| allowed == &request.program);
+    if !permitted {
         return Err(format!("process `{}` is not permitted", request.program));
     }
 
@@ -28,28 +53,18 @@ pub(crate) fn run(
         .env_clear()
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    for (name, value) in &permissions.environment {
-        command.env(name, value);
-    }
-    for (name, value) in &request.environment {
-        if permissions.arbitrary_processes
-            || permissions
-                .environment
-                .iter()
-                .any(|(allowed, _)| allowed == name)
-        {
+        .stderr(Stdio::piped())
+        .current_dir(request.cwd.as_ref().unwrap_or(&access.project_root));
+    for name in &access.permissions.environment {
+        if let Ok(value) = std::env::var(name) {
             command.env(name, value);
-        } else {
-            return Err(format!("environment variable `{name}` is not permitted"));
         }
     }
-    if let Some(cwd) = request
-        .cwd
-        .as_ref()
-        .or(permissions.working_directory.as_ref())
-    {
-        command.current_dir(cwd);
+    for (name, value) in &request.environment {
+        if !native && !access.permissions.environment.contains(name) {
+            return Err(format!("environment variable `{name}` is not permitted"));
+        }
+        command.env(name, value);
     }
 
     #[cfg(unix)]
@@ -132,6 +147,8 @@ fn read_capped(mut reader: impl Read) -> Result<Vec<u8>, String> {
 
 fn terminate(child: &mut std::process::Child) {
     #[cfg(unix)]
+    // SAFETY: `kill` on a negative pid targets the process group created by
+    // `process_group(0)` above; it has no memory-safety preconditions.
     unsafe {
         libc::kill(-(child.id() as i32), libc::SIGKILL);
     }

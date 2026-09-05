@@ -1,17 +1,13 @@
 //! Configuration types for squash operations.
 //!
-//! These map directly onto the `[build.squash]` table in `rpp.toml` (see
-//! `docs/SPEC.md` section 1). They derive [`serde`] traits so consumers can
-//! deserialize user config straight into them.
-
-use serde::{Deserialize, Serialize};
+//! These mirror the `[build.squash]` table in `rpp.toml` (see `docs/SPEC.md`
+//! section 1); the CLI maps its parsed config onto them.
 
 /// PNG optimization aggressiveness.
 ///
 /// Maps onto the `png` config key: `false` -> [`PngLevel::Off`],
 /// `"fast"` -> [`PngLevel::Fast`], `"max"` -> [`PngLevel::Max`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum PngLevel {
     /// PNG optimization disabled.
     #[default]
@@ -42,8 +38,7 @@ impl PngLevel {
 ///
 /// Construct with [`SquashOptions::builder`] or via [`Default`] and field
 /// assignment.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SquashOptions {
     /// Minify `.json` and `.mcmeta` files (parse -> compact re-serialize).
     pub json: bool,
@@ -119,8 +114,7 @@ impl SquashOptionsBuilder {
 /// Options controlling deterministic zip creation.
 ///
 /// Defaults produce a byte-reproducible deflate archive.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ZipOptions {
     /// Deflate compression level (0-9). `None` uses the `zip` crate default.
     pub compression_level: Option<i64>,
@@ -134,43 +128,6 @@ impl Default for ZipOptions {
         Self {
             compression_level: Some(9),
             comment: String::new(),
-        }
-    }
-}
-
-impl ZipOptions {
-    /// Start building a [`ZipOptions`].
-    pub fn builder() -> ZipOptionsBuilder {
-        ZipOptionsBuilder::default()
-    }
-}
-
-/// Builder for [`ZipOptions`].
-#[derive(Debug, Clone, Default)]
-pub struct ZipOptionsBuilder {
-    compression_level: Option<i64>,
-    comment: Option<String>,
-}
-
-impl ZipOptionsBuilder {
-    /// Set the deflate compression level (0-9).
-    pub fn compression_level(mut self, level: i64) -> Self {
-        self.compression_level = Some(level);
-        self
-    }
-
-    /// Set the archive comment. Leave empty for reproducible output.
-    pub fn comment(mut self, comment: impl Into<String>) -> Self {
-        self.comment = Some(comment.into());
-        self
-    }
-
-    /// Finish building.
-    pub fn build(self) -> ZipOptions {
-        let defaults = ZipOptions::default();
-        ZipOptions {
-            compression_level: self.compression_level.or(defaults.compression_level),
-            comment: self.comment.unwrap_or(defaults.comment),
         }
     }
 }

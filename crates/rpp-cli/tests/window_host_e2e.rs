@@ -4,35 +4,71 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use rpp_cli::harness::BuildHarness;
+use rpp::engine::BuildResult;
+use rpp_cli::project::Project;
 
 const INPUT_BYTES: &[u8] = &[0x89, b'P', b'N', b'G', 0, 0xff, 0x1a, b'\n'];
+
+/// Build the project at `root` with one worker and no user-global plugins.
+fn build(root: &Path) -> anyhow::Result<BuildResult> {
+    let mut project = Project::discover_isolated(root)?;
+    project.config.build.workers = 1;
+    Ok(project.build_engine()?.build()?)
+}
+
+fn clean(root: &Path) {
+    Project::discover_isolated(root)
+        .unwrap()
+        .clean_artifacts()
+        .unwrap();
+}
+
+/// Sorted `(relative path, bytes)` snapshot of a directory tree.
+fn snapshot(root: &Path) -> Vec<(PathBuf, Vec<u8>)> {
+    fn walk(root: &Path, dir: &Path, out: &mut Vec<(PathBuf, Vec<u8>)>) {
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                walk(root, &path, out);
+            } else {
+                let relative = path.strip_prefix(root).unwrap().to_path_buf();
+                out.push((relative, std::fs::read(&path).unwrap()));
+            }
+        }
+    }
+    let mut out = Vec::new();
+    if root.exists() {
+        walk(root, root, &mut out);
+    }
+    out.sort();
+    out
+}
+
+fn no_changes(result: &BuildResult) -> bool {
+    result.changes.written.is_empty()
+        && result.changes.removed.is_empty()
+        && result.changes.external.written.is_empty()
+        && result.changes.external.removed.is_empty()
+}
 
 fn fixture() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/window-host-component")
 }
 
 fn wasip2_available() -> bool {
-    let Ok(output) = Command::new("rustc")
-        .args(["--print", "target-libdir", "--target", "wasm32-wasip2"])
-        .output()
-    else {
+    let Ok(output) = Command::new("rustc").args(["--print", "sysroot"]).output() else {
         return false;
     };
-    output.status.success() && Path::new(String::from_utf8_lossy(&output.stdout).trim()).is_dir()
+    Path::new(String::from_utf8_lossy(&output.stdout).trim())
+        .join("lib/rustlib/wasm32-wasip2/lib")
+        .is_dir()
 }
 
 fn build_component(target_dir: &Path, v2: bool) -> PathBuf {
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
     let mut command = Command::new(cargo);
     command
-        .args([
-            "build",
-            "--locked",
-            "--offline",
-            "--target",
-            "wasm32-wasip2",
-        ])
+        .args(["build", "--locked", "--target", "wasm32-wasip2"])
         .env("CARGO_TARGET_DIR", target_dir)
         .current_dir(fixture());
     if v2 {
@@ -170,11 +206,19 @@ fn window_shaped_component_build_replays_and_invalidates() {
 
     let v1 = build_component(&component_target, false);
     scaffold(&root, &v1);
-    let harness = BuildHarness::new(&root);
-
-    let reproducible = harness.verify_reproducible().unwrap();
-    assert_eq!(reproducible.cold.generated, 1);
-    assert_eq!(reproducible.warm.generated, 0);
+    // Two cold builds must be byte-identical, and a warm build a no-op.
+    let first = build(&root).unwrap();
+    assert_eq!(first.generated, 1);
+    let first_dist = snapshot(&root.join("dist"));
+    let first_external = snapshot(&root.join("server"));
+    clean(&root);
+    let second = build(&root).unwrap();
+    assert_eq!(second.generated, 1);
+    assert_eq!(snapshot(&root.join("dist")), first_dist);
+    assert_eq!(snapshot(&root.join("server")), first_external);
+    let warm = build(&root).unwrap();
+    assert_eq!(warm.generated, 0);
+    assert!(no_changes(&warm), "warm build rewrote outputs");
     let mut expected_v1 = vec![b'R', b'P', b'P', b'1', 0, 0xff];
     expected_v1.extend(INPUT_BYTES);
     assert_eq!(
@@ -190,17 +234,17 @@ fn window_shaped_component_build_replays_and_invalidates() {
     let handwritten = root.join("server/generated/HandWritten.kt");
     std::fs::write(&handwritten, b"object HandWritten\n").unwrap();
 
-    let no_cache = harness.build_no_cache().unwrap();
-    assert_eq!(no_cache.result.generated, 1);
-    assert!(no_cache.result.changes.written.is_empty());
-    assert!(no_cache.result.changes.removed.is_empty());
-    assert!(no_cache.result.changes.external.written.is_empty());
-    assert!(no_cache.result.changes.external.removed.is_empty());
+    // Dropping only the cache (`rpp build --no-cache`) keeps external
+    // ownership, so a rebuild neither rewrites nor removes anything.
+    std::fs::remove_dir_all(root.join(".rpp/cache")).unwrap();
+    let no_cache = build(&root).unwrap();
+    assert_eq!(no_cache.generated, 1);
+    assert!(no_changes(&no_cache));
 
     let v2 = build_component(&component_target, true);
     std::fs::copy(v2, root.join("plugin/compiler.wasm")).unwrap();
-    let changed = harness.build().unwrap();
-    assert_eq!(changed.result.generated, 1);
+    let changed = build(&root).unwrap();
+    assert_eq!(changed.generated, 1);
     let mut expected_v2 = vec![b'R', b'P', b'P', b'2', 0, 0xff];
     expected_v2.extend(INPUT_BYTES);
     assert_eq!(
@@ -218,18 +262,16 @@ fn window_shaped_component_build_replays_and_invalidates() {
         std::fs::read(&renamed).unwrap(),
         b"// generated schema v4 revision 2\nobject RenamedWindowPack\n"
     );
-    assert!(changed.result.changes.external.written.contains(&renamed));
+    assert!(changed.changes.external.written.contains(&renamed));
     assert!(changed
-        .result
         .changes
         .external
         .removed
         .contains(&root.join("server/generated/WindowPack.kt")));
 
-    let v2_warm = harness.build().unwrap();
-    assert_eq!(v2_warm.result.generated, 0);
-    assert!(v2_warm.result.changes.written.is_empty());
-    assert!(v2_warm.result.changes.external.written.is_empty());
+    let v2_warm = build(&root).unwrap();
+    assert_eq!(v2_warm.generated, 0);
+    assert!(no_changes(&v2_warm));
 }
 
 #[test]
@@ -252,7 +294,7 @@ fn window_component_diagnostic_keeps_stable_plugin_context() {
         .replace("hud_shaders = true", "hud_shaders = false");
     std::fs::write(&config_path, config).unwrap();
 
-    let error = BuildHarness::new(&root).build().unwrap_err().to_string();
+    let error = format!("{:#}", build(&root).unwrap_err());
     assert!(
         error.contains("plugin `window-host` generator failed"),
         "{error}"

@@ -45,33 +45,45 @@ pub(crate) fn process_files(ctx: FilePhaseCtx<'_>) -> Result<FilePhaseStats> {
     let mut processed = 0usize;
     let mut cached = 0usize;
     let mut dropped = 0usize;
-    let mut dirty: Vec<(
+    // Dirty files carry their fingerprint and contents when the clean check
+    // already had to read them, so they are hashed at most once.
+    type Dirty = (
         SourceFile,
         Arc<Vec<ChainStep>>,
         u64,
         Option<(Fingerprint, Vec<u8>)>,
-    )> = Vec::new();
+    );
+    let mut dirty: Vec<Dirty> = Vec::new();
 
     for src in sources {
         let chain = chain_for(compiled, &src.rel);
         let ck = chain_key(&chain);
         let chain_cacheable = chain.iter().all(|step| step.cacheable);
 
-        let prev_entry = prev.and_then(|m| m.files.get(&src.rel));
+        let candidate = prev
+            .and_then(|m| m.files.get(&src.rel))
+            .filter(|entry| chain_cacheable && entry.chain_key == ck);
         let mut read = None;
-        let clean = if chain_cacheable && prev_entry.is_some_and(|entry| entry.chain_key == ck) {
-            let fingerprinted = src.fingerprint()?;
-            let matches =
-                prev_entry.is_some_and(|entry| fingerprinted.0.xxh3 == entry.fingerprint.xxh3);
-            read = Some(fingerprinted);
-            matches
-        } else {
-            false
+        let clean = match candidate {
+            Some(entry) => {
+                let (fp, contents) = src.fingerprint()?;
+                let same = fp.xxh3 == entry.fingerprint.xxh3;
+                read = Some((fp, contents));
+                same
+            }
+            None => false,
         };
 
         if clean {
-            let entry = prev_entry.expect("clean implies prev entry").clone();
-            if materialize_file_entry(store, &entry, output, source_owners, &src.rel)? {
+            let entry = candidate.expect("clean implies prev entry").clone();
+            if materialize_file_entry(
+                store,
+                &engine.output,
+                &entry,
+                output,
+                source_owners,
+                &src.rel,
+            )? {
                 if entry.outputs.is_empty() {
                     dropped += 1;
                 }
@@ -85,7 +97,12 @@ pub(crate) fn process_files(ctx: FilePhaseCtx<'_>) -> Result<FilePhaseStats> {
     }
 
     if !dirty.is_empty() {
-        let pool = WorkerPool::new(engine.worker_count(), Arc::clone(factories));
+        // Workers (and their Lua states) persist across builds of one engine;
+        // a failed build discards them so no broken worker is reused.
+        let mut pool_slot = engine.pool.lock();
+        let pool = pool_slot
+            .take()
+            .unwrap_or_else(|| WorkerPool::new(engine.worker_count(), Arc::clone(factories)));
         let mut pending: BTreeMap<String, (u64, Fingerprint)> = BTreeMap::new();
         let mut submitted = 0usize;
 
@@ -106,11 +123,18 @@ pub(crate) fn process_files(ctx: FilePhaseCtx<'_>) -> Result<FilePhaseStats> {
         let mut outcomes = Vec::with_capacity(submitted);
         for _ in 0..submitted {
             let outcome = match pool.recv() {
-                Some(r) => r?,
-                None => return Err(Error::Build("worker pool closed early".into())),
+                Some(Ok(outcome)) => outcome,
+                Some(Err(error)) => {
+                    return Err(error);
+                }
+                None => {
+                    return Err(Error::Build("worker pool closed early".into()));
+                }
             };
             outcomes.push(outcome);
         }
+        *pool_slot = Some(pool);
+        drop(pool_slot);
         outcomes.sort_by(|a, b| outcome_rel(a).cmp(outcome_rel(b)));
 
         for outcome in outcomes {
@@ -124,7 +148,7 @@ pub(crate) fn process_files(ctx: FilePhaseCtx<'_>) -> Result<FilePhaseStats> {
                     super::cache_replay::claim_source_output(source_owners, &file.path, &rel)?;
                     output.files.insert(
                         file.path.clone(),
-                        super::generator::OutputContent::from_bytes(file.contents),
+                        super::generator::OutputContent::Bytes(Arc::new(file.contents)),
                     );
                     new_manifest.files.insert(
                         rel,
@@ -157,8 +181,6 @@ pub(crate) fn process_files(ctx: FilePhaseCtx<'_>) -> Result<FilePhaseStats> {
                 }
             }
         }
-
-        pool.shutdown();
     }
 
     Ok(FilePhaseStats {
@@ -171,5 +193,58 @@ pub(crate) fn process_files(ctx: FilePhaseCtx<'_>) -> Result<FilePhaseStats> {
 fn outcome_rel(outcome: &JobOutcome) -> &str {
     match outcome {
         JobOutcome::Produced { rel, .. } | JobOutcome::Dropped { rel } => rel,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn submission_read_error_discards_pending_results() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("src");
+        std::fs::create_dir(&source).unwrap();
+        std::fs::write(source.join("a.txt"), "old").unwrap();
+        std::fs::write(source.join("b.txt"), "b").unwrap();
+        let sources = super::super::discovery::discover(&source).unwrap();
+        std::fs::remove_file(source.join("b.txt")).unwrap();
+        let config = crate::config::Config::parse(
+            r#"[pack]
+name = "test"
+"#,
+            "rpp.toml",
+        )
+        .unwrap();
+        let engine = Engine::builder(config)
+            .project_root(dir.path())
+            .build_engine()
+            .unwrap();
+        let store = ObjectStore::open(dir.path().join(".rpp/cache/objects")).unwrap();
+        let mut manifest = Manifest::empty(0);
+        let mut output = super::super::generator::OutputSet {
+            files: BTreeMap::new(),
+        };
+        let mut owners = BTreeMap::new();
+        let result = process_files(FilePhaseCtx {
+            engine: &engine,
+            compiled: &engine.compiled,
+            sources,
+            store: &store,
+            prev: None,
+            new_manifest: &mut manifest,
+            output: &mut output,
+            source_owners: &mut owners,
+            factories: &engine.factories,
+        });
+        assert!(result.is_err());
+        assert!(engine.pool.lock().is_none());
+
+        std::fs::write(source.join("a.txt"), "new").unwrap();
+        engine.build().unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("dist/a.txt")).unwrap(),
+            "new"
+        );
     }
 }

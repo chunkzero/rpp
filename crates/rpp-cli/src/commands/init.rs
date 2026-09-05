@@ -62,9 +62,13 @@ pub fn run(args: InitArgs) -> Result<()> {
     };
     let pack_format = match args.pack_format {
         Some(f) => f,
-        None if interactive => prompt("Pack format", &DEFAULT_PACK_FORMAT.to_string())?
-            .parse()
-            .unwrap_or(DEFAULT_PACK_FORMAT),
+        None if interactive => loop {
+            let answer = prompt("Pack format", &DEFAULT_PACK_FORMAT.to_string())?;
+            match answer.trim().parse::<u32>() {
+                Ok(format) if format > 0 => break format,
+                _ => ui::warn(format!("`{answer}` is not a valid pack format")),
+            }
+        },
         None => DEFAULT_PACK_FORMAT,
     };
 

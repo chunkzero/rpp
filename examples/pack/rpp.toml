@@ -8,6 +8,10 @@ source = "src"
 output = "dist"
 workers = 0          # 0 = use all available cores
 
+[build.lua]
+memory_limit_mb = 64
+execution_deadline_seconds = 5
+
 [build.squash]
 enabled = true
 engine = "builtin"
@@ -36,3 +40,12 @@ source = "path:../plugins/mcmeta-validate"
 source = "path:../plugins/hash-rename"
 [plugin.options]
 files = ["assets/*/textures/custom/**/*.png"]
+
+# 4. Resolve renamed model textures and compile Lua item definitions into
+#    models, translations, and a catalog for tools outside the resource pack.
+[[plugin]]
+source = "path:plugins/catalog"
+[plugin.options]
+namespace = "rpp"
+[plugin.outputs]
+catalog = "generated/catalog"

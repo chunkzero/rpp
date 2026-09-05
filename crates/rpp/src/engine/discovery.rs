@@ -69,7 +69,11 @@ pub(crate) fn discover(source: &Path) -> Result<Vec<SourceFile>> {
         }
         let rel_path = path.strip_prefix(source).unwrap_or(path);
         let rel = to_forward_slash(rel_path);
-        if rel.is_empty() {
+        if rel.is_empty()
+            || rel_path
+                .file_name()
+                .is_some_and(|name| name == ".rppignore")
+        {
             continue;
         }
         let meta = std::fs::metadata(path).map_err(|e| Error::io(path, e))?;

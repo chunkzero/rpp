@@ -170,16 +170,10 @@ impl Resolver {
         sha: &str,
         subdir: Option<&str>,
     ) -> Result<PathBuf> {
+        // Extraction publishes the commit directory atomically, so a present
+        // directory is complete. It is shared by every project and subdir that
+        // pins this commit; a missing manifest is a bad `subdir`, not damage.
         let dir = self.commit_dir(owner, repo, sha);
-        let root = self.join_subdir(&dir, subdir);
-        if dir.is_dir() {
-            if self.verify_manifest(&root).is_ok() {
-                return Ok(root);
-            }
-            std::fs::remove_dir_all(&dir).map_err(|error| {
-                Error::io(format!("removing damaged cache {}", dir.display()), error)
-            })?;
-        }
         if !dir.is_dir() {
             let bytes = client.download_tarball(owner, repo, sha)?;
             extract_tarball(&bytes, &dir)?;

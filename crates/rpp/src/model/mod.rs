@@ -7,6 +7,8 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
+use serde::{Deserialize, Serialize};
+
 use crate::error::Result;
 
 /// A file flowing through the pipeline.
@@ -70,8 +72,6 @@ pub struct BuildStats {
 pub trait PluginFactory: Send + Sync {
     /// The plugin id.
     fn id(&self) -> &str;
-    /// The plugin version string.
-    fn version(&self) -> &str;
     /// A hash covering plugin code AND its options; feeds cache invalidation.
     fn cache_key(&self) -> u64;
     /// The processors this plugin declares.
@@ -87,9 +87,8 @@ pub trait PluginFactory: Send + Sync {
         true
     }
     /// Named non-pack output roots available to this plugin.
-    fn output_roots(&self) -> &BTreeMap<String, PathBuf> {
-        static EMPTY: std::sync::OnceLock<BTreeMap<String, PathBuf>> = std::sync::OnceLock::new();
-        EMPTY.get_or_init(BTreeMap::new)
+    fn output_roots(&self) -> BTreeMap<String, PathBuf> {
+        BTreeMap::new()
     }
     /// Instantiate a live instance for one worker thread.
     fn instantiate(&self) -> Result<Box<dyn PluginInstance>>;
@@ -108,7 +107,7 @@ pub trait PluginInstance: Send {
 }
 
 /// The kind of read a generator performed, used to record its dependency set.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ReadKind {
     /// A `list_files(glob)` query.
     List,
@@ -138,5 +137,5 @@ pub trait GeneratorHost {
     /// Drop an output file.
     fn remove(&mut self, path: &str);
     /// Emit a non-pack artifact into a configured named output root.
-    fn emit_output(&mut self, _root: &str, _path: &str, _contents: Vec<u8>) {}
+    fn emit_output(&mut self, root: &str, path: &str, contents: Vec<u8>);
 }

@@ -58,10 +58,6 @@ impl PluginFactory for MockFactory {
         &self.id
     }
 
-    fn version(&self) -> &str {
-        "1.0.0"
-    }
-
     fn cache_key(&self) -> u64 {
         self.key
     }
@@ -173,8 +169,12 @@ fn colliding_generator_outputs_fail() {
         ])
         .build_engine()
         .unwrap();
-    let err = engine.build().unwrap_err().to_string();
-    assert!(err.contains("already claimed"), "{err}");
+    engine.build().unwrap();
+    assert_eq!(
+        std::fs::read(project.root().join("dist/same.txt")).unwrap(),
+        b"second",
+        "a later generator overwrites an earlier generator's emit"
+    );
 }
 
 #[test]

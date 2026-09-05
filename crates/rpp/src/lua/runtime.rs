@@ -148,9 +148,6 @@ impl RuntimeAccess {
             network: self.is_native() || self.permissions.network,
             environment: env,
             preopens,
-            processes: self.permissions.process.clone(),
-            arbitrary_processes: self.is_native(),
-            working_directory: Some(self.project_root.clone()),
         }
     }
 }

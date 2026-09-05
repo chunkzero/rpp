@@ -55,13 +55,21 @@ TOML is the **only** project config format (the jsonc config is removed).
 ```toml
 [pack]
 name = "my-pack"                 # used for zip filename; required
-description = "An example pack"  # written into pack.mcmeta if generate_mcmeta = true
+description = "An example pack"  # exposed to plugins as ctx.pack.description
 pack_format = 34                 # optional; validated against src/pack.mcmeta if present
 
 [build]
 source = "src"                   # pack source dir (contains pack.mcmeta, assets/)
 output = "dist"                  # output dir; zip goes to dist/<name>.zip
 workers = 0                      # 0 = available_parallelism
+
+[build.lua]
+memory_limit_mb = 256            # per Lua state
+execution_deadline_seconds = 30  # per Lua call
+
+[build.wasm]
+memory_limit_mb = 512            # per component instance
+execution_deadline_seconds = 60  # per component call
 
 [build.squash]
 enabled = true
@@ -88,7 +96,26 @@ pretty = false
 source = "github:example/rpp-plugins"    # remote repo
 ref = "v1.2.0"                            # optional tag/branch/sha; default: default branch
 subdir = "plugins/atlas"                  # optional path within the repo
+
+[[plugin]]
+source = "path:plugins/codegen"
+security = "trusted"                      # "sandboxed" (default) | "trusted" | "native"
+[plugin.permissions]                      # host capabilities (trusted/native only)
+process = ["kotlinc"]                     # programs `rpp.process.run` may launch
+environment = ["JAVA_HOME"]               # host variables visible to processes/components
+read = ["data"]                           # WASI read-only preopens (project-relative)
+write = ["generated"]                     # WASI writable preopens
+network = false                           # WASI sockets
+clocks = false                            # host clocks (Lua `os.clock/time/date`, WASI clocks)
+random = false                            # host randomness (Lua `math.random`, WASI random)
+stdio = false                             # inherit stdout/stderr in components
+lua = ["load"]                            # extra Lua libraries: io | os | load | debug | package
+[plugin.outputs]                          # named roots for generated non-pack files
+kotlin = "../server/src/main/kotlin/generated"
 ```
+
+Any granted capability other than `outputs` makes the plugin non-deterministic
+from RPP's point of view and disables cache replay for it.
 
 `source` grammar:
 - `path:<relative-or-absolute-dir>` — local plugin package directory.
@@ -253,7 +280,10 @@ return plugin
 - **ctx** (generators): everything above plus `ctx:files(glob?) -> {string}`,
   `ctx:source_files(glob?) -> {string}`,
   `ctx:read(path) -> string|nil` (processed output), `ctx:read_source(path) -> string|nil`,
-  `ctx:emit(path, contents)`, `ctx:remove(path)`.
+  `ctx:load_source(path) -> value` (evaluate a source Lua file in the plugin sandbox;
+  recorded like `read_source`), `ctx:emit(path, contents)` (add or overwrite),
+  `ctx:remove(path)`, `ctx:emit_output(root, path, contents)` (write into a declared
+  `[plugin.outputs]` root).
 - Raising a Lua `error()` fails the build with plugin/processor/file attribution.
 
 ### Builtin modules (preloaded, available via `require`)
@@ -268,6 +298,11 @@ return plugin
   `match(glob, p) -> bool`.
 - `rpp.log` — same functions as `ctx.log` (for module-level logging).
 - `rpp.str` — `starts_with`, `ends_with`, `split(s, sep)`, `trim(s)`.
+- `rpp.component` — `load(name) -> component` for components declared in `plugin.toml`;
+  `component:call(export, ...)`. See §5.
+- `rpp.process` — `run{ program, args?, env?, stdin?, cwd?, timeout? } -> { status,
+  stdout, stderr }`. Requires a `permissions.process` grant (or native mode) and is
+  only callable from generators and hooks.
 
 ### Module resolution & sandbox
 
@@ -283,8 +318,11 @@ return plugin
   no global `print` (map it to `rpp.log.info`). Trusted clock/random grants expose
   the restricted `os.clock`/`os.time`/`os.date` and `math.random` APIs respectively
   and disable cache replay for that plugin.
+- Trusted plugins may be granted extra libraries via `permissions.lua`. `load`,
+  `loadfile`, and `dofile` are bound to the plugin's `_ENV`, and `package` exposes only
+  search paths, so a grant never reaches the real global table or native loading.
 - Each plugin gets its own environment table (`_ENV`); plugins cannot see each other's
-  globals. Memory limit per Lua state (configurable, default 256 MB).
+  globals. Memory and per-call time limits per Lua state come from `[build.lua]`.
 
 ### Execution model
 
@@ -457,8 +495,7 @@ pub fn run_packsquash(binary: &str, pack_dir: &Path, zip_path: &Path, options_fi
   `.rpp/` gitignore, LuaLS definition files (`.rpp/api/*.lua`) for editor completion.
 - `rpp build [--no-cache] [--no-squash] [--jobs N]` — full pipeline:
   resolve plugins (lockfile-aware) → build (incremental) → squash → zip.
-  Pretty console output (indicatif/console): per-phase timing, cache hit counts,
-  squash savings.
+  Console output: per-phase timing, cache hit counts, squash savings.
 - `rpp dev` — watch + incremental rebuild + static file server + SSE (`/events`)
   live-reload events listing changed paths. Plugin file changes reload that plugin and
   invalidate accordingly; rpp.toml changes do a full reload.
@@ -476,13 +513,13 @@ pub fn run_packsquash(binary: &str, pack_dir: &Path, zip_path: &Path, options_fi
   by a checked-in script or tiny valid PNGs committed directly).
 - `examples/plugins/json-minify/` (processor), `examples/plugins/mcmeta-validate/`
   (generator that validates pack.mcmeta + all `*.mcmeta` against pack_format),
-  `examples/plugins/hash-rename/` (processor renaming via content hash, demonstrating
-  `file.path` mutation).
+  `examples/plugins/hash-rename/` (generator renaming processed output via content
+  hash), `examples/plugins/grayscale-wasm/` (processor backed by a
+  WASIp2 component built from a Rust guest crate; `just example-wasm`).
 - Integration tests in the workspace build `examples/pack` end-to-end and assert real
   outputs (minified JSON, zip contents, incremental no-op second build).
 
-Plugin projects can depend on the `rpp-cli` library in integration tests and use
-`rpp_cli::harness::BuildHarness`. The harness ignores user-global plugins, fixes the
-worker count, returns structured results/digests, and can verify two byte-identical
-cold builds followed by a no-op warm build. `build_no_cache` matches the CLI's
-cache-only reset while retaining durable external-output ownership.
+Plugin projects can depend on the `rpp-cli` library in integration tests:
+`rpp_cli::project::Project::discover_isolated` loads a project without user-global
+plugins, and `build_engine()` returns the engine whose `build()` reports structured
+results (counts plus written/removed paths, including external outputs).

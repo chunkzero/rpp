@@ -37,7 +37,7 @@ enum Command {
     /// Resolve plugins, build incrementally, then squash + zip.
     Build(BuildCli),
     /// Watch, rebuild, and serve with live reload.
-    Dev(DevCli),
+    Dev,
     /// Remove the build output and cache.
     Clean,
     /// Manage plugins (`add`/`remove`/`list`/`update`/`search`).
@@ -77,16 +77,6 @@ struct BuildCli {
     /// Worker thread count (0 / unset = available parallelism).
     #[arg(long)]
     jobs: Option<usize>,
-    /// Override a plugin option with a TOML value.
-    #[arg(long = "plugin-opt", value_name = "PLUGIN-ID.DOTTED.KEY=TOML")]
-    plugin_options: Vec<String>,
-}
-
-#[derive(Debug, Args)]
-struct DevCli {
-    /// Override a plugin option with a TOML value.
-    #[arg(long = "plugin-opt", value_name = "PLUGIN-ID.DOTTED.KEY=TOML")]
-    plugin_options: Vec<String>,
 }
 
 fn main() {
@@ -109,10 +99,9 @@ fn main() {
                 no_cache: args.no_cache,
                 no_squash: args.no_squash,
                 jobs: args.jobs,
-                plugin_options: args.plugin_options,
             },
         ),
-        Command::Dev(args) => commands::dev::run(&dir, args.plugin_options),
+        Command::Dev => commands::dev::run(&dir),
         Command::Clean => commands::clean::run(&dir),
         Command::Plugin(cmd) => commands::plugin::run(&dir, cmd),
         Command::Component(cmd) => commands::component::run(&dir, cmd),
