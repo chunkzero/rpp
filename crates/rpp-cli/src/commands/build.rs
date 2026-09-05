@@ -202,27 +202,24 @@ fn stage_release(
 
 /// Write a deterministic release zip through a sibling temporary file.
 fn write_release_zip(staging_dir: &Path, zip_path: &Path) -> Result<()> {
-    let parent = zip_path.parent().unwrap_or_else(|| Path::new("."));
-    let tmp = parent.join(format!(
-        ".{}.zip.tmp",
-        zip_path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("pack")
-    ));
+    let parent = zip_path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let tmp = tempfile::Builder::new()
+        .prefix(".rpp-release-")
+        .tempfile_in(parent)
+        .with_context(|| format!("staging zip in {}", parent.display()))?;
 
-    write_zip(staging_dir, &tmp, &ZipOptions::default())
+    write_zip(staging_dir, tmp.path(), &ZipOptions::default())
         .with_context(|| format!("writing zip {}", zip_path.display()))?;
-    replace_file(&tmp, zip_path)
-        .with_context(|| format!("moving zip into {}", zip_path.display()))?;
+    tmp.as_file()
+        .sync_all()
+        .with_context(|| format!("flushing zip {}", zip_path.display()))?;
+    tmp.persist(zip_path)
+        .map_err(|error| error.error)
+        .with_context(|| format!("replacing zip {}", zip_path.display()))?;
     Ok(())
-}
-
-fn replace_file(source: &Path, target: &Path) -> std::io::Result<()> {
-    if target.exists() {
-        std::fs::remove_file(target)?;
-    }
-    std::fs::rename(source, target)
 }
 
 fn png_level(setting: PngSetting) -> PngLevel {
@@ -230,5 +227,65 @@ fn png_level(setting: PngSetting) -> PngLevel {
         PngSetting::Off => PngLevel::Off,
         PngSetting::Fast => PngLevel::Fast,
         PngSetting::Max => PngLevel::Max,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn failed_zip_write_preserves_archive_and_cleans_staging() {
+        let dir = tempfile::tempdir().unwrap();
+        let input = tempfile::tempdir().unwrap();
+        std::fs::write(input.path().join("pack.mcmeta"), "{}").unwrap();
+        let path = dir.path().join("pack.zip");
+        write_release_zip(input.path(), &path).unwrap();
+        let previous = std::fs::read(&path).unwrap();
+
+        assert!(write_release_zip(&input.path().join("missing"), &path).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), previous);
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn failed_zip_persist_cleans_staging() {
+        let dir = tempfile::tempdir().unwrap();
+        let input = tempfile::tempdir().unwrap();
+        let path = dir.path().join("pack.zip");
+        std::fs::create_dir(&path).unwrap();
+        std::fs::write(path.join("keep"), "previous").unwrap();
+
+        assert!(write_release_zip(input.path(), &path).is_err());
+        assert_eq!(
+            std::fs::read_to_string(path.join("keep")).unwrap(),
+            "previous"
+        );
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn concurrent_zip_writes_use_independent_staging() {
+        let dir = tempfile::tempdir().unwrap();
+        let input = tempfile::tempdir().unwrap();
+        std::fs::write(input.path().join("pack.mcmeta"), "{}").unwrap();
+        let path = dir.path().join("pack.zip");
+        let fixed_temp = dir.path().join(".pack.zip.tmp");
+        std::fs::write(&fixed_temp, "unrelated").unwrap();
+        write_release_zip(input.path(), &path).unwrap();
+        let previous = std::fs::read(&path).unwrap();
+        let barrier = std::sync::Barrier::new(2);
+        std::thread::scope(|scope| {
+            let one = scope.spawn(|| {
+                barrier.wait();
+                write_release_zip(input.path(), &path).unwrap();
+            });
+            barrier.wait();
+            write_release_zip(input.path(), &path).unwrap();
+            one.join().unwrap();
+        });
+        assert_eq!(std::fs::read(&path).unwrap(), previous);
+        assert_eq!(std::fs::read_to_string(fixed_temp).unwrap(), "unrelated");
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 2);
     }
 }

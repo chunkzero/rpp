@@ -15,6 +15,7 @@
 //! Path sources are never locked. Entries are keyed by their canonical source
 //! string, requested ref, and subdir, and serialized in a stable (sorted) order so the file is diff-stable.
 
+use std::io::Write;
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
@@ -159,14 +160,29 @@ impl Lockfile {
         Ok(out)
     }
 
-    /// Write the lockfile to `path` with stable ordering and a trailing newline.
+    /// Atomically replace the lockfile with stable ordering and a trailing newline.
     ///
     /// # Errors
     ///
     /// Returns an I/O error if the file cannot be written.
     pub fn save(&self, path: &Path) -> Result<()> {
         let text = self.to_toml()?;
-        std::fs::write(path, text).map_err(|e| Error::io(format!("writing {}", path.display()), e))
+        let parent = path
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        let mut file = tempfile::Builder::new()
+            .prefix(".rpp-lock-")
+            .tempfile_in(parent)
+            .map_err(|e| Error::io(format!("staging {}", path.display()), e))?;
+        file.write_all(text.as_bytes())
+            .map_err(|e| Error::io(format!("writing {}", path.display()), e))?;
+        file.as_file()
+            .sync_all()
+            .map_err(|e| Error::io(format!("flushing {}", path.display()), e))?;
+        file.persist(path)
+            .map(|_| ())
+            .map_err(|e| Error::io(format!("replacing {}", path.display()), e.error))
     }
 
     /// Drop pins whose source, requested ref, and subdir no longer match any
@@ -367,6 +383,68 @@ mod tests {
         assert_eq!(loaded, lock);
         // Stable sorted order: `github:a/b` precedes `github:example/...`.
         assert_eq!(loaded.plugins()[0].source, "github:a/b");
+    }
+
+    #[test]
+    fn save_replaces_without_truncating_open_lockfile() {
+        use std::io::Read;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("rpp.lock");
+        let mut lock = Lockfile::new();
+        lock.upsert(pin("github:a/b", "main", "old", None));
+        lock.save(&path).unwrap();
+        let mut reader = std::fs::File::open(&path).unwrap();
+        let previous = lock.to_toml().unwrap();
+
+        lock.upsert(pin("github:a/b", "main", "new", None));
+        lock.save(&path).unwrap();
+        let mut old_text = String::new();
+        reader.read_to_string(&mut old_text).unwrap();
+        assert_eq!(old_text, previous);
+        assert_eq!(Lockfile::load(&path).unwrap(), lock);
+    }
+
+    #[test]
+    fn failed_save_cleans_staging_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("rpp.lock");
+        std::fs::create_dir(&target).unwrap();
+        let previous = target.join("previous.lock");
+        let mut lock = Lockfile::new();
+        lock.upsert(pin("github:a/b", "main", "old", None));
+        lock.save(&previous).unwrap();
+
+        assert!(Lockfile::new().save(&target).is_err());
+        assert_eq!(Lockfile::load(&previous).unwrap(), lock);
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn concurrent_saves_publish_complete_lockfiles() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("rpp.lock");
+        let mut first = Lockfile::new();
+        first.upsert(pin("github:a/b", "main", "first", None));
+        let mut second = first.clone();
+        second.upsert(pin("github:a/b", "main", "second", None));
+        let barrier = std::sync::Barrier::new(2);
+        std::thread::scope(|scope| {
+            let barrier = &barrier;
+            let first = &first;
+            let second = &second;
+            let path = &path;
+            let one = scope.spawn(move || {
+                barrier.wait();
+                first.save(path).unwrap();
+            });
+            barrier.wait();
+            second.save(path).unwrap();
+            one.join().unwrap();
+        });
+        let loaded = Lockfile::load(&path).unwrap();
+        assert!(loaded == first || loaded == second);
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
     }
 
     #[test]
