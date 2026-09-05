@@ -25,9 +25,11 @@ pub enum ComponentCommand {
 }
 
 /// Run a component subcommand.
-pub fn run(_dir: &Path, command: ComponentCommand) -> Result<()> {
+pub fn run(dir: &Path, command: ComponentCommand) -> Result<()> {
     match command {
-        ComponentCommand::Bindgen { wasm, name, out } => bindgen(&wasm, &name, &out),
+        ComponentCommand::Bindgen { wasm, name, out } => {
+            bindgen(&dir.join(wasm), &name, &dir.join(out))
+        }
     }
 }
 

@@ -40,7 +40,11 @@ async fn serve(project: Project) -> Result<()> {
 
     let _ = luals::write_if_stale(&project.root.join(".rpp").join("api"));
 
-    let session = Arc::new(tokio::sync::Mutex::new(DevSession::new(project)));
+    // Watch before the initial build so edits made during it are not lost;
+    // they queue in the channel until the rebuild loop starts.
+    let (fs_tx, fs_rx) = tokio::sync::mpsc::unbounded_channel();
+    let watcher = spawn_watcher(&root, &source_dir, &config_path, plugin_dirs, fs_tx)?;
+    let session = Arc::new(tokio::sync::Mutex::new(DevSession::new(project, watcher)));
     let (reload_tx, _) = broadcast::channel::<String>(64);
 
     {
@@ -52,9 +56,6 @@ async fn serve(project: Project) -> Result<()> {
         .await
         .context("join initial build")??;
     }
-
-    let (fs_tx, fs_rx) = tokio::sync::mpsc::unbounded_channel();
-    let _watcher = spawn_watcher(&root, &source_dir, &config_path, &plugin_dirs, fs_tx)?;
 
     {
         let session = Arc::clone(&session);

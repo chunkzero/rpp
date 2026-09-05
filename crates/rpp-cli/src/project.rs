@@ -302,8 +302,16 @@ impl Project {
             match shared_wasm {
                 Some(engine) => Some(engine.clone()),
                 None => {
-                    let engine = WasmEngine::with_cache_dir(self.root.join(".rpp/cache/wasmtime"))
-                        .map_err(|error| anyhow!("initializing the wasm engine: {error}"))?;
+                    let wasm = &self.config.build.wasm;
+                    let limits = rpp_wasm::Limits {
+                        deadline: std::time::Duration::from_secs(wasm.execution_deadline_seconds),
+                        memory_bytes: wasm.memory_limit_mb as usize * 1024 * 1024,
+                    };
+                    let engine = WasmEngine::with_limits_and_cache(
+                        limits,
+                        self.root.join(".rpp/cache/wasmtime"),
+                    )
+                    .map_err(|error| anyhow!("initializing the wasm engine: {error}"))?;
                     *shared_wasm = Some(engine.clone());
                     Some(engine)
                 }

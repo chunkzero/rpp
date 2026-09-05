@@ -2,6 +2,7 @@
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use crate::cache::{ObjectStore, ReadRecord};
 use crate::model::{GeneratorHost, ReadKind};
@@ -10,17 +11,39 @@ use crate::util::hash::xxh3;
 use crate::util::path::validate_relative;
 
 /// Stored output contents: in-memory bytes or a CAS object reference.
+///
+/// Bytes are shared so snapshotting the output set for a generator is cheap.
 #[derive(Clone, Debug)]
 pub(crate) enum OutputContent {
-    Bytes(Vec<u8>),
+    Bytes(Arc<Vec<u8>>),
+    /// A CAS object that must be materialized into the output directory.
     Object(u64),
+    /// A CAS object whose bytes already sit at the output path on disk.
+    Linked {
+        key: u64,
+        path: PathBuf,
+    },
 }
 
 impl OutputContent {
     pub(crate) fn load_bytes(&self, store: &ObjectStore) -> Option<Vec<u8>> {
         match self {
-            Self::Bytes(bytes) => Some(bytes.clone()),
+            Self::Bytes(bytes) => Some(bytes.as_ref().clone()),
             Self::Object(key) => store.get(*key),
+            Self::Linked { key, path } => std::fs::read(path)
+                .ok()
+                .filter(|bytes| xxh3(bytes) == *key)
+                .or_else(|| store.get(*key)),
+        }
+    }
+
+    /// xxh3 of the contents; CAS keys are content hashes, so object entries
+    /// need no read.
+    fn content_hash(&self, store: &ObjectStore) -> Option<u64> {
+        match self {
+            Self::Bytes(bytes) => Some(xxh3(bytes)),
+            Self::Object(key) => store.contains(*key).then_some(*key),
+            Self::Linked { key, .. } => Some(*key),
         }
     }
 }
@@ -37,7 +60,7 @@ pub(crate) struct OutputSet {
 pub(crate) enum RecordedMutation {
     Emit {
         path: String,
-        contents: Vec<u8>,
+        contents: Arc<Vec<u8>>,
     },
     EmitExternal {
         root: String,
@@ -122,7 +145,13 @@ impl<'a> RecordingHost<'a> {
 
 impl GeneratorHost for RecordingHost<'_> {
     fn list_files(&mut self, glob_pat: Option<&str>) -> Vec<String> {
-        let matched = matching_paths(self.read_view.files.keys(), glob_pat);
+        let matched = match matching_paths(self.read_view.files.keys(), glob_pat) {
+            Ok(matched) => matched,
+            Err(message) => {
+                self.errors.push(message);
+                Vec::new()
+            }
+        };
         let hash = hash_paths(&matched);
         self.record(ReadKind::List, glob_pat.unwrap_or("**").to_string(), hash);
 
@@ -130,7 +159,13 @@ impl GeneratorHost for RecordingHost<'_> {
     }
 
     fn list_source_files(&mut self, glob_pat: Option<&str>) -> Vec<String> {
-        let matched = matching_paths(self.source_files.iter(), glob_pat);
+        let matched = match matching_paths(self.source_files.iter(), glob_pat) {
+            Ok(matched) => matched,
+            Err(message) => {
+                self.errors.push(message);
+                Vec::new()
+            }
+        };
         let hash = hash_paths(&matched);
         self.record(
             ReadKind::SourceList,
@@ -162,22 +197,20 @@ impl GeneratorHost for RecordingHost<'_> {
     }
 
     fn emit(&mut self, path: &str, contents: Vec<u8>) {
-        match claim_output(self.output_owners, path, &self.plugin_id) {
-            Ok(()) => {}
-            Err(ClaimError::InvalidPath(message)) => {
-                self.errors
-                    .push(format!("invalid emit path `{path}`: {message}"));
-                return;
-            }
-            Err(ClaimError::Taken { previous }) => {
-                self.errors
-                    .push(format!("output `{path}` already claimed by `{previous}`"));
-                return;
-            }
+        // Generators overwrite: a later generator (or this one, emitting the
+        // same path twice) replaces processor output and earlier emits.
+        if let Err(message) = validate_relative(path) {
+            self.errors
+                .push(format!("invalid emit path `{path}`: {message}"));
+            return;
         }
-        self.output
-            .files
-            .insert(path.to_string(), OutputContent::Bytes(contents.clone()));
+        let contents = Arc::new(contents);
+        self.output_owners
+            .insert(path.to_string(), self.plugin_id.clone());
+        self.output.files.insert(
+            path.to_string(),
+            OutputContent::Bytes(Arc::clone(&contents)),
+        );
         self.mutations.push(RecordedMutation::Emit {
             path: path.to_string(),
             contents,
@@ -228,15 +261,18 @@ pub(crate) fn read_set_matches(
 ) -> bool {
     for record in reads {
         let current = match record.kind {
-            ReadKind::List => hash_paths(&matching_paths(output.files.keys(), Some(&record.key))),
-            ReadKind::SourceList => {
-                hash_paths(&matching_paths(source_files.iter(), Some(&record.key)))
-            }
+            ReadKind::List => match matching_paths(output.files.keys(), Some(&record.key)) {
+                Ok(matched) => hash_paths(&matched),
+                Err(_) => return false,
+            },
+            ReadKind::SourceList => match matching_paths(source_files.iter(), Some(&record.key)) {
+                Ok(matched) => hash_paths(&matched),
+                Err(_) => return false,
+            },
             ReadKind::File => output
                 .files
                 .get(&record.key)
-                .and_then(|content| content.load_bytes(store))
-                .map(|c| xxh3(&c))
+                .and_then(|content| content.content_hash(store))
                 .unwrap_or(0),
             ReadKind::Source => confined_read(source_root, &record.key)
                 .map(|c| xxh3(&c))
@@ -254,16 +290,17 @@ pub(crate) fn read_set_matches(
 fn matching_paths<'a>(
     paths: impl Iterator<Item = &'a String>,
     glob_pat: Option<&str>,
-) -> Vec<String> {
+) -> Result<Vec<String>, String> {
+    let pattern = match glob_pat {
+        None | Some("**") => None,
+        Some(glob_pat) => Some(glob::compile(glob_pat)?),
+    };
     let mut matched = paths
-        .filter(|path| match glob_pat {
-            None | Some("**") => true,
-            Some(glob_pat) => glob::matches(glob_pat, path),
-        })
+        .filter(|path| pattern.as_ref().is_none_or(|pattern| pattern.matches(path)))
         .cloned()
         .collect::<Vec<_>>();
     matched.sort();
-    matched
+    Ok(matched)
 }
 
 fn hash_paths<P: AsRef<str>>(paths: &[P]) -> u64 {

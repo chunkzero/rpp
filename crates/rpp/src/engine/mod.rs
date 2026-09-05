@@ -95,6 +95,7 @@ impl EngineBuilder {
             cache_dir,
             factories: Arc::new(self.factories),
             compiled,
+            pool: parking_lot::Mutex::new(None),
         })
     }
 }
@@ -139,6 +140,8 @@ pub struct Engine {
     cache_dir: PathBuf,
     factories: Arc<Vec<Arc<dyn PluginFactory>>>,
     compiled: Vec<CompiledProcessor>,
+    /// Worker threads reused across builds (see `file_phase`).
+    pub(crate) pool: parking_lot::Mutex<Option<worker::WorkerPool>>,
 }
 
 impl Engine {
@@ -233,9 +236,9 @@ impl Engine {
         let mut changes = finalize::sync_output(&self.config, &self.output, &output, &store)?;
         changes.external = external::sync(&self.project_root, &new_manifest, &store)?;
 
+        new_manifest.save(&manifest_path)?;
         let live = finalize::collect_live_objects(&new_manifest);
         store.gc(&live)?;
-        new_manifest.save(&manifest_path)?;
 
         Ok(BuildResult {
             processed: file_stats.processed,
@@ -299,6 +302,7 @@ impl Engine {
             if let Some(prev_entry) = replayable {
                 let materialized = materialize_generator_mutations(
                     store,
+                    &self.output,
                     &prev_entry.mutations,
                     output,
                     output_owners,

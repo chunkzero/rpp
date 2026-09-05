@@ -10,7 +10,7 @@ use crate::error::{Error, Result};
 use crate::lua::bootstrap::eval_entry;
 use crate::lua::ctx::PackInfo;
 use crate::lua::instance::{extract_builder, LuaPluginInstance};
-use crate::lua::runtime::RuntimeAccess;
+use crate::lua::runtime::{PhaseCell, RuntimeAccess};
 use crate::lua::sandbox::{DEFAULT_EXECUTION_LIMIT, DEFAULT_MEMORY_LIMIT};
 use crate::manifest::PluginManifest;
 use crate::model::{PluginFactory, PluginInstance, ProcessorDef};
@@ -157,8 +157,13 @@ impl LuaPluginFactory {
         self.shared.execution_limit
     }
 
+    /// The plugin's access policy with a fresh phase tracker. Phase is per
+    /// instance: sharing one cell between worker threads would let one
+    /// worker's processor call observe another's phase transitions.
     pub(crate) fn access(&self) -> RuntimeAccess {
-        self.shared.access.clone()
+        let mut access = self.shared.access.clone();
+        access.phase = PhaseCell::new();
+        access
     }
 }
 

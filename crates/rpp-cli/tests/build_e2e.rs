@@ -246,3 +246,213 @@ fn clean_rejects_output_outside_project() {
     assert!(!out.status.success());
     assert!(victim.join("keep.txt").exists());
 }
+
+fn copy_dir(from: &Path, to: &Path) {
+    std::fs::create_dir_all(to).unwrap();
+    for entry in std::fs::read_dir(from).unwrap() {
+        let entry = entry.unwrap();
+        let name = entry.file_name();
+        if name == "target" || name == ".rpp" || name == "dist" {
+            continue;
+        }
+        let target = to.join(&name);
+        if entry.file_type().unwrap().is_dir() {
+            copy_dir(&entry.path(), &target);
+        } else {
+            std::fs::copy(entry.path(), target).unwrap();
+        }
+    }
+}
+
+/// `examples/pack` builds through the CLI from its own `rpp.toml`, with the
+/// shared Lua plugins, the pack-local catalog plugin, and builtin squash.
+#[test]
+fn example_pack_builds_from_its_own_config() {
+    let dir = tempfile::tempdir().unwrap();
+    let examples = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples");
+    copy_dir(&examples.join("pack"), &dir.path().join("pack"));
+    for plugin in ["json-minify", "mcmeta-validate", "hash-rename"] {
+        copy_dir(
+            &examples.join("plugins").join(plugin),
+            &dir.path().join("plugins").join(plugin),
+        );
+    }
+    let root = dir.path().join("pack");
+
+    let out = run_build(&root, &["--jobs", "2"]);
+    assert!(
+        out.status.success(),
+        "first build failed:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    // Loose output: minified JSON, fingerprinted custom texture, rename map.
+    let model =
+        std::fs::read_to_string(root.join("dist/assets/minecraft/models/block/rpp_bricks.json"))
+            .unwrap();
+    assert!(
+        !model.contains('\n'),
+        "model JSON should be minified: {model}"
+    );
+    assert!(!root
+        .join("dist/assets/minecraft/textures/custom/gem.png")
+        .exists());
+    let map: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(root.join("dist/rename_map.json")).unwrap())
+            .unwrap();
+    let hashed = map["assets/minecraft/textures/custom/gem.png"]
+        .as_str()
+        .unwrap();
+    assert!(root.join("dist").join(hashed).is_file(), "{hashed} missing");
+    assert!(
+        !root.join("dist/notes/design.txt").exists(),
+        ".rppignore is honored"
+    );
+
+    let read_json = |path: &str| -> serde_json::Value {
+        serde_json::from_str(&std::fs::read_to_string(root.join(path)).unwrap()).unwrap()
+    };
+    let reference = format!(
+        "minecraft:{}",
+        hashed
+            .strip_prefix("assets/minecraft/textures/")
+            .unwrap()
+            .strip_suffix(".png")
+            .unwrap()
+    );
+    assert_eq!(
+        read_json("dist/assets/minecraft/models/item/magic_gem.json")["textures"]["layer0"],
+        reference
+    );
+    assert_eq!(
+        read_json("dist/assets/rpp/models/item/ember_gem.json")["textures"]["layer0"],
+        reference
+    );
+    assert_eq!(
+        read_json("dist/assets/rpp/lang/en_us.json")["item.rpp.ember_gem"],
+        "Ember Gem"
+    );
+    let catalog = read_json("generated/catalog/items.json");
+    assert_eq!(catalog["items"]["ember_gem"]["model"], "rpp:item/ember_gem");
+    assert_eq!(catalog["items"]["ember_gem"]["texture"], reference);
+    assert!(!root.join("dist/items/ember_gem.lua").exists());
+
+    // Release zip: deterministic, pack.mcmeta first, no stray archive inside.
+    let zip_path = root.join("dist/rpp-example-pack.zip");
+    let mut archive = zip::ZipArchive::new(std::fs::File::open(&zip_path).unwrap()).unwrap();
+    assert_eq!(archive.by_index(0).unwrap().name(), "pack.mcmeta");
+    assert!(archive.by_name("rpp-example-pack.zip").is_err());
+    assert!(archive.by_name("items/ember_gem.lua").is_err());
+    assert!(archive.by_name("generated/catalog/items.json").is_err());
+    assert!(archive
+        .by_name("assets/rpp/models/item/ember_gem.json")
+        .is_ok());
+    let first_bytes = std::fs::read(&zip_path).unwrap();
+
+    let out = run_build(&root, &["--jobs", "2"]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(out.status.success(), "{stdout}");
+    assert!(
+        stdout.contains("processed 0"),
+        "second build must be cached: {stdout}"
+    );
+    assert_eq!(
+        std::fs::read(&zip_path).unwrap(),
+        first_bytes,
+        "zip must be reproducible"
+    );
+    assert_eq!(read_json("generated/catalog/items.json"), catalog);
+
+    // A source rename invalidates the list dependency and removes stale assets.
+    std::fs::remove_file(root.join("src/items/ember_gem.lua")).unwrap();
+    std::fs::write(
+        root.join("src/items/frost_gem.lua"),
+        r#"return { name = "Frost Gem", texture = "minecraft:custom/gem" }"#,
+    )
+    .unwrap();
+    let out = run_build(&root, &["--jobs", "2"]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(!root
+        .join("dist/assets/rpp/models/item/ember_gem.json")
+        .exists());
+    assert!(root
+        .join("dist/assets/rpp/models/item/frost_gem.json")
+        .is_file());
+    let language = read_json("dist/assets/rpp/lang/en_us.json");
+    assert_eq!(language["item.rpp.frost_gem"], "Frost Gem");
+    assert!(language.get("item.rpp.ember_gem").is_none());
+    let updated = read_json("generated/catalog/items.json");
+    assert!(updated["items"].get("ember_gem").is_none());
+    assert_eq!(updated["items"]["frost_gem"]["model"], "rpp:item/frost_gem");
+}
+
+#[test]
+fn hash_rename_uses_processed_bytes() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let examples = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/plugins");
+    copy_dir(
+        &examples.join("hash-rename"),
+        &root.join("plugins/hash-rename"),
+    );
+    std::fs::create_dir_all(root.join("plugins/modify")).unwrap();
+    std::fs::write(
+        root.join("plugins/modify/plugin.toml"),
+        "[plugin]\nid = \"modify\"\nversion = \"1.0.0\"\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("plugins/modify/init.lua"),
+        r#"local rpp = require("rpp")
+local plugin = rpp.plugin()
+plugin:processor("modify", { files = { "**/*.png" }, priority = 5 }, function(ctx, file)
+    file.bytes = string.upper(file.bytes)
+end)
+return plugin
+"#,
+    )
+    .unwrap();
+    std::fs::create_dir_all(root.join("src/assets/test/textures/custom")).unwrap();
+    std::fs::write(root.join("src/assets/test/textures/custom/gem.png"), "raw").unwrap();
+    std::fs::write(
+        root.join("rpp.toml"),
+        r#"[pack]
+name = "processed-hash"
+
+[build.squash]
+enabled = false
+
+[[plugin]]
+source = "path:plugins/modify"
+
+[[plugin]]
+source = "path:plugins/hash-rename"
+[plugin.options]
+files = ["assets/*/textures/custom/**/*.png"]
+"#,
+    )
+    .unwrap();
+
+    let output = run_build(root, &[]);
+    assert!(
+        output.status.success(),
+        "build failed:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let map: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(root.join("dist/rename_map.json")).unwrap())
+            .unwrap();
+    let hashed = map["assets/test/textures/custom/gem.png"].as_str().unwrap();
+    assert_eq!(
+        std::fs::read(root.join("dist").join(hashed)).unwrap(),
+        b"RAW"
+    );
+    assert!(!root
+        .join("dist/assets/test/textures/custom/gem.png")
+        .exists());
+}

@@ -43,3 +43,8 @@ ci: fmt-check lint test
 clean:
     cargo clean
     rm -rf examples/pack/.rpp examples/pack/dist
+
+# Build the grayscale-wasm example component (needs `rustup target add wasm32-wasip2`)
+example-wasm:
+    cargo build --release --target wasm32-wasip2 --manifest-path examples/plugins/grayscale-wasm/guest/Cargo.toml
+    cp examples/plugins/grayscale-wasm/guest/target/wasm32-wasip2/release/grayscale_wasm_guest.wasm examples/plugins/grayscale-wasm/grayscale.wasm

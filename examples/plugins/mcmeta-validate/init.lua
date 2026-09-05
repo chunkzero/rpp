@@ -43,15 +43,14 @@ plugin:generator("validate", function(ctx)
     local pack_data = decode_or_fail(ctx, "pack.mcmeta", pack_text)
     add(rules.validate_pack(pack_data, ctx.pack.format))
 
-    -- 2. Every texture animation metadata file.
+    -- 2. Every texture animation metadata file, enumerated from the source
+    --    tree so renaming or dropping processors cannot hide a file from
+    --    validation.
     local animation_count = 0
-    for _, path in ipairs(ctx:files("**/*.png.mcmeta")) do
-        local text = ctx:read_source(path)
-        if text ~= nil then
-            local data = decode_or_fail(ctx, path, text)
-            add(rules.validate_animation(path, data))
-            animation_count = animation_count + 1
-        end
+    for _, path in ipairs(ctx:source_files("**/*.png.mcmeta")) do
+        local data = decode_or_fail(ctx, path, ctx:read_source(path))
+        add(rules.validate_animation(path, data))
+        animation_count = animation_count + 1
     end
 
     -- 3. Report. Any problem fails the build with all problems listed.

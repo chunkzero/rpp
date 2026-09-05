@@ -34,19 +34,14 @@ impl ObjectStore {
             .map(|existing| xxh3(&existing) == key)
             .unwrap_or(false);
         if !valid {
-            // Write to a temp file then rename for atomicity.
-            let tmp = path.with_extension("tmp");
-            std::fs::write(&tmp, contents).map_err(|e| Error::io(&tmp, e))?;
-            if path.exists() {
-                std::fs::remove_file(&path).map_err(|e| Error::io(&path, e))?;
-            }
-            std::fs::rename(&tmp, &path).map_err(|e| Error::io(&path, e))?;
+            crate::util::atomic::write(&path, contents).map_err(|e| Error::io(&path, e))?;
         }
         Ok(key)
     }
 
-    /// Path to a stored object, if present and valid.
-    pub(crate) fn object_path_for(&self, key: u64) -> Option<PathBuf> {
+    /// Path to a stored object, if present and valid. Reads and hashes the
+    /// object; a corrupt object is removed so it is rebuilt.
+    fn object_path_for(&self, key: u64) -> Option<PathBuf> {
         let path = self.object_path(key);
         let bytes = std::fs::read(&path).ok()?;
         if xxh3(&bytes) == key {
@@ -57,15 +52,21 @@ impl ObjectStore {
         }
     }
 
-    /// Whether a valid object exists for `key`.
+    /// Whether a valid object exists for `key` (reads the object).
     pub(crate) fn contains(&self, key: u64) -> bool {
         self.object_path_for(key).is_some()
     }
 
-    /// Read an object by key, or `None` if it is missing.
+    /// Read an object by key, or `None` if it is missing or corrupt.
     pub(crate) fn get(&self, key: u64) -> Option<Vec<u8>> {
-        let path = self.object_path_for(key)?;
-        std::fs::read(path).ok()
+        let path = self.object_path(key);
+        let bytes = std::fs::read(&path).ok()?;
+        if xxh3(&bytes) == key {
+            Some(bytes)
+        } else {
+            let _ = std::fs::remove_file(path);
+            None
+        }
     }
 
     /// Copy an object to a mutable external destination without hard-linking

@@ -10,6 +10,7 @@ use dialoguer::{theme::ColorfulTheme, Select};
 use rpp::config::PluginConfig;
 use rpp_fetch::{search, Lockfile, PluginSource, Resolver};
 
+use crate::atomic;
 use crate::project::{resolve_plugin_meta, validate_plugin_dir, Project};
 use crate::ui;
 use crate::user_plugins::{copy_plugin_dir, UserPlugins};
@@ -154,6 +155,7 @@ fn add_project(dir: &Path, source: &str, ref_: Option<&str>, subdir: Option<&str
             source: source.clone(),
             r#ref: ref_.map(str::to_string),
             subdir: subdir.map(str::to_string),
+            origin: None,
         },
     )?;
 
@@ -163,7 +165,7 @@ fn add_project(dir: &Path, source: &str, ref_: Option<&str>, subdir: Option<&str
         lock.record_resolved(&parsed, &resolved);
         lock.save(&lock_path)?;
     }
-    std::fs::write(&config_path, &updated)?;
+    atomic::write(&config_path, &updated)?;
 
     ui::success(format!("Added project plugin `{id}` v{version}"));
     Ok(())
@@ -183,7 +185,8 @@ fn add_global(dir: &Path, source: &str, ref_: Option<&str>, subdir: Option<&str>
         .with_context(|| format!("resolving plugin `{source}`"))?;
     let (id, version) = validate_plugin_dir(&resolved.root)?;
 
-    let installed_source = if matches!(parsed, PluginSource::Path { .. }) {
+    let is_directory = matches!(parsed, PluginSource::Path { .. });
+    let installed_source = if is_directory {
         format!("path:plugins/{id}")
     } else {
         source
@@ -195,18 +198,19 @@ fn add_global(dir: &Path, source: &str, ref_: Option<&str>, subdir: Option<&str>
             source: installed_source,
             r#ref: ref_.map(str::to_string),
             subdir: subdir.map(str::to_string),
+            origin: is_directory.then(|| resolved.root.display().to_string()),
         },
     )?;
 
     user.ensure_root()?;
-    if matches!(parsed, PluginSource::Path { .. }) {
+    if is_directory {
         copy_plugin_dir(&resolved.root, &user.plugin_dir(&id))?;
     }
     if resolved.pinned.is_some() {
         lock.record_resolved(&parsed, &resolved);
         lock.save(&user.lock_path())?;
     }
-    std::fs::write(user.manifest_path(), updated)?;
+    atomic::write(&user.manifest_path(), updated)?;
 
     ui::success(format!("Installed global plugin `{id}` v{version}"));
     Ok(())
@@ -266,7 +270,10 @@ fn remove(dir: &Path, id_or_source: &str, global: bool) -> Result<()> {
         .or(plugin.id.as_deref())
         .unwrap_or(id_or_source);
     let (updated, removed_source) = remove_plugin(&text, remove_key, &project.root)?;
-    std::fs::write(&config_path, &updated)?;
+    if updated == text {
+        return Err(anyhow!("no plugin matching `{id_or_source}` found"));
+    }
+    atomic::write(&config_path, &updated)?;
 
     if let Some(removed_source) = removed_source {
         if let Ok(parsed) = PluginSource::parse(
@@ -305,7 +312,7 @@ fn remove_global(id_or_source: &str) -> Result<()> {
     let (updated, removed_source) = remove_plugin(&text, source, &user.root)?;
     let removed_source = removed_source
         .ok_or_else(|| anyhow!("no global plugin matching `{id_or_source}` found"))?;
-    std::fs::write(user.manifest_path(), updated)?;
+    atomic::write(&user.manifest_path(), updated)?;
 
     if let Ok(parsed) = PluginSource::parse(
         &removed_source,
@@ -409,25 +416,81 @@ fn list_plugins(
 }
 
 fn update(dir: &Path, id_or_source: Option<&str>, global: bool) -> Result<()> {
-    if global {
+    let (changed, matched) = if global {
         let user = UserPlugins::load()?;
-        return update_plugins(&user.plugins, &user.root, &user.lock_path(), id_or_source);
+        let (mut changed, mut matched) =
+            update_plugins(&user.plugins, &user.root, &user.lock_path(), id_or_source)?;
+        let (copied, copied_matched) = refresh_copied_plugins(&user, id_or_source)?;
+        changed += copied;
+        matched |= copied_matched;
+        (changed, matched)
+    } else {
+        let project = Project::discover(dir)?;
+        update_plugins(
+            &project.config.plugins,
+            &project.root,
+            &project.lock_path(),
+            id_or_source,
+        )?
+    };
+
+    if let (Some(target), false) = (id_or_source, matched) {
+        return Err(anyhow!("no plugin matching `{target}` found"));
     }
-    let project = Project::discover(dir)?;
-    update_plugins(
-        &project.config.plugins,
-        &project.root,
-        &project.lock_path(),
-        id_or_source,
-    )
+    ui::success(format!(
+        "{changed} plugin{} updated",
+        if changed == 1 { "" } else { "s" }
+    ));
+    Ok(())
 }
 
+/// Re-copy directory-installed global plugins from their recorded `origin`.
+/// Returns `(refreshed, matched)`.
+fn refresh_copied_plugins(user: &UserPlugins, id_or_source: Option<&str>) -> Result<(usize, bool)> {
+    let mut refreshed = 0usize;
+    let mut matched = false;
+    for plugin in &user.plugins {
+        let Some(source) = plugin.source.as_deref() else {
+            continue;
+        };
+        let Some(origin) = user.origins.get(source) else {
+            continue;
+        };
+        let id = source
+            .strip_prefix("path:plugins/")
+            .ok_or_else(|| anyhow!("global plugin `{source}` has an unexpected install source"))?;
+        if id_or_source.is_some_and(|target| target != id && target != source) {
+            continue;
+        }
+        matched = true;
+        if !origin.is_dir() {
+            ui::warn(format!(
+                "global plugin `{id}`: origin {} no longer exists; skipped",
+                origin.display()
+            ));
+            continue;
+        }
+        let (origin_id, version) = validate_plugin_dir(origin)?;
+        if origin_id != id {
+            anyhow::bail!(
+                "global plugin `{id}`: origin {} now contains plugin `{origin_id}`",
+                origin.display()
+            );
+        }
+        copy_plugin_dir(origin, &user.plugin_dir(id))?;
+        ui::detail(format!("{id} <- {} (v{version})", origin.display()));
+        refreshed += 1;
+    }
+    Ok((refreshed, matched))
+}
+
+/// Re-resolve GitHub plugins and record new pins. Returns `(changed, matched)`.
 fn update_plugins(
     plugins: &[PluginConfig],
     resolver_root: &Path,
     lock_path: &Path,
     id_or_source: Option<&str>,
-) -> Result<()> {
+) -> Result<(usize, bool)> {
     let resolver = Resolver::new(resolver_root).context("initializing resolver")?;
     let mut lock = Lockfile::load(lock_path)?;
     let mut changed = 0usize;
@@ -473,17 +536,7 @@ fn update_plugins(
     if changed > 0 {
         lock.save(lock_path)?;
     }
-    if id_or_source.is_some() && !matched {
-        return Err(anyhow!(
-            "no plugin matching `{}` found",
-            id_or_source.unwrap_or_default()
-        ));
-    }
-    ui::success(format!(
-        "{changed} plugin{} updated",
-        if changed == 1 { "" } else { "s" }
-    ));
-    Ok(())
+    Ok((changed, matched))
 }
 
 fn find_plugin_in<'a>(
