@@ -168,7 +168,7 @@ public final class DevClient implements AutoCloseable {
                 report(FailureKind.BUILD, new IOException(event.path("message").asText("Build failed")));
                 return true;
             }
-            if (!type.equals("reload") || event.path("pack").isNull()) return true;
+            if ((!type.equals("reload") && !type.equals("pack")) || event.path("pack").isNull()) return true;
             JsonNode pack = event.get("pack");
             if (pack == null) return true; // Changed-path-only events remain supported.
             String hash = pack.path("sha1").asText();

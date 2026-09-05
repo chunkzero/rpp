@@ -505,18 +505,27 @@ pub fn run_packsquash(binary: &str, pack_dir: &Path, zip_path: &Path, options_fi
 
 ### Dev-server pack update protocol
 
-`GET /events` is an SSE stream with unnamed JSON data events and 15-second
-keepalive comments. On connection it immediately sends the latest successful pack
-snapshot. Successful rebuilds with changed pack outputs send reload events:
+`GET /events` is an SSE stream with JSON data and 15-second keepalive comments.
+Connection and broadcast-lag snapshots use the named SSE event `pack`:
+
+```text
+event: pack
+data: {"type":"pack","pack":{"url":"/packs/<sha1>.zip","sha1":"<40 lowercase hex characters>","size":1234}}
+```
+
+Successful rebuilds with changed pack outputs send unnamed reload events:
 
 ```json
 {"type":"reload","changed":["assets/minecraft/lang/en_us.json"],"pack":{"url":"/packs/<sha1>.zip","sha1":"<40 lowercase hex characters>","size":1234}}
 ```
 
-`changed` preserves the existing changed-path contract. The connection snapshot
-uses an empty array. `pack` describes the latest available archive when an event
-is consumed; queued notifications may be coalesced to that snapshot. Broadcast
-lag also yields the current snapshot, rather than silently losing the newest pack.
+`reload` always has a nonempty `changed` array preserving the changed-path contract.
+Snapshots have no `changed` field and use a named SSE event so browser
+`onmessage` handlers do not reload on connection. Browser pack consumers use
+`addEventListener("pack", ...)` as well as handling pack metadata on reloads.
+When present, `pack` describes the latest available archive when an event is
+consumed; queued pack metadata may be coalesced to that snapshot. Reloads without
+pack metadata retain that shape. Broadcast lag yields a pack snapshot.
 Clients deduplicate pack offers by SHA-1, including after reconnects. There is no
 event ID/replay history; disconnected clients catch up to the latest pack.
 
@@ -536,7 +545,9 @@ fallback; `/events` and `/packs/:file` are reserved.
 
 Failed rebuilds or archive creation leave the last successful archive available
 and send `{"type":"build_error","message":"..."}`, with no pack update.
-Unchanged successful rebuilds emit no event. Build errors are live notifications,
+Unchanged successful rebuilds emit no event unless archive publication recovers
+from a prior failure, in which case a named `pack` event announces the recovered
+archive without a reload. Build errors are live notifications,
 not persistent history, and startup failures terminate the CLI.
 
 The Java 21+ client in `integrations/jvm` connects to this protocol. It exposes

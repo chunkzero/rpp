@@ -39,28 +39,39 @@ async fn download(State(state): State<ServerState>, Path(file): Path<String>) ->
     }
 }
 
-/// The SSE endpoint: streams reload events to the connected client.
+fn pack_event(packs: &PackStore) -> Event {
+    Event::default()
+        .event("pack")
+        .data(serde_json::json!({"type": "pack", "pack": packs.metadata()}).to_string())
+}
+
+fn broadcast_event(data: String, packs: &PackStore) -> Event {
+    match serde_json::from_str::<serde_json::Value>(&data) {
+        Ok(mut payload) => {
+            if payload["type"] == "pack" {
+                return pack_event(packs);
+            }
+            if payload["type"] == "reload" && payload.get("pack").is_some() {
+                // Queued notifications may predate the connection snapshot.
+                payload["pack"] = packs.metadata();
+            }
+            Event::default().data(payload.to_string())
+        }
+        Err(_) => Event::default().data(data),
+    }
+}
+
+/// Stream changed-output notifications and named pack snapshots.
 pub async fn sse_handler(
     State(state): State<ServerState>,
 ) -> Sse<impl tokio_stream::Stream<Item = Result<Event, std::convert::Infallible>>> {
     let rx = state.reloads.subscribe();
-    let initial = tokio_stream::once(Ok(Event::default().data(
-        serde_json::json!({"type": "reload", "changed": [], "pack": state.packs.metadata()})
-            .to_string(),
-    )));
-    let stream = BroadcastStream::new(rx).filter_map(move |msg| match msg {
-        Ok(data) => {
-            let mut payload: serde_json::Value = serde_json::from_str(&data).unwrap();
-            if payload["type"] == "reload" {
-                // Queued notifications may predate the connection snapshot.
-                payload["pack"] = state.packs.metadata();
-            }
-            Some(Ok(Event::default().data(payload.to_string())))
-        }
-        Err(_) => Some(Ok(Event::default().data(
-            serde_json::json!({"type": "reload", "changed": [], "pack": state.packs.metadata()})
-                .to_string(),
-        ))),
+    let initial = tokio_stream::once(Ok(pack_event(&state.packs)));
+    let stream = BroadcastStream::new(rx).map(move |msg| {
+        Ok(match msg {
+            Ok(data) => broadcast_event(data, &state.packs),
+            Err(_) => pack_event(&state.packs),
+        })
     });
     Sse::new(initial.chain(stream)).keep_alive(KeepAlive::default())
 }
@@ -153,9 +164,16 @@ mod tests {
         let mut stream = response.into_body().into_data_stream();
         let bytes = stream.next().await.unwrap().unwrap();
         let text = std::str::from_utf8(&bytes).unwrap();
-        let event: serde_json::Value =
-            serde_json::from_str(text.trim().strip_prefix("data: ").unwrap()).unwrap();
+        let event: serde_json::Value = serde_json::from_str(
+            text.lines()
+                .find_map(|line| line.strip_prefix("data: "))
+                .unwrap(),
+        )
+        .unwrap();
         assert_eq!(event["pack"], metadata);
+        assert_eq!(event["type"], "pack");
+        assert!(event.get("changed").is_none());
+        assert!(text.lines().any(|line| line == "event: pack"));
 
         std::fs::write(source.path().join("pack.mcmeta"), "new pack").unwrap();
         packs.publish(source.path()).unwrap();
@@ -170,12 +188,35 @@ mod tests {
                 .unwrap();
         }
         // Capacity is two: recover from lag, then consume older queued notifications.
-        for _ in 0..3 {
+        for index in 0..3 {
             let bytes = stream.next().await.unwrap().unwrap();
             let text = std::str::from_utf8(&bytes).unwrap();
-            let event: serde_json::Value =
-                serde_json::from_str(text.trim().strip_prefix("data: ").unwrap()).unwrap();
+            let event: serde_json::Value = serde_json::from_str(
+                text.lines()
+                    .find_map(|line| line.strip_prefix("data: "))
+                    .unwrap(),
+            )
+            .unwrap();
             assert_eq!(event["pack"], packs.metadata());
+            assert_eq!(event["type"], if index == 0 { "pack" } else { "reload" });
+            assert_eq!(text.contains("event: pack"), index == 0);
+        }
+
+        for payload in [r#"{"type":"reload","changed":["other.json"]}"#, "not JSON"] {
+            reloads.send(payload.to_string()).unwrap();
+            let bytes = stream.next().await.unwrap().unwrap();
+            let text = std::str::from_utf8(&bytes).unwrap();
+            assert!(!text.contains("event: pack"));
+            let data = text
+                .lines()
+                .find_map(|line| line.strip_prefix("data: "))
+                .unwrap();
+            if let Ok(event) = serde_json::from_str::<serde_json::Value>(data) {
+                assert_eq!(event["type"], "reload");
+                assert!(event.get("pack").is_none());
+            } else {
+                assert_eq!(data, payload);
+            }
         }
     }
 }

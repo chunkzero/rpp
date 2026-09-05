@@ -25,6 +25,10 @@ class DevClientTest {
                 + ".zip\",\"size\":123}}\n\n";
     }
 
+    private static String snapshot(String hash) {
+        return "event: pack\n" + reload(hash).replace("\"reload\"", "\"pack\"");
+    }
+
     @Test
     void reconnects_deduplicates_and_reports_build_and_update_failures() throws Exception {
         var requests = new AtomicInteger();
@@ -45,10 +49,10 @@ class DevClientTest {
             exchange.sendResponseHeaders(200, 0);
             try (var output = exchange.getResponseBody()) {
                 String events = attempt == 2
-                        ? ": keepalive\n\n" + reload(A) + reload(A)
+                        ? ": keepalive\n\n" + snapshot(A) + reload(A)
                             + "data: {\"type\":\"build_error\",\"message\":\"bad Lua\"}\n\n"
                             + "data: {\"type\":\"reload\",\"changed\":[\"x\"]}\n\n" + reload(B)
-                        : reload(B);
+                        : snapshot(B);
                 output.write(events.getBytes(StandardCharsets.UTF_8));
                 output.flush();
                 if (attempt >= 3) {

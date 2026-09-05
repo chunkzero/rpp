@@ -157,7 +157,9 @@ This is caller code to embed in an existing plugin, not a bundled Spigot plugin.
 
 ## Protocol and checks
 
-The wire contract is defined in [SPEC §9](../../docs/SPEC.md#9-cli-cratesrpp-cli-binary-name-rpp).
+The wire contract is defined in the dev-server protocol section of [SPEC](../../docs/SPEC.md).
+Connection and lag snapshots use named `pack` SSE events; `reload` is reserved
+for changed outputs. The JVM client accepts pack metadata from both.
 Only the latest ZIP is retained, in memory. Superseded URLs return 404, never new
 bytes under an old hash. Rapid rebuilds can overtake a player's download; adapters
 should log the resulting player status and offer the newest pack. Dev archives are

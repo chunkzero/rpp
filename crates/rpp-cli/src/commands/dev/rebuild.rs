@@ -65,7 +65,7 @@ impl DevSession {
     }
 
     /// Perform one rebuild for a change batch. Returns the SSE payload when
-    /// output files changed, or `None` to suppress a reload event.
+    /// output files changed or archive publication recovered, otherwise `None`.
     pub fn rebuild_once(&mut self, batch: &ChangeBatch) -> Result<Option<String>> {
         let started = std::time::Instant::now();
 
@@ -122,11 +122,17 @@ impl DevSession {
             if changed.len() == 1 { "" } else { "s" }
         ));
 
+        // Retry publication even on no-op builds: a previous archive failure may
+        // have left the engine cache ahead of the last published pack.
         let updated = self.packs.publish(&self.project.output_dir())?;
         if changed.is_empty() && !updated {
             return Ok(None);
         }
-        let mut payload = serde_json::json!({ "type": "reload", "changed": changed });
+        let mut payload = if changed.is_empty() {
+            serde_json::json!({ "type": "pack" })
+        } else {
+            serde_json::json!({ "type": "reload", "changed": changed })
+        };
         if updated {
             payload["pack"] = self.packs.metadata();
         }
@@ -208,6 +214,17 @@ mod tests {
         assert_eq!(event["pack"], packs.metadata());
         assert_ne!(event["pack"], original);
 
+        std::fs::write(&file, "{\"recovered\":true}").unwrap();
+        session.engine.as_ref().unwrap().build().unwrap();
+        let recovered = session
+            .rebuild_once(&ChangeBatch::default())
+            .unwrap()
+            .unwrap();
+        let recovered: serde_json::Value = serde_json::from_str(&recovered).unwrap();
+        assert_eq!(recovered["type"], "pack");
+        assert!(recovered.get("changed").is_none());
+        assert_eq!(recovered["pack"], packs.metadata());
+
         std::fs::write(&config, "invalid toml").unwrap();
         assert!(session
             .rebuild_once(&ChangeBatch {
@@ -215,6 +232,6 @@ mod tests {
                 ..Default::default()
             })
             .is_err());
-        assert_eq!(packs.metadata(), event["pack"]);
+        assert_eq!(packs.metadata(), recovered["pack"]);
     }
 }
