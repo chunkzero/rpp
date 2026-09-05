@@ -1,6 +1,6 @@
 //! Shared entry-script evaluation used at validation load and instantiation.
 
-use std::path::Path;
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -22,7 +22,7 @@ pub(crate) struct EntryEval {
 /// Evaluate a plugin entry script in a fresh Lua state.
 pub(crate) fn eval_entry(
     plugin_id: &str,
-    root: &Path,
+    modules: Arc<BTreeMap<String, Vec<u8>>>,
     entry_name: &str,
     entry_source: &str,
     memory_limit: usize,
@@ -43,7 +43,7 @@ pub(crate) fn eval_entry(
     let sandbox = Sandbox::new(
         &lua,
         plugin_id,
-        root,
+        modules,
         access,
         Arc::clone(&deadline),
         memory_limit,

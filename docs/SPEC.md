@@ -329,7 +329,11 @@ Other builtin modules:
 
 - `require(name)`: builtin `rpp*` modules; otherwise resolved **within the plugin
   package directory** (`name.lua` or `name/init.lua`, dots map to `/`). Nothing else.
-  No C modules, no `package.cpath`.
+  No C modules, no `package.cpath`. Entry and module sources are captured once at
+  factory load; validation and all instances execute those same immutable bytes.
+  Reload the factory to pick up package edits. Confined file symlinks are captured
+  under their module paths, including targets with non-Lua extensions. Escaping
+  symlinks and directory symlinks are rejected during package capture.
 - Available stdlib: `string`, `table`, deterministic `math` (without
   `random`/`randomseed`), `utf8`, `select`, `pairs`, `ipairs`,
   `next`, `tonumber`, `tostring`, `type`, `pcall`, `xpcall`, `error`, `assert`,
@@ -355,9 +359,10 @@ Other builtin modules:
   extracted at load time on the main thread (a validation load), then re-instantiated
   per worker via `PluginFactory::instantiate`.
 - Generators and lifecycle hooks run on a single dedicated instance (main thread).
-- `cache_key` for a Lua plugin: xxh3 over all `*.lua` files in the package (sorted by
-  path) + `plugin.toml` + every declared component binary + canonicalized options and
-  host-access/output-root policy.
+- `cache_key` for a Lua plugin: xxh3 over the captured `*.lua` module sources (sorted
+  by package path), the captured entry regardless of its extension, `plugin.toml`,
+  every declared component binary, canonicalized options, and host-access/output-root
+  policy. Package capture assumes files are not concurrently replaced while loading.
 
 ## 5. WASM component system (`crates/rpp-wasm`)
 

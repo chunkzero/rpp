@@ -50,7 +50,7 @@ impl LuaPluginInstance {
         let access = factory.access();
         let eval = eval_entry(
             &plugin_id,
-            factory.root(),
+            factory.modules(),
             entry_name,
             entry_source,
             factory.memory_limit(),
