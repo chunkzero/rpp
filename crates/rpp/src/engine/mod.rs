@@ -212,7 +212,6 @@ impl Engine {
             files: BTreeMap::new(),
         };
         let mut source_owners = BTreeMap::<String, String>::new();
-        let mut output_owners = BTreeMap::<String, String>::new();
 
         let file_stats = file_phase::process_files(file_phase::FilePhaseCtx {
             engine: self,
@@ -226,16 +225,9 @@ impl Engine {
             factories: &self.factories,
         })?;
 
-        for (path, owner) in &source_owners {
-            output_owners
-                .entry(path.clone())
-                .or_insert_with(|| owner.clone());
-        }
-
         let generated = self.run_generators(GeneratorPhaseCtx {
             instances: &mut main_instances,
             output: &mut output,
-            output_owners: &mut output_owners,
             new_manifest: &mut new_manifest,
             store: &store,
             prev: prev.as_ref(),
@@ -296,7 +288,6 @@ impl Engine {
         let GeneratorPhaseCtx {
             instances,
             output,
-            output_owners,
             new_manifest,
             store,
             prev,
@@ -330,8 +321,6 @@ impl Engine {
                     &self.output,
                     &prev_entry.mutations,
                     output,
-                    output_owners,
-                    &plugin_id,
                 )?;
                 if materialized {
                     new_manifest
@@ -346,8 +335,6 @@ impl Engine {
                 self.source.clone(),
                 source_files.to_vec(),
                 store,
-                &plugin_id,
-                output_owners,
                 factory.output_roots(),
             );
             instances[index].generate(&mut host)?;
@@ -364,8 +351,7 @@ impl Engine {
             let mut mutations = Vec::with_capacity(recorded.len());
             for mutation in recorded {
                 match mutation {
-                    RecordedMutation::Emit { path, contents } => {
-                        let object = store.put(&contents)?;
+                    RecordedMutation::Emit { path, object } => {
                         mutations.push(GeneratorMutation::Emit(crate::cache::OutputRef {
                             path,
                             object,
@@ -403,7 +389,6 @@ impl Engine {
 struct GeneratorPhaseCtx<'a> {
     instances: &'a mut [Box<dyn crate::model::PluginInstance>],
     output: &'a mut OutputSet,
-    output_owners: &'a mut BTreeMap<String, String>,
     new_manifest: &'a mut Manifest,
     store: &'a ObjectStore,
     prev: Option<&'a Manifest>,

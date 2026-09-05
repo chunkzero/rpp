@@ -3,7 +3,7 @@
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 
-use crossbeam_channel::{unbounded, Receiver, Sender};
+use crossbeam_channel::{bounded, Receiver, Sender};
 
 use crate::engine::keys::ChainStep;
 use crate::error::{Error, Result};
@@ -44,8 +44,8 @@ impl WorkerPool {
     /// If any worker fails to instantiate, that error surfaces on the result
     /// channel as the first job is awaited.
     pub(crate) fn new(count: usize, factories: Arc<Vec<Arc<dyn PluginFactory>>>) -> Self {
-        let (job_tx, job_rx) = unbounded::<Job>();
-        let (result_tx, result_rx) = unbounded::<JobResult>();
+        let (job_tx, job_rx) = bounded::<Job>(count);
+        let (result_tx, result_rx) = bounded::<JobResult>(count);
         let job_rx = Arc::new(job_rx);
 
         let mut workers = Vec::with_capacity(count);
@@ -83,6 +83,8 @@ impl WorkerPool {
 impl Drop for WorkerPool {
     fn drop(&mut self) {
         self.job_tx = None;
+        // Drain bounded results before joining, including on a failed build.
+        while self.result_rx.recv().is_ok() {}
         for worker in self.workers.drain(..) {
             let _ = worker.join();
         }
@@ -142,4 +144,25 @@ fn run_chain(instances: &mut [Box<dyn PluginInstance>], job: Job) -> JobResult {
     }
 
     Ok(JobOutcome::Produced { rel, file })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dropping_pool_drains_full_result_channel() {
+        let pool = WorkerPool::new(1, Arc::new(Vec::new()));
+        for index in 0..3 {
+            let rel = format!("{index}.txt");
+            pool.submit(Job {
+                file: PackFile::new(rel.clone(), vec![b'x']),
+                rel,
+                chain: Arc::new(Vec::new()),
+            })
+            .unwrap();
+        }
+        // Shutdown must unblock workers even when the caller never receives.
+        drop(pool);
+    }
 }

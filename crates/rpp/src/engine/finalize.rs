@@ -63,10 +63,6 @@ pub(crate) fn sync_output(
         }
 
         let needs_write = match content {
-            OutputContent::Bytes(bytes) => match std::fs::read(&path) {
-                Ok(existing) => existing != **bytes,
-                Err(_) => true,
-            },
             OutputContent::Object(key) => match std::fs::read(&path) {
                 Ok(existing) => crate::util::hash::xxh3(&existing) != *key,
                 Err(_) => true,
@@ -77,13 +73,6 @@ pub(crate) fn sync_output(
 
         if needs_write {
             match content {
-                OutputContent::Bytes(bytes) => {
-                    if let Some(parent) = path.parent() {
-                        std::fs::create_dir_all(parent).map_err(|e| Error::io(parent, e))?;
-                    }
-                    crate::util::atomic::write(&path, bytes.as_slice())
-                        .map_err(|e| Error::io(&path, e))?;
-                }
                 OutputContent::Object(key) | OutputContent::Linked { key, .. } => {
                     store.copy_object(*key, &path)?;
                 }

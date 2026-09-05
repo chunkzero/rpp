@@ -3,7 +3,6 @@
 use std::fmt;
 use std::fs;
 use std::path::Path;
-use std::sync::Mutex;
 
 use globset::{Glob, GlobSetBuilder};
 use rayon::prelude::*;
@@ -147,31 +146,15 @@ pub fn squash_dir(dir: &Path, opts: &SquashOptions) -> Result<SquashReport> {
     }
     report.files_stripped = to_strip.len();
 
-    // Optimize remaining files in parallel.
-    let results: Mutex<Vec<FileResult>> = Mutex::new(Vec::with_capacity(to_optimize.len()));
-    let first_error: Mutex<Option<Error>> = Mutex::new(None);
-
-    to_optimize
+    // Indexed collection preserves path order for both errors and reports.
+    to_optimize.sort_by(|a, b| a.1.cmp(&b.1));
+    let results: Vec<Result<FileResult>> = to_optimize
         .par_iter()
-        .for_each(|(abs, rel)| match optimize_one(abs, rel, opts) {
-            Ok(result) => results.lock().expect("results mutex poisoned").push(result),
-            Err(err) => {
-                let mut slot = first_error.lock().expect("error mutex poisoned");
-                if slot.is_none() {
-                    *slot = Some(err);
-                }
-            }
-        });
-
-    if let Some(err) = first_error.into_inner().expect("error mutex poisoned") {
-        return Err(err);
-    }
-
-    // Aggregate deterministically: sort by path so the report is stable.
-    let mut results = results.into_inner().expect("results mutex poisoned");
-    results.sort_by(|a, b| a.path.cmp(&b.path));
+        .map(|(abs, rel)| optimize_one(abs, rel, opts))
+        .collect();
 
     for result in results {
+        let result = result?;
         report.warnings.extend(result.warnings);
         if let Some(detail) = result.detail {
             report.files_optimized += 1;
@@ -186,7 +169,6 @@ pub fn squash_dir(dir: &Path, opts: &SquashOptions) -> Result<SquashReport> {
 
 /// Outcome of optimizing one file.
 struct FileResult {
-    path: String,
     detail: Option<FileDetail>,
     warnings: Vec<String>,
 }
@@ -212,11 +194,7 @@ fn optimize_one(abs: &Path, rel: &str, opts: &SquashOptions) -> Result<FileResul
         None => None,
     };
 
-    Ok(FileResult {
-        path: rel.to_string(),
-        detail,
-        warnings,
-    })
+    Ok(FileResult { detail, warnings })
 }
 
 /// Build a [`globset::GlobSet`] from the configured patterns.

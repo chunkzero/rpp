@@ -2,7 +2,6 @@
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
-use std::sync::Arc;
 
 use crate::cache::{ObjectStore, ReadRecord};
 use crate::model::{GeneratorHost, ReadKind};
@@ -10,25 +9,18 @@ use crate::util::glob;
 use crate::util::hash::xxh3;
 use crate::util::path::validate_relative;
 
-/// Stored output contents: in-memory bytes or a CAS object reference.
-///
-/// Bytes are shared so snapshotting the output set for a generator is cheap.
+/// Stored output contents: immutable CAS references or verified output paths.
 #[derive(Clone, Debug)]
 pub(crate) enum OutputContent {
-    Bytes(Arc<Vec<u8>>),
     /// A CAS object that must be materialized into the output directory.
     Object(u64),
     /// A CAS object whose bytes already sit at the output path on disk.
-    Linked {
-        key: u64,
-        path: PathBuf,
-    },
+    Linked { key: u64, path: PathBuf },
 }
 
 impl OutputContent {
     pub(crate) fn load_bytes(&self, store: &ObjectStore) -> Option<Vec<u8>> {
         match self {
-            Self::Bytes(bytes) => Some(bytes.as_ref().clone()),
             Self::Object(key) => store.get(*key),
             Self::Linked { key, path } => std::fs::read(path)
                 .ok()
@@ -41,7 +33,6 @@ impl OutputContent {
     /// need no read.
     fn content_hash(&self, store: &ObjectStore) -> Option<u64> {
         match self {
-            Self::Bytes(bytes) => Some(xxh3(bytes)),
             Self::Object(key) => store.contains(*key).then_some(*key),
             Self::Linked { key, .. } => Some(*key),
         }
@@ -60,7 +51,7 @@ pub(crate) struct OutputSet {
 pub(crate) enum RecordedMutation {
     Emit {
         path: String,
-        contents: Arc<Vec<u8>>,
+        object: u64,
     },
     EmitExternal {
         root: String,
@@ -99,8 +90,6 @@ pub(crate) struct RecordingHost<'a> {
     source_root: PathBuf,
     source_files: Vec<String>,
     store: &'a ObjectStore,
-    plugin_id: String,
-    output_owners: &'a mut BTreeMap<String, String>,
     external_roots: BTreeMap<String, PathBuf>,
     reads: Vec<ReadRecord>,
     pub(crate) mutations: Vec<RecordedMutation>,
@@ -114,8 +103,6 @@ impl<'a> RecordingHost<'a> {
         source_root: PathBuf,
         source_files: Vec<String>,
         store: &'a ObjectStore,
-        plugin_id: impl Into<String>,
-        output_owners: &'a mut BTreeMap<String, String>,
         external_roots: BTreeMap<String, PathBuf>,
     ) -> Self {
         Self {
@@ -124,8 +111,6 @@ impl<'a> RecordingHost<'a> {
             source_root,
             source_files,
             store,
-            plugin_id: plugin_id.into(),
-            output_owners,
             external_roots,
             reads: Vec::new(),
             mutations: Vec::new(),
@@ -204,16 +189,20 @@ impl GeneratorHost for RecordingHost<'_> {
                 .push(format!("invalid emit path `{path}`: {message}"));
             return;
         }
-        let contents = Arc::new(contents);
-        self.output_owners
-            .insert(path.to_string(), self.plugin_id.clone());
-        self.output.files.insert(
-            path.to_string(),
-            OutputContent::Bytes(Arc::clone(&contents)),
-        );
+        let object = match self.store.put(&contents) {
+            Ok(object) => object,
+            Err(error) => {
+                self.errors
+                    .push(format!("cannot store emit `{path}`: {error}"));
+                return;
+            }
+        };
+        self.output
+            .files
+            .insert(path.to_string(), OutputContent::Object(object));
         self.mutations.push(RecordedMutation::Emit {
             path: path.to_string(),
-            contents,
+            object,
         });
     }
 
@@ -223,7 +212,6 @@ impl GeneratorHost for RecordingHost<'_> {
                 .push(format!("invalid remove path `{path}`: {message}"));
             return;
         }
-        self.output_owners.remove(path);
         self.output.files.remove(path);
         self.mutations
             .push(RecordedMutation::Remove(path.to_string()));

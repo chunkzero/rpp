@@ -8,7 +8,7 @@ use crate::error::{Error, Result};
 
 use super::cache_replay::materialize_file_entry;
 use super::discovery::SourceFile;
-use super::keys::{chain_for, chain_key, ChainStep, CompiledProcessor};
+use super::keys::{chain_for, chain_key, CompiledProcessor};
 use super::worker::{Job, JobOutcome, WorkerPool};
 use super::Engine;
 
@@ -45,15 +45,13 @@ pub(crate) fn process_files(ctx: FilePhaseCtx<'_>) -> Result<FilePhaseStats> {
     let mut processed = 0usize;
     let mut cached = 0usize;
     let mut dropped = 0usize;
-    // Dirty files carry their fingerprint and contents when the clean check
-    // already had to read them, so they are hashed at most once.
-    type Dirty = (
-        SourceFile,
-        Arc<Vec<ChainStep>>,
-        u64,
-        Option<(Fingerprint, Vec<u8>)>,
-    );
-    let mut dirty: Vec<Dirty> = Vec::new();
+    // At most one job per worker is outstanding. Receive and publish before
+    // reading another source, including bytes read during cache validation.
+    let limit = engine.worker_count();
+    let mut pool_slot = engine.pool.lock();
+    let mut pool = pool_slot.take();
+    let mut pending = BTreeMap::new();
+    let mut completed = BTreeMap::new();
 
     for src in sources {
         let chain = chain_for(compiled, &src.rel);
@@ -93,95 +91,42 @@ pub(crate) fn process_files(ctx: FilePhaseCtx<'_>) -> Result<FilePhaseStats> {
             }
         }
 
-        dirty.push((src, Arc::new(chain), ck, read));
-    }
-
-    if !dirty.is_empty() {
-        // Workers (and their Lua states) persist across builds of one engine;
-        // a failed build discards them so no broken worker is reused.
-        let mut pool_slot = engine.pool.lock();
-        let pool = pool_slot
-            .take()
-            .unwrap_or_else(|| WorkerPool::new(engine.worker_count(), Arc::clone(factories)));
-        let mut pending: BTreeMap<String, (u64, Fingerprint)> = BTreeMap::new();
-        let mut submitted = 0usize;
-
-        for (src, chain, ck, read) in dirty {
-            let (fp, contents) = match read {
-                Some(read) => read,
-                None => src.fingerprint()?,
-            };
-            pending.insert(src.rel.clone(), (ck, fp));
-            pool.submit(Job {
-                rel: src.rel.clone(),
-                file: crate::model::PackFile::new(src.rel.clone(), contents),
-                chain,
-            })?;
-            submitted += 1;
-        }
-
-        let mut outcomes = Vec::with_capacity(submitted);
-        for _ in 0..submitted {
-            let outcome = match pool.recv() {
-                Some(Ok(outcome)) => outcome,
-                Some(Err(error)) => {
-                    return Err(error);
-                }
-                None => {
-                    return Err(Error::Build("worker pool closed early".into()));
-                }
-            };
-            outcomes.push(outcome);
-        }
-        *pool_slot = Some(pool);
-        drop(pool_slot);
-        outcomes.sort_by(|a, b| outcome_rel(a).cmp(outcome_rel(b)));
-
-        for outcome in outcomes {
-            match outcome {
-                JobOutcome::Produced { rel, file } => {
-                    let (ck, fp) = pending
-                        .get(&rel)
-                        .cloned()
-                        .ok_or_else(|| Error::Build(format!("unknown result for {rel}")))?;
-                    let object = store.put(&file.contents)?;
-                    super::cache_replay::claim_source_output(source_owners, &file.path, &rel)?;
-                    output.files.insert(
-                        file.path.clone(),
-                        super::generator::OutputContent::Bytes(Arc::new(file.contents)),
-                    );
-                    new_manifest.files.insert(
-                        rel,
-                        FileEntry {
-                            fingerprint: fp,
-                            chain_key: ck,
-                            outputs: vec![OutputRef {
-                                path: file.path,
-                                object,
-                            }],
-                        },
-                    );
-                    processed += 1;
-                }
-                JobOutcome::Dropped { rel } => {
-                    let (ck, fp) = pending
-                        .get(&rel)
-                        .cloned()
-                        .ok_or_else(|| Error::Build(format!("unknown result for {rel}")))?;
-                    new_manifest.files.insert(
-                        rel,
-                        FileEntry {
-                            fingerprint: fp,
-                            chain_key: ck,
-                            outputs: Vec::new(),
-                        },
-                    );
-                    processed += 1;
-                    dropped += 1;
-                }
-            }
+        let pool = pool.get_or_insert_with(|| WorkerPool::new(limit, Arc::clone(factories)));
+        let (fp, contents) = match read {
+            Some(read) => read,
+            None => src.fingerprint()?,
+        };
+        pending.insert(src.rel.clone(), (ck, fp));
+        pool.submit(Job {
+            rel: src.rel.clone(),
+            file: crate::model::PackFile::new(src.rel, contents),
+            chain: Arc::new(chain),
+        })?;
+        if pending.len() == limit {
+            collect_result(pool, store, &mut pending, &mut completed)?;
         }
     }
+
+    if let Some(pool) = pool.as_ref() {
+        while !pending.is_empty() {
+            collect_result(pool, store, &mut pending, &mut completed)?;
+        }
+    }
+    // Cache hits have claimed their paths first; dirty results claim in source
+    // order, independent of worker completion order.
+    for (rel, entry) in completed {
+        for out in &entry.outputs {
+            super::cache_replay::claim_source_output(source_owners, &out.path, &rel)?;
+            output.files.insert(
+                out.path.clone(),
+                super::generator::OutputContent::Object(out.object),
+            );
+        }
+        processed += 1;
+        dropped += usize::from(entry.outputs.is_empty());
+        new_manifest.files.insert(rel, entry);
+    }
+    *pool_slot = pool;
 
     Ok(FilePhaseStats {
         processed,
@@ -190,10 +135,40 @@ pub(crate) fn process_files(ctx: FilePhaseCtx<'_>) -> Result<FilePhaseStats> {
     })
 }
 
-fn outcome_rel(outcome: &JobOutcome) -> &str {
-    match outcome {
-        JobOutcome::Produced { rel, .. } | JobOutcome::Dropped { rel } => rel,
-    }
+fn collect_result(
+    pool: &WorkerPool,
+    store: &ObjectStore,
+    pending: &mut BTreeMap<String, (u64, Fingerprint)>,
+    completed: &mut BTreeMap<String, FileEntry>,
+) -> Result<()> {
+    let outcome = pool
+        .recv()
+        .ok_or_else(|| Error::Build("worker pool closed early".into()))??;
+    let (rel, outputs) = match outcome {
+        JobOutcome::Produced { rel, file } => {
+            let object = store.put(&file.contents)?;
+            (
+                rel,
+                vec![OutputRef {
+                    path: file.path,
+                    object,
+                }],
+            )
+        }
+        JobOutcome::Dropped { rel } => (rel, Vec::new()),
+    };
+    let (chain_key, fingerprint) = pending
+        .remove(&rel)
+        .ok_or_else(|| Error::Build(format!("unknown result for {rel}")))?;
+    completed.insert(
+        rel,
+        FileEntry {
+            fingerprint,
+            chain_key,
+            outputs,
+        },
+    );
+    Ok(())
 }
 
 #[cfg(test)]

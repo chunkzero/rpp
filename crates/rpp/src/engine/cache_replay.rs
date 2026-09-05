@@ -67,8 +67,6 @@ pub(crate) fn materialize_generator_mutations(
     output_dir: &Path,
     mutations: &[GeneratorMutation],
     output: &mut OutputSet,
-    output_owners: &mut BTreeMap<String, String>,
-    plugin_id: &str,
 ) -> Result<bool> {
     let mut emits = BTreeMap::new();
     for mutation in mutations {
@@ -92,7 +90,6 @@ pub(crate) fn materialize_generator_mutations(
         match mutation {
             GeneratorMutation::Emit(out) => {
                 crate::util::path::validate_relative(&out.path).map_err(Error::Build)?;
-                output_owners.insert(out.path.clone(), plugin_id.to_string());
                 let content = emits
                     .get(&out.path)
                     .cloned()
@@ -100,7 +97,6 @@ pub(crate) fn materialize_generator_mutations(
                 output.files.insert(out.path.clone(), content);
             }
             GeneratorMutation::Remove(path) => {
-                output_owners.remove(path);
                 output.files.remove(path);
             }
             GeneratorMutation::EmitExternal { .. } => {}
