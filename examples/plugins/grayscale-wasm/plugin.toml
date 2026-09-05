@@ -1,0 +1,9 @@
+[plugin]
+id = "grayscale-wasm"
+version = "1.0.0"
+description = "Converts textures to grayscale with a WASIp2 component."
+authors = ["rpp examples"]
+entry = "init.lua"
+
+[component.grayscale]
+module = "grayscale.wasm"

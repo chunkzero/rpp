@@ -5,6 +5,7 @@
 # Example project build artifacts
 examples/pack/.rpp/
 examples/pack/dist/
+examples/pack/generated/
 examples/plugins/*/target/
 examples/plugins/*/plugin.wasm
 

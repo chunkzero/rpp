@@ -274,20 +274,16 @@ local Plugin = {}
 ---@param name string
 ---@param opts rpp.ProcessorOpts
 ---@param fn fun(ctx: rpp.ProcessorCtx, file: rpp.File)
----@return rpp.Plugin self
 function Plugin.processor(self, name, opts, fn) end
 --- Register the (single) sequential generator, run after all processing.
 ---@param name string
 ---@param fn fun(ctx: rpp.GeneratorCtx)
----@return rpp.Plugin self
 function Plugin.generator(self, name, fn) end
 --- Register a hook fired before processing begins.
 ---@param fn fun(ctx: rpp.ProcessorCtx)
----@return rpp.Plugin self
 function Plugin.on_start(self, fn) end
 --- Register a hook fired after the build completes.
 ---@param fn fun(ctx: rpp.ProcessorCtx, stats: rpp.BuildStats)
----@return rpp.Plugin self
 function Plugin.on_finish(self, fn) end
 
 ---@class rpp.BuildStats
