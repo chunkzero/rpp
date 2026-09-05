@@ -3,12 +3,9 @@
 //! minified by a local Lua plugin, a zip is produced, and a second build is
 //! fully cached.
 
-use std::path::Path;
-use std::process::Command;
+mod common;
 
-fn rpp_bin() -> &'static str {
-    env!("CARGO_BIN_EXE_rpp")
-}
+use std::path::Path;
 
 /// Write a minimal but complete project into `root`.
 fn scaffold(root: &Path) {
@@ -82,8 +79,7 @@ return plugin
 fn run_build(root: &Path, extra: &[&str]) -> std::process::Output {
     let mut args = vec!["build"];
     args.extend_from_slice(extra);
-    Command::new(rpp_bin())
-        .current_dir(root)
+    common::command(root)
         .args(&args)
         .output()
         .expect("run rpp build")
@@ -189,8 +185,7 @@ fn clean_removes_output_and_cache() {
     assert!(root.join("dist").is_dir());
     assert!(root.join(".rpp").is_dir());
 
-    let out = Command::new(rpp_bin())
-        .current_dir(root)
+    let out = common::command(root)
         .arg("clean")
         .output()
         .expect("run rpp clean");
@@ -211,8 +206,7 @@ fn clean_does_not_load_plugins() {
     std::fs::create_dir_all(root.join("dist")).unwrap();
     std::fs::write(root.join("dist/file.txt"), "x").unwrap();
 
-    let out = Command::new(rpp_bin())
-        .current_dir(root)
+    let out = common::command(root)
         .arg("clean")
         .output()
         .expect("run rpp clean");
@@ -238,8 +232,7 @@ fn clean_rejects_output_outside_project() {
     )
     .unwrap();
 
-    let out = Command::new(rpp_bin())
-        .current_dir(&root)
+    let out = common::command(&root)
         .arg("clean")
         .output()
         .expect("run rpp clean");

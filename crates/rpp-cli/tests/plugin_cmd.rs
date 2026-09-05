@@ -2,25 +2,16 @@
 //! no network is involved. Lockfile interaction is exercised implicitly: path
 //! sources are never pinned, so `rpp.lock` stays absent/empty.
 
-use std::path::Path;
-use std::process::Command;
+mod common;
 
-fn rpp_bin() -> &'static str {
-    env!("CARGO_BIN_EXE_rpp")
-}
+use std::path::Path;
 
 fn run(root: &Path, args: &[&str]) -> std::process::Output {
-    Command::new(rpp_bin())
-        .current_dir(root)
-        .env("RPP_HOME", root.join(".test-rpp-home"))
-        .args(args)
-        .output()
-        .expect("run rpp")
+    common::command(root).args(args).output().expect("run rpp")
 }
 
 fn run_with_home(root: &Path, home: &Path, args: &[&str]) -> std::process::Output {
-    Command::new(rpp_bin())
-        .current_dir(root)
+    common::command(root)
         .env("RPP_HOME", home)
         .args(args)
         .output()
@@ -324,8 +315,7 @@ fn cached_subdir_add_and_remove_keep_config_and_lock_aligned() {
     }
     lock.save(&root.join("rpp.lock")).unwrap();
     let run_cached = |args: &[&str]| {
-        let result = Command::new(rpp_bin())
-            .current_dir(root)
+        let result = common::command(root)
             .env("RPP_HOME", root.join("home"))
             .env("RPP_CACHE_DIR", &cache)
             .args(args)
