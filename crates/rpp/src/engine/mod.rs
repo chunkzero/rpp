@@ -15,6 +15,7 @@
 //! # }
 //! ```
 
+mod boundary;
 mod cache_replay;
 mod discovery;
 mod external;
@@ -69,7 +70,9 @@ impl EngineBuilder {
     }
 
     /// Finalize the engine.
-    pub fn build_engine(self) -> Result<Engine> {
+    pub fn build_engine(mut self) -> Result<Engine> {
+        self.project_root = std::fs::canonicalize(&self.project_root)
+            .map_err(|e| Error::io(&self.project_root, e))?;
         let compiled = compile_processors(&self.factories).map_err(Error::Build)?;
         validate_build_dirs(&self.config, &self.project_root)?;
 
@@ -86,6 +89,12 @@ impl EngineBuilder {
         let source = self.project_root.join(&self.config.build.source);
         let output = self.project_root.join(&self.config.build.output);
         let cache_dir = self.project_root.join(".rpp/cache");
+
+        for factory in &self.factories {
+            for root in factory.output_roots().values() {
+                boundary::external_root(&self.config, &self.project_root, root)?;
+            }
+        }
 
         Ok(Engine {
             project_root: self.project_root,
@@ -128,7 +137,7 @@ fn validate_build_dirs(config: &Config, project_root: &Path) -> Result<()> {
             message: "`build.source` and `build.output` must be separate directories".into(),
         });
     }
-    Ok(())
+    boundary::validate_project(config, project_root)
 }
 
 /// The build engine.
@@ -167,6 +176,13 @@ impl Engine {
     /// Run a full (incremental) build.
     pub fn build(&self) -> Result<BuildResult> {
         let start = Instant::now();
+        validate_build_dirs(&self.config, &self.project_root)?;
+        for factory in self.factories.iter() {
+            for root in factory.output_roots().values() {
+                boundary::external_root(&self.config, &self.project_root, root)?;
+            }
+        }
+        external::validate_previous(&self.config, &self.project_root)?;
 
         let manifest_path = self.cache_dir.join("manifest.bin");
         let store = ObjectStore::open(self.cache_dir.join("objects"))?;
@@ -233,8 +249,10 @@ impl Engine {
         };
         finalize::finish_build(&mut main_instances, stats)?;
 
+        validate_build_dirs(&self.config, &self.project_root)?;
+        external::validate_next(&self.config, &self.project_root, &new_manifest)?;
         let mut changes = finalize::sync_output(&self.config, &self.output, &output, &store)?;
-        changes.external = external::sync(&self.project_root, &new_manifest, &store)?;
+        changes.external = external::sync(&self.config, &self.project_root, &new_manifest, &store)?;
 
         new_manifest.save(&manifest_path)?;
         let live = finalize::collect_live_objects(&new_manifest);
@@ -390,8 +408,10 @@ struct GeneratorPhaseCtx<'a> {
 /// This does not load or resolve plugins, so it is suitable for `rpp clean`
 /// even when a plugin package is temporarily unavailable.
 pub fn clean_project_artifacts(config: &Config, project_root: &Path) -> Result<()> {
-    validate_build_dirs(config, project_root)?;
-    external::clean(project_root)?;
+    let project_root =
+        std::fs::canonicalize(project_root).map_err(|e| Error::io(project_root, e))?;
+    validate_build_dirs(config, &project_root)?;
+    external::clean(config, &project_root)?;
     for dir in [
         project_root.join(&config.build.output),
         project_root.join(".rpp"),

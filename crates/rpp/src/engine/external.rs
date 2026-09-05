@@ -1,11 +1,12 @@
 //! Durable ownership and synchronization for generated non-pack artifacts.
 
 use std::collections::BTreeMap;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
 use crate::cache::{GeneratorMutation, Manifest, ObjectStore};
+use crate::config::Config;
 use crate::error::{Error, Result};
 
 use super::result::ExternalChangeReport;
@@ -54,7 +55,7 @@ impl OwnershipManifest {
         }
     }
 
-    fn from_build(project_root: &Path, manifest: &Manifest) -> Result<Self> {
+    fn from_build(config: &Config, project_root: &Path, manifest: &Manifest) -> Result<Self> {
         let mut claimed = BTreeMap::<PathBuf, String>::new();
         let mut outputs = Vec::new();
         for (plugin, generator) in &manifest.generators {
@@ -62,7 +63,7 @@ impl OwnershipManifest {
                 let GeneratorMutation::EmitExternal { root, path, object } = mutation else {
                     continue;
                 };
-                let absolute = external_path(project_root, root, path);
+                let absolute = external_path(config, project_root, root, path)?;
                 if let Some(previous) = claimed.insert(absolute.clone(), plugin.clone()) {
                     return Err(Error::Build(format!(
                         "plugins `{previous}` and `{plugin}` both emit external output `{}`",
@@ -94,28 +95,33 @@ impl OwnershipManifest {
         crate::util::atomic::write(&path, &bytes).map_err(|e| Error::io(&path, e))
     }
 
-    fn by_path(&self, project_root: &Path) -> BTreeMap<PathBuf, &OwnedOutput> {
+    fn by_path(
+        &self,
+        config: &Config,
+        project_root: &Path,
+    ) -> Result<BTreeMap<PathBuf, &OwnedOutput>> {
         self.outputs
             .iter()
             .map(|output| {
-                (
-                    external_path(project_root, &output.root, &output.path),
+                Ok((
+                    external_path(config, project_root, &output.root, &output.path)?,
                     output,
-                )
+                ))
             })
             .collect()
     }
 }
 
 pub(crate) fn sync(
+    config: &Config,
     project_root: &Path,
     next_build: &Manifest,
     store: &ObjectStore,
 ) -> Result<ExternalChangeReport> {
     let previous = OwnershipManifest::load(project_root)?;
-    let next = OwnershipManifest::from_build(project_root, next_build)?;
-    let previous_by_path = previous.by_path(project_root);
-    let next_by_path = next.by_path(project_root);
+    let next = OwnershipManifest::from_build(config, project_root, next_build)?;
+    let previous_by_path = previous.by_path(config, project_root)?;
+    let next_by_path = next.by_path(config, project_root)?;
     let mut changes = ExternalChangeReport::default();
 
     for path in previous_by_path.keys() {
@@ -144,9 +150,9 @@ pub(crate) fn sync(
     Ok(changes)
 }
 
-pub(crate) fn clean(project_root: &Path) -> Result<()> {
+pub(crate) fn clean(config: &Config, project_root: &Path) -> Result<()> {
     let ownership = OwnershipManifest::load(project_root)?;
-    for path in ownership.by_path(project_root).into_keys() {
+    for path in ownership.by_path(config, project_root)?.into_keys() {
         remove_owned_file(&path)?;
     }
     Ok(())
@@ -160,20 +166,22 @@ fn remove_owned_file(path: &Path) -> Result<bool> {
     }
 }
 
-fn external_path(project_root: &Path, root: &str, path: &str) -> PathBuf {
-    normalize(project_root.join(root).join(path))
+pub(super) fn validate_previous(config: &Config, project_root: &Path) -> Result<()> {
+    OwnershipManifest::load(project_root)?.by_path(config, project_root)?;
+    Ok(())
 }
 
-fn normalize(path: PathBuf) -> PathBuf {
-    let mut normalized = PathBuf::new();
-    for component in path.components() {
-        match component {
-            Component::CurDir => {}
-            Component::ParentDir => {
-                normalized.pop();
-            }
-            other => normalized.push(other.as_os_str()),
-        }
-    }
-    normalized
+pub(super) fn validate_next(
+    config: &Config,
+    project_root: &Path,
+    manifest: &Manifest,
+) -> Result<()> {
+    OwnershipManifest::from_build(config, project_root, manifest)?;
+    validate_previous(config, project_root)
+}
+
+fn external_path(config: &Config, project_root: &Path, root: &str, path: &str) -> Result<PathBuf> {
+    crate::util::path::validate_relative(path).map_err(Error::Build)?;
+    let root = super::boundary::external_root(config, project_root, Path::new(root))?;
+    super::boundary::checked_path(&root, Path::new(path))
 }

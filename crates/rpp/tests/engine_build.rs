@@ -886,3 +886,141 @@ fn cached_symlink_output_is_replaced_even_without_cas() {
             .is_symlink());
     }
 }
+
+#[cfg(unix)]
+#[test]
+fn destination_boundaries_reject_ancestor_symlinks_before_build_and_clean() {
+    use std::os::unix::fs::symlink;
+
+    let project = Project::new();
+    let outside = tempfile::tempdir().unwrap();
+    std::fs::create_dir(outside.path().join("victim")).unwrap();
+    let keep = outside.path().join("victim/keep.txt");
+    std::fs::write(&keep, "keep").unwrap();
+    let mut config = project.config();
+    config.build.output = "alias/victim".into();
+    let engine = Engine::builder(config.clone())
+        .project_root(project.root())
+        .build_engine()
+        .unwrap();
+    symlink(outside.path(), project.root().join("alias")).unwrap();
+    assert!(engine.build().is_err());
+    assert!(rpp::engine::clean_project_artifacts(&config, project.root()).is_err());
+    assert_eq!(std::fs::read_to_string(keep).unwrap(), "keep");
+    assert!(!project.root().join(".rpp").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn destination_boundaries_reject_external_aliases_and_protected_roots() {
+    use std::os::unix::fs::symlink;
+
+    let project = Project::new();
+    let outside = tempfile::tempdir().unwrap();
+    std::fs::write(outside.path().join("keep.txt"), "keep").unwrap();
+    symlink(outside.path(), project.root().join("alias")).unwrap();
+    symlink(project.src(), project.root().join("source-alias")).unwrap();
+    for root in [
+        "alias",
+        "source-alias",
+        "src/generated",
+        "dist/generated",
+        ".rpp/generated",
+    ] {
+        let config = rpp::config::Config::parse(
+            &format!("[pack]\nname = 'test'\n[[plugin]]\nsource = 'path:plugin'\n[plugin.outputs]\ncode = '{root}'\n"),
+            "rpp.toml",
+        ).unwrap();
+        assert!(
+            Engine::builder(config.clone())
+                .project_root(project.root())
+                .build_engine()
+                .is_err(),
+            "{root}"
+        );
+        assert!(
+            rpp::engine::clean_project_artifacts(&config, project.root()).is_err(),
+            "{root}"
+        );
+    }
+    assert_eq!(
+        std::fs::read_to_string(outside.path().join("keep.txt")).unwrap(),
+        "keep"
+    );
+}
+
+#[test]
+fn destination_boundaries_allow_sibling_external_outputs_and_clean() {
+    let parent = tempfile::tempdir().unwrap();
+    let project = parent.path().join("project");
+    std::fs::create_dir_all(project.join("src")).unwrap();
+    let plugin = PluginDir::lua(
+        "sibling",
+        r#"
+        local rpp = require('rpp')
+        local plugin = rpp.plugin()
+        plugin:generator('code', function(ctx) ctx:emit_output('code', 'nested/generated.txt', 'generated') end)
+        return plugin
+    "#,
+    );
+    let factory = LuaPluginFactory::load(
+        plugin.path(),
+        toml::Value::Table(Default::default()),
+        PackInfo {
+            name: "test".into(),
+            description: None,
+            format: None,
+        },
+        LuaPluginLimits::default(),
+        RuntimeAccess::sandboxed(project.clone())
+            .with_outputs(BTreeMap::from([("code".into(), "../sibling".into())])),
+    )
+    .unwrap();
+    let config = Project::new().config();
+    let engine = Engine::builder(config)
+        .project_root(&project)
+        .plugin(Arc::new(factory))
+        .build_engine()
+        .unwrap();
+    engine.build().unwrap();
+    let generated = parent.path().join("sibling/nested/generated.txt");
+    assert_eq!(std::fs::read_to_string(&generated).unwrap(), "generated");
+    std::fs::write(parent.path().join("sibling/keep.txt"), "keep").unwrap();
+    engine.clean().unwrap();
+    assert!(!generated.exists());
+    assert_eq!(
+        std::fs::read_to_string(parent.path().join("sibling/keep.txt")).unwrap(),
+        "keep"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn destination_boundaries_reject_retargeted_owned_external_parent() {
+    let project = Project::new();
+    let plugin = PluginDir::lua(
+        "external",
+        r#"
+        local rpp = require('rpp')
+        local plugin = rpp.plugin()
+        plugin:generator('code', function(ctx) ctx:emit_output('code', 'nested/keep.txt', 'generated') end)
+        return plugin
+    "#,
+    );
+    let engine = Engine::builder(project.config())
+        .project_root(project.root())
+        .plugin(external_factory(&plugin, project.root()))
+        .build_engine()
+        .unwrap();
+    engine.build().unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    std::fs::write(outside.path().join("keep.txt"), "keep").unwrap();
+    std::fs::remove_dir_all(project.root().join("generated/nested")).unwrap();
+    std::os::unix::fs::symlink(outside.path(), project.root().join("generated/nested")).unwrap();
+    assert!(engine.build().is_err());
+    assert!(engine.clean().is_err());
+    assert_eq!(
+        std::fs::read_to_string(outside.path().join("keep.txt")).unwrap(),
+        "keep"
+    );
+}
