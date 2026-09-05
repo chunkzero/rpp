@@ -1,10 +1,8 @@
-# RPP Rework Specification (v2)
+# RPP Specification
 
-This is the **authoritative spec** for the RPP rework. All implementation agents build
-against this document. Where this spec conflicts with existing code or older docs
-(`PLAN.md`, `ARCHITECTURE.md`, `architecture/`, `IMPLEMENTATION_SUMMARY.md`,
-`CODE_REVIEW_REPORT.md`), **this spec wins** — the older docs are stale and will be
-deleted at the end of the rework.
+This document defines RPP's configuration, plugin contracts, and build behavior.
+Read it before architectural changes, and update the relevant contract when behavior
+changes. Contributor tooling and code conventions live in `AGENTS.md`.
 
 RPP is a build tool for Minecraft resource packs: it takes a source directory, runs it
 through a plugin pipeline (Lua and WASM plugins), and produces an optimized output

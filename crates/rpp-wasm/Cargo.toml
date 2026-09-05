@@ -4,6 +4,7 @@ description = "WASIp2 component plugin host for rpp, built on wasmtime"
 
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
