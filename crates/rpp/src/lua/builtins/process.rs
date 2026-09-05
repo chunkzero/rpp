@@ -5,6 +5,7 @@ use std::time::{Duration, Instant};
 
 use mlua::{Lua, Table, Value};
 
+use crate::lua::process::{self, ProcessRequest};
 use crate::lua::runtime::{Phase, RuntimeAccess};
 use crate::lua::sandbox::Deadline;
 
@@ -13,8 +14,6 @@ pub(crate) fn module(lua: &Lua, access: RuntimeAccess, deadline: Deadline) -> ml
     table.set(
         "run",
         lua.create_function(move |lua, request: Table| -> mlua::Result<Table> {
-            #[cfg(not(feature = "wasm"))]
-            let _ = lua;
             if !access.allows_process() {
                 return Err(mlua::Error::external(
                     "process execution requires trusted process permissions",
@@ -61,35 +60,23 @@ pub(crate) fn module(lua: &Lua, access: RuntimeAccess, deadline: Deadline) -> ml
                 Value::String(s) => Some(PathBuf::from(s.to_str()?.as_ref())),
                 _ => return Err(mlua::Error::external("process cwd must be a string")),
             };
-            #[cfg(not(feature = "wasm"))]
-            {
-                let _ = (program, args, environment, stdin, timeout, cwd);
-                return Err(mlua::Error::external(
-                    "process execution requires rpp built with the `wasm` feature",
-                ));
-            }
-            #[cfg(feature = "wasm")]
-            {
-                let mut permissions = access.wasm_permissions();
-                permissions.working_directory = Some(access.project_root.clone());
-                let output = rpp_wasm::run_process(
-                    &permissions,
-                    rpp_wasm::ProcessRequest {
-                        program,
-                        args,
-                        cwd,
-                        environment,
-                        stdin,
-                        timeout,
-                    },
-                )
-                .map_err(mlua::Error::external)?;
-                let out = lua.create_table()?;
-                out.set("status", output.status)?;
-                out.set("stdout", lua.create_string(output.stdout)?)?;
-                out.set("stderr", lua.create_string(output.stderr)?)?;
-                Ok(out)
-            }
+            let output = process::run(
+                &access,
+                ProcessRequest {
+                    program,
+                    args,
+                    cwd,
+                    environment,
+                    stdin,
+                    timeout,
+                },
+            )
+            .map_err(mlua::Error::external)?;
+            let out = lua.create_table()?;
+            out.set("status", output.status)?;
+            out.set("stdout", lua.create_string(output.stdout)?)?;
+            out.set("stderr", lua.create_string(output.stderr)?)?;
+            Ok(out)
         })?,
     )?;
     Ok(table)

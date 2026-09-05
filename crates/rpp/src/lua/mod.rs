@@ -14,11 +14,11 @@ mod file;
 mod generator_ctx;
 mod instance;
 mod plugin_builder;
+mod process;
 mod runtime;
 mod sandbox;
 mod traceback;
 
-pub use builtins::LogLevel;
+pub use ctx::PackInfo;
 pub use factory::{LuaPluginFactory, LuaPluginLimits};
-pub use instance::LuaPluginInstance;
 pub use runtime::RuntimeAccess;

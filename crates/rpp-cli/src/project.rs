@@ -13,13 +13,12 @@ use std::sync::Arc;
 use anyhow::{anyhow, bail, Context, Result};
 use rpp::config::{Config, PluginConfig};
 use rpp::engine::{Engine, EngineBuilder};
-use rpp::lua::LuaPluginFactory;
+use rpp::lua::{LuaPluginFactory, LuaPluginLimits, PackInfo};
 use rpp::manifest::PluginManifest;
 use rpp::model::PluginFactory;
 use rpp_fetch::{Lockfile, Pin, PluginSource, Resolver};
 use rpp_wasm::WasmEngine;
 
-use crate::plugin_options::PluginOptionOverrides;
 use crate::user_plugins::UserPlugins;
 
 /// The config file name.
@@ -36,8 +35,6 @@ pub struct Project {
     pub config: Config,
     /// User-level plugins loaded from `~/.rpp/plugins.toml`.
     pub(crate) user_plugins: UserPlugins,
-    /// Command-line plugin option overrides.
-    pub(crate) plugin_options: PluginOptionOverrides,
 }
 
 /// Resolved plugin identity for list/remove/update matching.
@@ -61,19 +58,9 @@ impl Project {
 
     /// Locate a project without consulting machine-global plugin state.
     pub fn discover_isolated(start: &Path) -> Result<Self> {
-        let root = find_project_root(start).ok_or_else(|| {
-            anyhow!(
-                "no `{CONFIG_FILE}` found in `{}` or any parent directory",
-                start.display()
-            )
-        })?;
-        Self::discover_with_user_plugins(
-            &root,
-            UserPlugins {
-                root: root.join(".rpp/isolated-home"),
-                plugins: Vec::new(),
-            },
-        )
+        let mut project = Self::discover_with_user_plugins(start, UserPlugins::default())?;
+        project.user_plugins.root = project.root.join(".rpp/isolated-home");
+        Ok(project)
     }
 
     fn discover_with_user_plugins(start: &Path, user_plugins: UserPlugins) -> Result<Self> {
@@ -91,19 +78,7 @@ impl Project {
             root,
             config,
             user_plugins,
-            plugin_options: PluginOptionOverrides::default(),
         })
-    }
-
-    /// Parse and retain command-line plugin option overrides.
-    pub fn set_plugin_options(&mut self, options: &[String]) -> Result<()> {
-        self.plugin_options = PluginOptionOverrides::parse(options)?;
-        Ok(())
-    }
-
-    /// Summary text for active command-line plugin option overrides.
-    pub fn plugin_options_summary(&self) -> Option<String> {
-        self.plugin_options.summary()
     }
 
     /// Path to `rpp.toml`.
@@ -239,9 +214,6 @@ impl Project {
             factories.push(loaded);
         }
 
-        self.plugin_options
-            .validate_plugin_ids(factories.iter().map(|loaded| loaded.id.as_str()))?;
-
         if global_lock_dirty {
             self.user_plugins.ensure_root()?;
             global_lock
@@ -254,10 +226,26 @@ impl Project {
                 .with_context(|| format!("writing {}", project_lock_path.display()))?;
         }
 
+        self.write_plugin_stubs(&factories);
+
         Ok(ResolvedFactories {
             factories: factories.into_iter().map(|loaded| loaded.factory).collect(),
             wasm_engine: shared_wasm,
         })
+    }
+
+    /// Refresh editor definitions shipped by plugins (`luals/*.lua`) into
+    /// `.rpp/api`. Best-effort: failures are reported, never fatal.
+    fn write_plugin_stubs(&self, factories: &[LoadedFactory]) {
+        let api_dir = self.root.join(".rpp").join("api");
+        let mut owners = BTreeMap::new();
+        for loaded in factories {
+            if let Err(error) =
+                crate::luals::write_plugin_stubs(&api_dir, &loaded.id, &loaded.root, &mut owners)
+            {
+                tracing::warn!("plugin `{}` editor definitions: {error:#}", loaded.id);
+            }
+        }
     }
 
     fn resolve_factory(
@@ -307,8 +295,6 @@ impl Project {
             )
         })?;
         let id = manifest.id.clone();
-        let _ =
-            crate::luals::write_plugin_stubs(&self.root.join(".rpp").join("api"), &resolved.root);
 
         let engine = if manifest.components.is_empty() {
             shared_wasm.clone()
@@ -316,8 +302,16 @@ impl Project {
             match shared_wasm {
                 Some(engine) => Some(engine.clone()),
                 None => {
-                    let engine = WasmEngine::with_cache_dir(self.root.join(".rpp/cache/wasmtime"))
-                        .map_err(|error| anyhow!("initializing the wasm engine: {error}"))?;
+                    let wasm = &self.config.build.wasm;
+                    let limits = rpp_wasm::Limits {
+                        deadline: std::time::Duration::from_secs(wasm.execution_deadline_seconds),
+                        memory_bytes: wasm.memory_limit_mb as usize * 1024 * 1024,
+                    };
+                    let engine = WasmEngine::with_limits_and_cache(
+                        limits,
+                        self.root.join(".rpp/cache/wasmtime"),
+                    )
+                    .map_err(|error| anyhow!("initializing the wasm engine: {error}"))?;
                     *shared_wasm = Some(engine.clone());
                     Some(engine)
                 }
@@ -340,23 +334,28 @@ impl Project {
             components,
             plugin_cfg.outputs.clone(),
         );
-        let limits = rpp::lua::LuaPluginFactory::limits_from_build(&self.config.build);
-        let mut options = plugin_cfg.options.clone();
-        self.plugin_options.apply(&manifest.id, &mut options);
+        let pack = PackInfo {
+            name: self.config.pack.name.clone(),
+            description: self.config.pack.description.clone(),
+            format: self.config.pack.pack_format,
+        };
         let factory: Arc<dyn PluginFactory> = Arc::new(
-            LuaPluginFactory::load_with_limits_and_access(
+            LuaPluginFactory::load(
                 &resolved.root,
-                options,
-                self.config.pack.name.clone(),
-                self.config.pack.description.clone(),
-                self.config.pack.pack_format,
-                limits,
+                plugin_cfg.options.clone(),
+                pack,
+                LuaPluginLimits::from(&self.config.build.lua),
                 access,
             )
             .with_context(|| format!("loading Lua plugin `{}`", manifest.id))?,
         );
 
-        Ok(LoadedFactory { id, factory, scope })
+        Ok(LoadedFactory {
+            id,
+            root: resolved.root,
+            factory,
+            scope,
+        })
     }
 
     /// The absolute output directory.
@@ -414,28 +413,6 @@ pub fn resolve_plugin_meta(
     }))
 }
 
-/// Find a configured plugin by exact `source` string or resolved plugin id.
-pub fn find_plugin_by_id_or_source<'a>(
-    project: &'a Project,
-    id_or_source: &str,
-    lock: &Lockfile,
-    resolver: &Resolver,
-) -> Result<Option<&'a PluginConfig>> {
-    for plugin in &project.config.plugins {
-        if plugin.source.as_deref() == Some(id_or_source)
-            || plugin.id.as_deref() == Some(id_or_source)
-        {
-            return Ok(Some(plugin));
-        }
-        if let Some(meta) = resolve_plugin_meta(plugin, lock, resolver)? {
-            if meta.id == id_or_source || meta.canonical == id_or_source {
-                return Ok(Some(plugin));
-            }
-        }
-    }
-    Ok(None)
-}
-
 struct ResolvedFactories {
     factories: Vec<Arc<dyn PluginFactory>>,
     wasm_engine: Option<WasmEngine>,
@@ -443,6 +420,7 @@ struct ResolvedFactories {
 
 struct LoadedFactory {
     id: String,
+    root: PathBuf,
     factory: Arc<dyn PluginFactory>,
     scope: PluginScope,
 }

@@ -37,22 +37,20 @@ impl OwnershipManifest {
             }
             Err(error) => return Err(Error::io(path, error)),
         };
+        // A corrupt or outdated manifest must not brick `build` or `clean`.
+        // Treat it as empty: previously generated files are then left in
+        // place rather than removed.
         let config = bincode::config::standard();
-        let (manifest, _) =
-            bincode::serde::decode_from_slice::<Self, _>(&bytes, config).map_err(|error| {
-                Error::Build(format!(
-                    "invalid external-output ownership manifest `{}`: {error}",
+        match bincode::serde::decode_from_slice::<Self, _>(&bytes, config) {
+            Ok((manifest, _)) if manifest.version == VERSION => Ok(manifest),
+            _ => {
+                #[cfg(feature = "tracing")]
+                tracing::warn!(
+                    "ignoring unreadable external-output ownership manifest {}",
                     path.display()
-                ))
-            })?;
-        if manifest.version == VERSION {
-            Ok(manifest)
-        } else {
-            Err(Error::Build(format!(
-                "unsupported external-output ownership version {} in `{}`",
-                manifest.version,
-                path.display()
-            )))
+                );
+                Ok(Self::default())
+            }
         }
     }
 

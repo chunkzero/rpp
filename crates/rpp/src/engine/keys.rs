@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use crate::config::Config;
 use crate::model::PluginFactory;
-use crate::util::config_key;
+use crate::util::canonical;
 use crate::util::glob::GlobSet;
 use crate::util::hash::HashWriter;
 
@@ -107,7 +107,7 @@ pub(crate) fn global_key(config: &Config, factories: &[Arc<dyn PluginFactory>]) 
     let mut writer = HashWriter::new();
     writer.write_str("rpp.global.v2");
     writer.write_str(env!("CARGO_PKG_VERSION"));
-    writer.write_u64(config_key::config_digest(config));
+    writer.write_u64(canonical::config_digest(config));
 
     for factory in factories {
         writer.write_u64(factory.cache_key());

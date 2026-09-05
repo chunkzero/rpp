@@ -43,13 +43,7 @@ mod zip;
 pub use dir::{squash_dir, FileDetail, SquashReport};
 pub use error::{Error, Result};
 pub use file::squash_file;
-pub use options::{PngLevel, SquashOptions, SquashOptionsBuilder, ZipOptions, ZipOptionsBuilder};
-pub use packsquash::run_packsquash;
+pub use options::{PngLevel, SquashOptions, SquashOptionsBuilder, ZipOptions};
+pub use packsquash::{render_options, run_packsquash};
 pub use stage::copy_tree;
 pub use zip::write_zip;
-
-/// Test-only re-exports. Not part of the public API; may change without notice.
-#[doc(hidden)]
-pub mod __test {
-    pub use crate::packsquash::render_options;
-}

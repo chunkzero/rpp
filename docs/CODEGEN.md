@@ -68,19 +68,17 @@ and includes LuaLS-style annotations for the generated functions.
 
 ## Integration Tests
 
-The `rpp-cli` crate also exposes a library harness:
+The `rpp-cli` crate is also a library. Plugin repositories can drive builds from
+their own tests without loading user-global plugins:
 
 ```rust
-let report = rpp_cli::harness::BuildHarness::new("example/pack")
-    .verify_reproducible()?;
-assert_eq!(report.warm.generated, 0);
-
-let rebuilt = rpp_cli::harness::BuildHarness::new("example/pack")
-    .build_no_cache()?;
-assert!(rebuilt.result.changes.external.written.is_empty());
+let mut project = rpp_cli::project::Project::discover_isolated("example/pack")?;
+project.config.build.workers = 1;
+let result = project.build_engine()?.build()?;
+assert_eq!(result.generated, 1);
+assert!(result.changes.external.written.is_empty());
 ```
 
-It does not load user-global plugins. It compares sorted path/content digests from
-two clean builds and then requires the warm build to write or remove nothing.
-`build_no_cache` deletes only `.rpp/cache`, deliberately preserving the separate
-ownership manifest needed for stale generated-source cleanup.
+`project.clean_artifacts()` removes the output, the cache, and RPP-owned external
+files. Deleting only `.rpp/cache` matches `rpp build --no-cache`: the separate
+ownership manifest survives so stale generated sources are still cleaned up.

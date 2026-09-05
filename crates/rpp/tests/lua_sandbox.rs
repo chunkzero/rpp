@@ -9,7 +9,7 @@ use rpp::model::{PackFile, PluginFactory};
 fn run(entry: &str, input: &str) -> Result<Vec<u8>, String> {
     let p = PluginDir::lua("t", entry);
     let options: toml::Value = toml::Value::Table(Default::default());
-    let factory = match rpp::lua::LuaPluginFactory::load(p.path(), options, "pack", None, None) {
+    let factory = match common::load_plugin(p.path(), options) {
         Ok(f) => f,
         Err(e) => return Err(format!("{e}")),
     };
@@ -35,43 +35,43 @@ return plugin
 #[test]
 fn io_is_unavailable() {
     let err = run(&processor_wrap("io.write('x')"), "").unwrap_err();
-    assert!(err.contains("io") || err.contains("nil"), "{err}");
+    assert!(err.contains("'io'"), "{err}");
 }
 
 #[test]
 fn os_execute_is_unavailable() {
     let err = run(&processor_wrap("os.execute('echo hi')"), "").unwrap_err();
-    assert!(err.contains("execute") || err.contains("nil"), "{err}");
+    assert!(err.contains("'os'"), "{err}");
 }
 
 #[test]
 fn host_time_is_unavailable_without_a_clock_grant() {
     let err = run(&processor_wrap("local _ = os.clock()"), "").unwrap_err();
-    assert!(err.contains("os") || err.contains("nil"), "{err}");
+    assert!(err.contains("'os'"), "{err}");
 }
 
 #[test]
 fn host_randomness_is_unavailable_without_a_random_grant() {
     let err = run(&processor_wrap("local _ = math.random()"), "").unwrap_err();
-    assert!(err.contains("random") || err.contains("nil"), "{err}");
+    assert!(err.contains("'random'"), "{err}");
 }
 
 #[test]
 fn load_is_unavailable() {
     let err = run(&processor_wrap("load('return 1')()"), "").unwrap_err();
-    assert!(err.contains("load") || err.contains("nil"), "{err}");
+    assert!(err.contains("'load'"), "{err}");
 }
 
 #[test]
 fn dofile_is_unavailable() {
     let err = run(&processor_wrap("dofile('/etc/passwd')"), "").unwrap_err();
-    assert!(err.contains("dofile") || err.contains("nil"), "{err}");
+    assert!(err.contains("'dofile'"), "{err}");
 }
 
 #[test]
 fn debug_is_unavailable() {
     let err = run(&processor_wrap("debug.getinfo(1)"), "").unwrap_err();
-    assert!(err.contains("debug") || err.contains("nil"), "{err}");
+    assert!(err.contains("'debug'"), "{err}");
 }
 
 #[test]
@@ -285,13 +285,7 @@ plugin:processor("t", { files = { "*.txt" } }, function() end)
 return plugin
 "#,
     );
-    let Err(err) = rpp::lua::LuaPluginFactory::load(
-        p.path(),
-        toml::Value::Table(toml::map::Map::new()),
-        "pack",
-        None,
-        None,
-    ) else {
+    let Err(err) = common::load_plugin(p.path(), toml::Value::Table(toml::map::Map::new())) else {
         panic!("expected duplicate processor registration to fail at load");
     };
     let msg = format!("{err}");
@@ -310,13 +304,7 @@ plugin:generator("b", function() end)
 return plugin
 "#,
     );
-    let Err(err) = rpp::lua::LuaPluginFactory::load(
-        p.path(),
-        toml::Value::Table(toml::map::Map::new()),
-        "pack",
-        None,
-        None,
-    ) else {
+    let Err(err) = common::load_plugin(p.path(), toml::Value::Table(toml::map::Map::new())) else {
         panic!("expected duplicate generator registration to fail at load");
     };
     let msg = format!("{err}");
@@ -336,28 +324,15 @@ return rpp.plugin()
 
     let mut a = toml::map::Map::new();
     a.insert("flag".into(), toml::Value::Boolean(true));
-    let f1 = rpp::lua::LuaPluginFactory::load(p.path(), toml::Value::Table(a), "pack", None, None)
-        .expect("load");
+    let f1 = common::load_plugin(p.path(), toml::Value::Table(a)).expect("load");
 
-    let f2 = rpp::lua::LuaPluginFactory::load(
-        p.path(),
-        toml::Value::Table(toml::map::Map::new()),
-        "pack",
-        None,
-        None,
-    )
-    .expect("load");
+    let f2 =
+        common::load_plugin(p.path(), toml::Value::Table(toml::map::Map::new())).expect("load");
 
     assert_ne!(f1.cache_key(), f2.cache_key());
 
-    let f3 = rpp::lua::LuaPluginFactory::load(
-        p.path(),
-        toml::Value::Table(toml::map::Map::new()),
-        "pack",
-        None,
-        None,
-    )
-    .expect("load");
+    let f3 =
+        common::load_plugin(p.path(), toml::Value::Table(toml::map::Map::new())).expect("load");
     assert_eq!(f2.cache_key(), f3.cache_key());
 }
 
@@ -396,4 +371,99 @@ file.text = table.concat({
     )
     .unwrap();
     assert_eq!(String::from_utf8(out).unwrap(), "true|true|hi|a-b-c");
+}
+
+#[test]
+fn granted_load_stays_inside_the_sandbox() {
+    use rpp::config::{LuaCapability, SecurityMode};
+    use rpp::lua::{LuaPluginFactory, LuaPluginLimits, PackInfo, RuntimeAccess};
+
+    let p = PluginDir::lua(
+        "loader",
+        r#"
+local rpp = require("rpp")
+local plugin = rpp.plugin()
+plugin:processor("t", { files = { "**/*" } }, function(ctx, file)
+    local chunk = assert(load("return io, os, require"))
+    local io_value, os_value, require_value = chunk()
+    file.text = tostring(io_value) .. "," .. tostring(os_value) .. "," .. type(require_value)
+end)
+return plugin
+"#,
+    );
+    let mut access = RuntimeAccess::sandboxed(".".into());
+    access.security = SecurityMode::Trusted;
+    access.permissions.lua = vec![LuaCapability::Load];
+    let factory = LuaPluginFactory::load(
+        p.path(),
+        toml::Value::Table(Default::default()),
+        PackInfo {
+            name: "pack".into(),
+            description: None,
+            format: None,
+        },
+        LuaPluginLimits::default(),
+        access,
+    )
+    .unwrap();
+    let mut inst = factory.instantiate().unwrap();
+    let mut file = PackFile::new("in.txt", Vec::new());
+    inst.process("t", &mut file).unwrap();
+    assert_eq!(file.contents, b"nil,nil,function");
+}
+
+/// Load a sandboxed plugin with explicit limits and run its `t` processor.
+fn run_limited(entry: &str, limits: rpp::lua::LuaPluginLimits) -> Result<Vec<u8>, String> {
+    use rpp::lua::{LuaPluginFactory, PackInfo, RuntimeAccess};
+    let p = PluginDir::lua("t", entry);
+    let factory = LuaPluginFactory::load(
+        p.path(),
+        toml::Value::Table(Default::default()),
+        PackInfo {
+            name: "pack".into(),
+            description: None,
+            format: None,
+        },
+        limits,
+        RuntimeAccess::sandboxed(".".into()),
+    )
+    .map_err(|e| format!("{e}"))?;
+    let mut inst = factory.instantiate().map_err(|e| format!("{e}"))?;
+    let mut file = PackFile::new("in.txt", Vec::new());
+    inst.process("t", &mut file).map_err(|e| format!("{e}"))?;
+    Ok(file.contents)
+}
+
+#[test]
+fn memory_limit_is_enforced() {
+    let limits = rpp::lua::LuaPluginLimits {
+        memory_limit: 2 * 1024 * 1024,
+        ..Default::default()
+    };
+    let err = run_limited(
+        &processor_wrap("local s = string.rep('x', 1024 * 1024); local t = {} for i = 1, 64 do t[i] = s .. i end"),
+        limits,
+    )
+    .unwrap_err();
+    assert!(err.contains("memory"), "{err}");
+}
+
+#[test]
+fn execution_deadline_is_enforced() {
+    let limits = rpp::lua::LuaPluginLimits {
+        execution_limit: std::time::Duration::from_millis(200),
+        ..Default::default()
+    };
+    let err = run_limited(&processor_wrap("while true do end"), limits).unwrap_err();
+    assert!(err.contains("deadline"), "{err}");
+}
+
+#[test]
+fn process_execution_requires_a_grant() {
+    let err = run(
+        &processor_wrap("require('rpp.process').run({ program = 'echo', args = { 'hi' } })"),
+        "",
+    )
+    .unwrap_err();
+    assert!(err.contains("process permissions"), "{err}");
 }

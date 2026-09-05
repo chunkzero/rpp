@@ -10,9 +10,10 @@
 //! The first line of every generated file carries a [`API_VERSION`] marker so
 //! `build`/`dev` can detect stale defs and refresh them.
 
+use std::collections::BTreeMap;
 use std::path::Path;
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 
 /// Bump this whenever the generated API stubs change. Embedded as a marker
 /// comment so stale definitions can be detected and refreshed.
@@ -50,10 +51,16 @@ pub fn write_if_stale(api_dir: &Path) -> Result<bool> {
 }
 
 /// Copy LuaLS definitions shipped by a plugin package from `luals/*.lua` into
-/// the project API directory. Files are namespaced by module filename: a plugin
-/// stub `luals/window.lua` becomes `.rpp/api/window.lua`, making
-/// `require("window")` typed in pack-authored Lua sources.
-pub fn write_plugin_stubs(api_dir: &Path, plugin_root: &Path) -> Result<bool> {
+/// the project API directory. A plugin stub `luals/window.lua` becomes
+/// `.rpp/api/window.lua`, making `require("window")` typed in pack-authored Lua
+/// sources. `owners` maps stub filenames to the plugin that provided them so a
+/// second plugin shipping the same filename is rejected instead of clobbering.
+pub fn write_plugin_stubs(
+    api_dir: &Path,
+    plugin_id: &str,
+    plugin_root: &Path,
+    owners: &mut BTreeMap<String, String>,
+) -> Result<bool> {
     let luals_dir = plugin_root.join("luals");
     if !luals_dir.is_dir() {
         return Ok(false);
@@ -77,9 +84,18 @@ pub fn write_plugin_stubs(api_dir: &Path, plugin_root: &Path) -> Result<bool> {
             continue;
         }
 
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if files().iter().any(|(generated, _)| *generated == name) {
+            bail!("`luals/{name}` collides with a generated rpp definition file");
+        }
+        if let Some(owner) = owners.insert(name.clone(), plugin_id.to_string()) {
+            if owner != plugin_id {
+                bail!("`luals/{name}` is also provided by plugin `{owner}`");
+            }
+        }
         let contents =
             std::fs::read(&path).with_context(|| format!("reading {}", path.display()))?;
-        let target = api_dir.join(entry.file_name());
+        let target = api_dir.join(&name);
         let stale = match std::fs::read(&target) {
             Ok(existing) => existing != contents,
             Err(_) => true,
@@ -258,20 +274,16 @@ local Plugin = {}
 ---@param name string
 ---@param opts rpp.ProcessorOpts
 ---@param fn fun(ctx: rpp.ProcessorCtx, file: rpp.File)
----@return rpp.Plugin self
 function Plugin.processor(self, name, opts, fn) end
 --- Register the (single) sequential generator, run after all processing.
 ---@param name string
 ---@param fn fun(ctx: rpp.GeneratorCtx)
----@return rpp.Plugin self
 function Plugin.generator(self, name, fn) end
 --- Register a hook fired before processing begins.
 ---@param fn fun(ctx: rpp.ProcessorCtx)
----@return rpp.Plugin self
 function Plugin.on_start(self, fn) end
 --- Register a hook fired after the build completes.
 ---@param fn fun(ctx: rpp.ProcessorCtx, stats: rpp.BuildStats)
----@return rpp.Plugin self
 function Plugin.on_finish(self, fn) end
 
 ---@class rpp.BuildStats

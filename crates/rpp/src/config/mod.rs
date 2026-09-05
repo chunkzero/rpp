@@ -67,6 +67,27 @@ impl Default for LuaConfig {
     }
 }
 
+/// WASM component limits (`[build.wasm]`).
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct WasmConfig {
+    /// Per-instance linear-memory limit in megabytes.
+    #[serde(default = "default_wasm_memory_limit_mb")]
+    pub memory_limit_mb: u32,
+    /// Maximum wall-clock execution time per component call, in seconds.
+    #[serde(default = "default_wasm_execution_deadline_seconds")]
+    pub execution_deadline_seconds: u64,
+}
+
+impl Default for WasmConfig {
+    fn default() -> Self {
+        Self {
+            memory_limit_mb: default_wasm_memory_limit_mb(),
+            execution_deadline_seconds: default_wasm_execution_deadline_seconds(),
+        }
+    }
+}
+
 /// `[build]` section.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -83,6 +104,9 @@ pub struct BuildConfig {
     /// Lua sandbox limits.
     #[serde(default)]
     pub lua: LuaConfig,
+    /// WASM component limits.
+    #[serde(default)]
+    pub wasm: WasmConfig,
     /// Squash settings.
     #[serde(default)]
     pub squash: SquashConfig,
@@ -95,6 +119,7 @@ impl Default for BuildConfig {
             output: default_output(),
             workers: 0,
             lua: LuaConfig::default(),
+            wasm: WasmConfig::default(),
             squash: SquashConfig::default(),
         }
     }
@@ -402,6 +427,18 @@ impl Config {
                 message: "`build.lua.execution_deadline_seconds` must be greater than 0".into(),
             });
         }
+        if self.build.wasm.memory_limit_mb == 0 {
+            return Err(Error::Config {
+                path: path.to_path_buf(),
+                message: "`build.wasm.memory_limit_mb` must be greater than 0".into(),
+            });
+        }
+        if self.build.wasm.execution_deadline_seconds == 0 {
+            return Err(Error::Config {
+                path: path.to_path_buf(),
+                message: "`build.wasm.execution_deadline_seconds` must be greater than 0".into(),
+            });
+        }
 
         if let Some(expected) = self.pack.pack_format {
             let project_root = path.parent().unwrap_or_else(|| Path::new("."));
@@ -515,7 +552,7 @@ fn validate_project_relative(path: &Path) -> std::result::Result<(), &'static st
             std::path::Component::Normal(_) | std::path::Component::ParentDir
         )
     }) {
-        return Err("path must be normalized");
+        return Err("path must not contain `.` or prefix components");
     }
     Ok(())
 }
@@ -582,6 +619,14 @@ fn default_host() -> String {
 fn default_port() -> u16 {
     8080
 }
+fn default_wasm_memory_limit_mb() -> u32 {
+    512
+}
+
+fn default_wasm_execution_deadline_seconds() -> u64 {
+    60
+}
+
 fn default_lua_memory_limit_mb() -> u32 {
     256
 }

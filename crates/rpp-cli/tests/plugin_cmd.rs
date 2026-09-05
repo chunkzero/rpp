@@ -272,3 +272,31 @@ fn write_option_text_plugin(root: &Path, id: &str) {
     .unwrap();
     std::fs::write(root.join("luals/shared.lua"), "---@meta shared\n").unwrap();
 }
+
+#[test]
+fn remove_id_only_override() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = dir.path().join("rpp.toml");
+    std::fs::write(
+        &config,
+        r#"[pack]
+name = "test"
+[[plugin]]
+id = "window"
+[plugin.options]
+enabled = false
+"#,
+    )
+    .unwrap();
+    let result = run(dir.path(), &["plugin", "remove", "window"]);
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert!(!std::fs::read_to_string(&config)
+        .unwrap()
+        .contains("[[plugin]]"));
+    let result = run(dir.path(), &["plugin", "remove", "window"]);
+    assert!(!result.status.success());
+}

@@ -1,4 +1,2 @@
 target/
-target-build/
-target-test/
-plugin.wasm
+grayscale.wasm

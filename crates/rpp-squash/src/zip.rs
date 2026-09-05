@@ -27,7 +27,11 @@ const FILE_MODE: u32 = 0o644;
 /// no extra fields are written. Two runs over an unchanged tree produce
 /// byte-identical archives. Directory entries are omitted.
 pub fn write_zip(dir: &Path, zip_path: &Path, opts: &ZipOptions) -> Result<()> {
-    // Collect all regular files as (archive-name, absolute-path).
+    // Collect all regular files as (archive-name, absolute-path), skipping the
+    // archive being written when it lives inside `dir`.
+    let dir = std::path::absolute(dir).map_err(|err| Error::io(dir, err))?;
+    let dir = dir.as_path();
+    let zip_abs = std::path::absolute(zip_path).map_err(|err| Error::io(zip_path, err))?;
     let mut entries: Vec<(String, std::path::PathBuf)> = Vec::new();
     for entry in WalkDir::new(dir).follow_links(false) {
         let entry = entry.map_err(|err| {
@@ -37,7 +41,7 @@ pub fn write_zip(dir: &Path, zip_path: &Path, opts: &ZipOptions) -> Result<()> {
                 .unwrap_or_else(|| dir.to_path_buf());
             Error::io(path, err.into())
         })?;
-        if !entry.file_type().is_file() {
+        if !entry.file_type().is_file() || entry.path() == zip_abs {
             continue;
         }
         let abs = entry.path().to_path_buf();

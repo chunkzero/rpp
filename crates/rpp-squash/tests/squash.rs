@@ -259,7 +259,7 @@ fn packsquash_missing_binary_errors_clearly() {
 fn packsquash_generates_options_file() {
     let pack = Path::new("/tmp/some pack");
     let zip = Path::new("/tmp/out.zip");
-    let body = rpp_squash::__test::render_options(pack, zip);
+    let body = rpp_squash::render_options(pack, zip);
     assert!(body.contains("pack_directory = \"/tmp/some pack\""));
     assert!(body.contains("output_file_path = \"/tmp/out.zip\""));
 }

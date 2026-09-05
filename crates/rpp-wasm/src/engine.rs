@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use sha2::{Digest, Sha256};
 use wasmtime::component::types::{ComponentItem, Type};
-use wasmtime::component::{Component, Linker, Val};
+use wasmtime::component::{Component, Linker};
 use wasmtime::{Config, Engine, Store};
 use wasmtime_wasi::p2;
 
@@ -151,8 +151,6 @@ impl WasmEngine {
             engine: self.clone(),
             component,
             schema,
-            path: wasm_path.to_path_buf(),
-            digest,
         })
     }
 
@@ -172,21 +170,9 @@ pub struct CompiledComponent {
     engine: WasmEngine,
     component: Component,
     schema: Schema,
-    path: PathBuf,
-    digest: [u8; 32],
 }
 
 impl CompiledComponent {
-    /// Component binary path.
-    pub fn path(&self) -> &Path {
-        &self.path
-    }
-
-    /// SHA-256 digest of the component binary used for cache identity.
-    pub fn digest(&self) -> [u8; 32] {
-        self.digest
-    }
-
     /// Discovered imports and exported function signatures.
     pub fn schema(&self) -> &Schema {
         &self.schema
@@ -197,7 +183,6 @@ impl CompiledComponent {
         validate_imports(&self.schema.imports, &permissions)?;
         let mut linker = Linker::new(&self.engine.engine);
         p2::add_to_linker_sync(&mut linker).map_err(Error::Engine)?;
-        add_process_host(&mut linker)?;
 
         let mut store = self.engine.new_store(permissions)?;
         let instance = linker
@@ -292,136 +277,23 @@ fn validate_imports(imports: &[String], permissions: &Permissions) -> Result<()>
     for import in imports {
         let allowed = if import.starts_with("wasi:clocks/") {
             permissions.clocks
-        } else if import.starts_with("wasi:random/") {
-            true
         } else if import.starts_with("wasi:sockets/") {
             permissions.network
         } else if import.starts_with("wasi:filesystem/") {
             !permissions.preopens.is_empty()
-        } else if import.starts_with("wasi:cli/environment")
-            || import.starts_with("wasi:cli/exit")
-            || import.starts_with("wasi:cli/std")
-            || import.starts_with("wasi:cli/terminal")
-            || import.starts_with("wasi:io/")
-        {
-            true
-        } else if import.starts_with("rpp:host/process") {
-            permissions.arbitrary_processes || !permissions.processes.is_empty()
         } else {
-            false
+            // Random imports receive deterministic streams unless granted;
+            // cli/io are always linked.
+            import.starts_with("wasi:random/")
+                || import.starts_with("wasi:cli/environment")
+                || import.starts_with("wasi:cli/exit")
+                || import.starts_with("wasi:cli/std")
+                || import.starts_with("wasi:cli/terminal")
+                || import.starts_with("wasi:io/")
         };
         if !allowed {
             return Err(Error::DeniedCapability(import.clone()));
         }
     }
     Ok(())
-}
-
-fn add_process_host(linker: &mut Linker<StoreData>) -> Result<()> {
-    let mut root = linker.root();
-    let mut process = root
-        .instance("rpp:host/process@0.1.0")
-        .map_err(Error::Engine)?;
-    process
-        .func_new("run", |store, _ty, params, results| {
-            let request = parse_process_request(
-                params
-                    .first()
-                    .ok_or_else(|| wasmtime::Error::msg("missing process request"))?,
-            )?;
-            let result = crate::process::run(&store.data().permissions, request);
-            results[0] = match result {
-                Ok(output) => Val::Result(Ok(Some(Box::new(Val::Record(vec![
-                    ("status".into(), Val::S32(output.status)),
-                    (
-                        "stdout".into(),
-                        Val::List(output.stdout.into_iter().map(Val::U8).collect()),
-                    ),
-                    (
-                        "stderr".into(),
-                        Val::List(output.stderr.into_iter().map(Val::U8).collect()),
-                    ),
-                ]))))),
-                Err(error) => Val::Result(Err(Some(Box::new(Val::String(error))))),
-            };
-            Ok(())
-        })
-        .map_err(Error::Engine)
-}
-
-fn parse_process_request(value: &Val) -> wasmtime::Result<crate::ProcessRequest> {
-    let Val::Record(fields) = value else {
-        return Err(wasmtime::Error::msg("process request must be a record"));
-    };
-    let get = |name: &str| {
-        fields
-            .iter()
-            .find(|(field, _)| field == name)
-            .map(|(_, value)| value)
-            .ok_or_else(|| wasmtime::Error::msg(format!("missing process field `{name}`")))
-    };
-    let Val::String(program) = get("program")? else {
-        return Err(wasmtime::Error::msg("process program must be a string"));
-    };
-    let Val::List(args) = get("args")? else {
-        return Err(wasmtime::Error::msg("process args must be a list"));
-    };
-    let args = args
-        .iter()
-        .map(|value| match value {
-            Val::String(value) => Ok(value.clone()),
-            _ => Err(wasmtime::Error::msg("process argument must be a string")),
-        })
-        .collect::<wasmtime::Result<Vec<_>>>()?;
-    let cwd = match get("cwd")? {
-        Val::Option(Some(value)) => match value.as_ref() {
-            Val::String(value) => Some(PathBuf::from(value)),
-            _ => return Err(wasmtime::Error::msg("process cwd must be a string")),
-        },
-        Val::Option(None) => None,
-        _ => return Err(wasmtime::Error::msg("process cwd must be an option")),
-    };
-    let Val::List(environment) = get("environment")? else {
-        return Err(wasmtime::Error::msg("process environment must be a list"));
-    };
-    let environment = environment
-        .iter()
-        .map(|value| match value {
-            Val::Tuple(values) if values.len() == 2 => match (&values[0], &values[1]) {
-                (Val::String(name), Val::String(value)) => Ok((name.clone(), value.clone())),
-                _ => Err(wasmtime::Error::msg(
-                    "process environment entries must contain strings",
-                )),
-            },
-            _ => Err(wasmtime::Error::msg(
-                "process environment entries must be tuples",
-            )),
-        })
-        .collect::<wasmtime::Result<Vec<_>>>()?;
-    let Val::List(stdin) = get("stdin")? else {
-        return Err(wasmtime::Error::msg("process stdin must be a byte list"));
-    };
-    let stdin = stdin
-        .iter()
-        .map(|value| match value {
-            Val::U8(value) => Ok(*value),
-            _ => Err(wasmtime::Error::msg("process stdin must be a byte list")),
-        })
-        .collect::<wasmtime::Result<Vec<_>>>()?;
-    let timeout = match get("timeout-ms")? {
-        Val::Option(Some(value)) => match value.as_ref() {
-            Val::U64(value) => Some(Duration::from_millis(*value)),
-            _ => return Err(wasmtime::Error::msg("timeout-ms must be u64")),
-        },
-        Val::Option(None) => None,
-        _ => return Err(wasmtime::Error::msg("timeout-ms must be an option")),
-    };
-    Ok(crate::ProcessRequest {
-        program: program.clone(),
-        args,
-        cwd,
-        environment,
-        stdin,
-        timeout,
-    })
 }

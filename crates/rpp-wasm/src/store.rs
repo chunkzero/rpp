@@ -10,7 +10,6 @@ pub(crate) struct StoreData {
     pub(crate) wasi: WasiCtx,
     pub(crate) table: ResourceTable,
     pub(crate) limits: StoreLimits,
-    pub(crate) permissions: Permissions,
 }
 
 impl StoreData {
@@ -59,7 +58,6 @@ impl StoreData {
                 .table_elements(1_000_000)
                 .instances(128)
                 .build(),
-            permissions,
         })
     }
 }

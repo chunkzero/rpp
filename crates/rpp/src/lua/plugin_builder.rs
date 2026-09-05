@@ -15,7 +15,6 @@ pub(crate) struct RegisteredProcessor {
 
 /// A registered generator: its name plus the Lua handler.
 pub(crate) struct RegisteredGenerator {
-    #[allow(dead_code)]
     pub(crate) name: String,
     pub(crate) handler: Function,
 }
