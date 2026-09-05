@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use common::{PluginDir, Project};
 use rpp::engine::Engine;
-use rpp::lua::{LuaPluginFactory, LuaPluginLimits, RuntimeAccess};
+use rpp::lua::{LuaPluginFactory, LuaPluginLimits, PackInfo, RuntimeAccess};
 use rpp::model::PluginFactory;
 
 fn build(project: &Project, plugins: Vec<Arc<dyn PluginFactory>>) -> rpp::engine::BuildResult {
@@ -23,12 +23,14 @@ fn external_factory(plugin: &PluginDir, root: &std::path::Path) -> Arc<dyn Plugi
     let access = RuntimeAccess::sandboxed(root.to_path_buf())
         .with_outputs(BTreeMap::from([("code".to_string(), "generated".into())]));
     Arc::new(
-        LuaPluginFactory::load_with_limits_and_access(
+        LuaPluginFactory::load(
             plugin.path(),
             toml::Value::Table(Default::default()),
-            "test-pack",
-            None,
-            Some(34),
+            PackInfo {
+                name: "test-pack".into(),
+                description: None,
+                format: Some(34),
+            },
             LuaPluginLimits::default(),
             access,
         )
@@ -702,9 +704,44 @@ fn corrupt_cache_object_is_rebuilt() {
         .path();
     std::fs::write(object, "corrupt").unwrap();
 
+    // The output directory still holds the right bytes, so this is a hit.
     let second = build(&project, Vec::new());
-    assert_eq!(second.processed, 1);
+    assert_eq!(second.cached, 1);
     assert_eq!(project.read_out("a.txt").as_deref(), Some("a"));
+
+    // Once the output is gone the corrupt object cannot be materialized and
+    // the file is reprocessed.
+    std::fs::remove_dir_all(project.root().join("dist")).unwrap();
+    let third = build(&project, Vec::new());
+    assert_eq!(third.processed, 1);
+    assert_eq!(project.read_out("a.txt").as_deref(), Some("a"));
+}
+
+#[test]
+fn generator_reads_linked_output_when_cache_object_is_corrupt() {
+    let project = Project::new();
+    project.write_src("a.txt", "a");
+    project.write_src("trigger.txt", "first");
+    let plugin = PluginDir::lua(
+        "reader",
+        r#"
+local rpp = require("rpp")
+local plugin = rpp.plugin()
+plugin:generator("reader", function(ctx)
+    ctx:emit("report.txt", ctx:read("a.txt") .. ":" .. ctx:read_source("trigger.txt"))
+end)
+return plugin
+"#,
+    );
+
+    build(&project, vec![plugin.factory_arc("")]);
+    for entry in std::fs::read_dir(project.root().join(".rpp/cache/objects")).unwrap() {
+        std::fs::write(entry.unwrap().path(), "corrupt").unwrap();
+    }
+    project.write_src("trigger.txt", "second");
+
+    build(&project, vec![plugin.factory_arc("")]);
+    assert_eq!(project.read_out("report.txt").as_deref(), Some("a:second"));
 }
 
 #[test]
@@ -826,4 +863,26 @@ return plugin
     let error = engine.build().unwrap_err().to_string();
     assert!(error.contains("`first` and `second`"), "{error}");
     assert!(error.contains("Same.kt"), "{error}");
+}
+
+#[cfg(unix)]
+#[test]
+fn cached_symlink_output_is_replaced_even_without_cas() {
+    for remove_cas in [false, true] {
+        let project = Project::new();
+        project.write_src("a.txt", "same");
+        build(&project, Vec::new());
+        let output = project.root().join("dist/a.txt");
+        std::fs::remove_file(&output).unwrap();
+        std::os::unix::fs::symlink(project.src().join("a.txt"), &output).unwrap();
+        if remove_cas {
+            std::fs::remove_dir_all(project.root().join(".rpp/cache/objects")).unwrap();
+        }
+        build(&project, Vec::new());
+        assert_eq!(project.read_out("a.txt").as_deref(), Some("same"));
+        assert!(!std::fs::symlink_metadata(output)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+    }
 }

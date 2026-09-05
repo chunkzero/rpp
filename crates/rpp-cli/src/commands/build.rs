@@ -137,7 +137,10 @@ fn run_squash(project: &Project, output_dir: &Path) -> Result<()> {
                 options_file.as_deref(),
             )
             .context("running packsquash")?;
-            ui::detail(format!("zip -> {}", zip_path.display()));
+            match &options_file {
+                Some(file) => ui::detail(format!("output path controlled by {}", file.display())),
+                None => ui::detail(format!("zip -> {}", zip_path.display())),
+            }
             ui::detail(format!(
                 "packsquash finished in {}",
                 ui::fmt_duration(start.elapsed())

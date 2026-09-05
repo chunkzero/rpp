@@ -1,0 +1,6 @@
+package rpp-examples:grayscale;
+
+world grayscale {
+    /// Convert a PNG to grayscale, preserving alpha. Returns the re-encoded PNG.
+    export grayscale: func(input: list<u8>) -> result<list<u8>, string>;
+}

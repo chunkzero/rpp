@@ -19,7 +19,6 @@ mod runtime;
 mod sandbox;
 mod traceback;
 
-pub use builtins::LogLevel;
+pub use ctx::PackInfo;
 pub use factory::{LuaPluginFactory, LuaPluginLimits};
-pub use instance::LuaPluginInstance;
 pub use runtime::RuntimeAccess;

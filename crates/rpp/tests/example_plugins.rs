@@ -2,7 +2,8 @@
 //!
 //! This drives the build [`Engine`] directly (the CLI is out of scope here)
 //! against the real `examples/pack` source and the three example Lua plugins in
-//! `examples/plugins/`, using the same options the example `rpp.toml` declares.
+//! `examples/plugins/`, using the shared-plugin options the example `rpp.toml` declares.
+//! The CLI integration test additionally covers the pack-local catalog plugin.
 //! It proves the examples actually work:
 //!
 //!   * json-minify collapses whitespace-heavy JSON in the output;
@@ -18,7 +19,7 @@ use std::sync::Arc;
 
 use rpp::config::Config;
 use rpp::engine::{BuildResult, Engine};
-use rpp::lua::LuaPluginFactory;
+use rpp::lua::{LuaPluginFactory, LuaPluginLimits, PackInfo, RuntimeAccess};
 use rpp::model::PluginFactory;
 
 use tempfile::TempDir;
@@ -101,15 +102,21 @@ fn plugin(name: &str, options_toml: &str) -> Arc<dyn PluginFactory> {
     let factory = LuaPluginFactory::load(
         &dir,
         options,
-        "rpp-example-pack",
-        Some("A tiny but complete Minecraft resource pack, built end-to-end by rpp.".into()),
-        Some(34),
+        PackInfo {
+            name: "rpp-example-pack".into(),
+            description: Some(
+                "A tiny but complete Minecraft resource pack, built end-to-end by rpp.".into(),
+            ),
+            format: Some(34),
+        },
+        LuaPluginLimits::default(),
+        RuntimeAccess::sandboxed(".".into()),
     )
     .unwrap_or_else(|e| panic!("load plugin {name}: {e}"));
     Arc::new(factory)
 }
 
-/// The three plugins, wired exactly like `examples/pack/rpp.toml`.
+/// The three shared plugins with the options from `examples/pack/rpp.toml`.
 fn example_plugins() -> Vec<Arc<dyn PluginFactory>> {
     vec![
         plugin("json-minify", "pretty = false"),
@@ -121,7 +128,7 @@ fn example_plugins() -> Vec<Arc<dyn PluginFactory>> {
     ]
 }
 
-/// A config mirroring `examples/pack/rpp.toml` (squash is irrelevant here: the
+/// A minimal config for the shared plugins (squash is irrelevant here: the
 /// Engine does not run the squash crate, so JSON minification is the plugin's).
 fn config() -> Config {
     Config::parse(

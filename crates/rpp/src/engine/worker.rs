@@ -78,9 +78,10 @@ impl WorkerPool {
     pub(crate) fn recv(&self) -> Option<JobResult> {
         self.result_rx.recv().ok()
     }
+}
 
-    /// Close the job channel and join all workers.
-    pub(crate) fn shutdown(mut self) {
+impl Drop for WorkerPool {
+    fn drop(&mut self) {
         self.job_tx = None;
         for worker in self.workers.drain(..) {
             let _ = worker.join();

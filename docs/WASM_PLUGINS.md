@@ -73,6 +73,11 @@ instance, which permits multi-call compiler workflows without cross-file state.
 
 Component binaries participate in the Lua plugin cache key. RPP also caches
 Wasmtime compilation by component content in memory and in `.rpp/cache/wasmtime`.
+Per-instance memory and per-call time limits come from `[build.wasm]
+memory_limit_mb` and `execution_deadline_seconds` in `rpp.toml`.
+
+[`examples/plugins/grayscale-wasm`](../examples/plugins/grayscale-wasm) is a
+complete processor plugin with a Rust guest crate.
 
 Project config may grant broader access only outside sandboxed mode:
 

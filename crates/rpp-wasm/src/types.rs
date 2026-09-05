@@ -115,7 +115,8 @@ pub enum Value {
 /// One callable component export.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Function {
-    /// Slash-separated export path. The final segment is the function name.
+    /// Export path. Functions nested in exported instances are written as
+    /// `instance#function`.
     pub path: String,
     /// Named function parameters.
     pub params: Vec<(String, ValueType)>,

@@ -5,7 +5,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use rpp::lua::LuaPluginFactory;
+use rpp::lua::{LuaPluginFactory, LuaPluginLimits, PackInfo, RuntimeAccess};
 use rpp::model::PluginFactory;
 
 use tempfile::TempDir;
@@ -45,8 +45,7 @@ impl PluginDir {
     /// Load this plugin into a factory with the given options TOML.
     pub fn factory(&self, options_toml: &str) -> LuaPluginFactory {
         let options: toml::Value = toml::from_str(options_toml).unwrap();
-        LuaPluginFactory::load(self.dir.path(), options, "test-pack", None, Some(34))
-            .expect("load plugin")
+        load_plugin(self.dir.path(), options).expect("load plugin")
     }
 
     pub fn factory_arc(&self, options_toml: &str) -> Arc<dyn PluginFactory> {
@@ -97,4 +96,19 @@ impl Project {
     pub fn config(&self) -> rpp::config::Config {
         rpp::config::Config::parse("[pack]\nname = \"test-pack\"\n", "rpp.toml").unwrap()
     }
+}
+
+/// Load a sandboxed Lua plugin with default limits and test pack metadata.
+pub fn load_plugin(dir: &Path, options: toml::Value) -> rpp::Result<LuaPluginFactory> {
+    LuaPluginFactory::load(
+        dir,
+        options,
+        PackInfo {
+            name: "test-pack".into(),
+            description: None,
+            format: Some(34),
+        },
+        LuaPluginLimits::default(),
+        RuntimeAccess::sandboxed(".".into()),
+    )
 }

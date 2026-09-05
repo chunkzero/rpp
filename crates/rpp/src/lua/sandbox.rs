@@ -68,11 +68,12 @@ impl Sandbox {
         root: &Path,
         access: RuntimeAccess,
         deadline: Deadline,
+        memory_limit: usize,
     ) -> mlua::Result<Self> {
         let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
         let env = lua.create_table()?;
 
-        install_stdlib(lua, &env, &access)?;
+        install_stdlib(lua, &env, &access, memory_limit)?;
         install_print(lua, &env, plugin_id)?;
         install_require(lua, &env, plugin_id, &root, access, deadline)?;
 
@@ -92,7 +93,12 @@ impl Sandbox {
 }
 
 /// Install the whitelisted standard library into `env`.
-fn install_stdlib(lua: &Lua, env: &Table, access: &RuntimeAccess) -> mlua::Result<()> {
+fn install_stdlib(
+    lua: &Lua,
+    env: &Table,
+    access: &RuntimeAccess,
+    memory_limit: usize,
+) -> mlua::Result<()> {
     let g = lua.globals();
 
     if access.is_native() {
@@ -145,7 +151,6 @@ fn install_stdlib(lua: &Lua, env: &Table, access: &RuntimeAccess) -> mlua::Resul
         "rawset",
         "rawequal",
         "rawlen",
-        "unpack",
     ] {
         let value: Value = g.get(name)?;
         if !value.is_nil() {
@@ -175,20 +180,21 @@ fn install_stdlib(lua: &Lua, env: &Table, access: &RuntimeAccess) -> mlua::Resul
         env.set("os", value)?;
     }
     if access.has_lua(crate::config::LuaCapability::Load) {
-        for name in ["load", "loadfile", "dofile"] {
-            let value: Value = g.get(name)?;
-            if !value.is_nil() {
-                env.set(name, value)?;
-            }
-        }
+        install_loaders(lua, env, memory_limit)?;
     }
     if access.has_lua(crate::config::LuaCapability::Debug) {
         let value: Value = g.get("debug")?;
         env.set("debug", value)?;
     }
     if access.has_lua(crate::config::LuaCapability::Package) {
-        let value: Value = g.get("package")?;
-        env.set("package", value)?;
+        // Search paths only: `loadlib`/`cpath` would load native code and
+        // `loaded`/`preload`/`searchers` reach the real global table.
+        let source: Table = g.get("package")?;
+        let package = lua.create_table()?;
+        for name in ["path", "config", "searchpath"] {
+            package.set(name, source.get::<Value>(name)?)?;
+        }
+        env.set("package", package)?;
     }
 
     // `collectgarbage` stub (accepts and ignores arguments, returns 0).
@@ -197,6 +203,155 @@ fn install_stdlib(lua: &Lua, env: &Table, access: &RuntimeAccess) -> mlua::Resul
         lua.create_function(|_, _: Variadic<Value>| Ok(0i64))?,
     )?;
 
+    Ok(())
+}
+
+/// Install `load`, `loadfile`, and `dofile` bound to the sandbox `_ENV`.
+///
+/// Lua's own versions default a chunk's `_ENV` to the real global table, which
+/// would hand a plugin `io`/`os` it was never granted.
+fn install_loaders(lua: &Lua, env: &Table, memory_limit: usize) -> mlua::Result<()> {
+    fn source_limit(lua: &Lua, memory_limit: usize) -> usize {
+        memory_limit.saturating_sub(lua.used_memory())
+    }
+
+    fn ensure_source_size(size: usize, limit: usize) -> mlua::Result<()> {
+        if size > limit {
+            return Err(mlua::Error::runtime("Lua source exceeds the memory limit"));
+        }
+        Ok(())
+    }
+
+    fn read_source(path: &str, limit: usize) -> std::io::Result<Vec<u8>> {
+        use std::io::Read;
+
+        let mut file = std::fs::File::open(path)?;
+        let mut source = Vec::new();
+        let mut buffer = [0_u8; 8192];
+        loop {
+            let remaining = limit.saturating_sub(source.len());
+            let read_len = remaining.saturating_add(1).min(buffer.len());
+            let count = file.read(&mut buffer[..read_len])?;
+            if count == 0 {
+                return Ok(source);
+            }
+            if count > remaining {
+                return Err(std::io::Error::other("Lua source exceeds the memory limit"));
+            }
+            source
+                .try_reserve_exact(count)
+                .map_err(std::io::Error::other)?;
+            source.extend_from_slice(&buffer[..count]);
+        }
+    }
+
+    fn compile(lua: &Lua, source: Vec<u8>, name: &str, env: Table) -> mlua::Result<(Value, Value)> {
+        match lua
+            .load(source)
+            .set_name(name)
+            .set_environment(env)
+            .into_function()
+        {
+            Ok(function) => Ok((Value::Function(function), Value::Nil)),
+            Err(error) => Ok((
+                Value::Nil,
+                Value::String(lua.create_string(error.to_string())?),
+            )),
+        }
+    }
+
+    let load_env = env.clone();
+    env.set(
+        "load",
+        lua.create_function(
+            move |lua,
+                  (chunk, name, _mode, chunk_env): (
+                Value,
+                Option<String>,
+                Value,
+                Option<Table>,
+            )| {
+                let limit = source_limit(lua, memory_limit);
+                let source = match chunk {
+                    Value::String(text) => {
+                        ensure_source_size(text.as_bytes().len(), limit)?;
+                        text.as_bytes().to_vec()
+                    }
+                    Value::Function(reader) => {
+                        let mut source = Vec::new();
+                        loop {
+                            match reader.call::<Value>(())? {
+                                Value::String(piece) if !piece.as_bytes().is_empty() => {
+                                    ensure_source_size(
+                                        source.len().saturating_add(piece.as_bytes().len()),
+                                        limit,
+                                    )?;
+                                    source
+                                        .try_reserve_exact(piece.as_bytes().len())
+                                        .map_err(mlua::Error::external)?;
+                                    source.extend_from_slice(&piece.as_bytes())
+                                }
+                                _ => break,
+                            }
+                        }
+                        source
+                    }
+                    other => {
+                        return Err(mlua::Error::external(format!(
+                            "load expects a string or function, got {}",
+                            other.type_name()
+                        )))
+                    }
+                };
+                let name = name.unwrap_or_else(|| "=(load)".into());
+                compile(
+                    lua,
+                    source,
+                    &name,
+                    chunk_env.unwrap_or_else(|| load_env.clone()),
+                )
+            },
+        )?,
+    )?;
+
+    let loadfile_env = env.clone();
+    env.set(
+        "loadfile",
+        lua.create_function(
+            move |lua, (path, _mode, chunk_env): (String, Value, Option<Table>)| {
+                let source = match read_source(&path, source_limit(lua, memory_limit)) {
+                    Ok(source) => source,
+                    Err(error) => {
+                        return Ok((
+                            Value::Nil,
+                            Value::String(
+                                lua.create_string(format!("cannot open {path}: {error}"))?,
+                            ),
+                        ))
+                    }
+                };
+                compile(
+                    lua,
+                    source,
+                    &format!("@{path}"),
+                    chunk_env.unwrap_or_else(|| loadfile_env.clone()),
+                )
+            },
+        )?,
+    )?;
+
+    let dofile_env = env.clone();
+    env.set(
+        "dofile",
+        lua.create_function(move |lua, path: String| {
+            let source = read_source(&path, source_limit(lua, memory_limit))
+                .map_err(|error| mlua::Error::external(format!("cannot open {path}: {error}")))?;
+            lua.load(source)
+                .set_name(format!("@{path}"))
+                .set_environment(dofile_env.clone())
+                .call::<mlua::MultiValue>(())
+        })?,
+    )?;
     Ok(())
 }
 
@@ -368,4 +523,23 @@ fn resolve_local(root: &Path, name: &str) -> mlua::Result<LocalSource> {
     Err(mlua::Error::external(format!(
         "module `{name}` not found in plugin directory"
     )))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn loader_sources_are_bounded() {
+        let lua = Lua::new();
+        let limit = lua.used_memory() + 8;
+        let env = lua.create_table().unwrap();
+        install_loaders(&lua, &env, limit).unwrap();
+
+        let load: mlua::Function = env.get("load").unwrap();
+        let error = load
+            .call::<mlua::MultiValue>(("return 'source larger than limit'",))
+            .unwrap_err();
+        assert!(error.to_string().contains("memory limit"), "{error}");
+    }
 }

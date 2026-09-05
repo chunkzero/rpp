@@ -6,10 +6,13 @@ use crate::lua::builtins;
 
 /// Pack metadata exposed to plugin code as `ctx.pack`.
 #[derive(Debug, Clone, Default)]
-pub(crate) struct PackInfo {
-    pub(crate) name: String,
-    pub(crate) description: Option<String>,
-    pub(crate) format: Option<u32>,
+pub struct PackInfo {
+    /// Pack name (`ctx.pack.name`).
+    pub name: String,
+    /// Pack description (`ctx.pack.description`).
+    pub description: Option<String>,
+    /// Pack format (`ctx.pack.format`).
+    pub format: Option<u32>,
 }
 
 /// Build the base ctx table shared by processors and generators:

@@ -3,6 +3,7 @@
 pub mod commands;
 pub mod project;
 
+mod atomic;
 mod luals;
 mod ui;
 mod user_plugins;

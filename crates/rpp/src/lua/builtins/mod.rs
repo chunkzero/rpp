@@ -7,5 +7,3 @@ pub(crate) mod path;
 pub(crate) mod process;
 pub(crate) mod str;
 pub(crate) mod toml_mod;
-
-pub use log::LogLevel;
