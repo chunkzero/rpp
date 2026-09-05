@@ -10,6 +10,7 @@ use tokio::sync::{broadcast, mpsc};
 use crate::project::Project;
 use crate::ui;
 
+use super::pack::PackStore;
 use super::watch::{local_plugin_dirs, ChangeBatch, DevWatcher};
 
 /// Dev-server state reused across incremental rebuilds.
@@ -18,15 +19,17 @@ pub struct DevSession {
     engine: Option<Engine>,
     wasm_engine: Option<WasmEngine>,
     watcher: DevWatcher,
+    packs: PackStore,
 }
 
 impl DevSession {
-    pub fn new(project: Project, watcher: DevWatcher) -> Self {
+    pub fn new(project: Project, watcher: DevWatcher, packs: PackStore) -> Self {
         Self {
             project,
             engine: None,
             wasm_engine: None,
             watcher,
+            packs,
         }
     }
 
@@ -43,6 +46,7 @@ impl DevSession {
             .unwrap()
             .build()
             .context("initial build")?;
+        self.packs.publish(&self.project.output_dir())?;
         ui::success(format!(
             "initial build: {} processed, {} cached, {} generated",
             built.processed, built.cached, built.generated
@@ -118,21 +122,15 @@ impl DevSession {
             if changed.len() == 1 { "" } else { "s" }
         ));
 
-        reload_payload_if_changed(&changed)
-    }
-}
-
-/// Build the JSON SSE payload `{"type":"reload","changed":[...]}` when needed.
-pub fn reload_payload(changed: &[String]) -> String {
-    serde_json::json!({ "type": "reload", "changed": changed }).to_string()
-}
-
-/// Return an SSE payload only when at least one output file changed.
-pub fn reload_payload_if_changed(changed: &[String]) -> Result<Option<String>> {
-    if changed.is_empty() {
-        Ok(None)
-    } else {
-        Ok(Some(reload_payload(changed)))
+        let updated = self.packs.publish(&self.project.output_dir())?;
+        if changed.is_empty() && !updated {
+            return Ok(None);
+        }
+        let mut payload = serde_json::json!({ "type": "reload", "changed": changed });
+        if updated {
+            payload["pack"] = self.packs.metadata();
+        }
+        Ok(Some(payload.to_string()))
     }
 }
 
@@ -159,7 +157,15 @@ pub async fn rebuild_loop(
                 let _ = reload_tx.send(payload);
             }
             Ok(Ok(None)) => {}
-            Ok(Err(e)) => ui::warn(format!("rebuild failed: {e:#}")),
+            Ok(Err(e)) => {
+                ui::warn(format!("rebuild failed: {e:#}"));
+                let _ = reload_tx.send(
+                    serde_json::json!({
+                        "type": "build_error", "message": format!("{e:#}")
+                    })
+                    .to_string(),
+                );
+            }
             Err(e) => ui::warn(format!("rebuild task panicked: {e}")),
         }
     }
@@ -167,28 +173,48 @@ pub async fn rebuild_loop(
 
 #[cfg(test)]
 mod tests {
+    use super::super::watch::spawn_watcher;
     use super::*;
 
     #[test]
-    fn payload_shape() {
-        let p = reload_payload(&["a.json".to_string(), "b.png".to_string()]);
-        let v: serde_json::Value = serde_json::from_str(&p).unwrap();
-        assert_eq!(v["type"], "reload");
-        assert_eq!(v["changed"][0], "a.json");
-        assert_eq!(v["changed"][1], "b.png");
-    }
+    fn rebuild_publishes_only_successful_pack_changes() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("src");
+        std::fs::create_dir(&source).unwrap();
+        let config = root.path().join("rpp.toml");
+        std::fs::write(&config, "[pack]\nname = 'test'\n").unwrap();
+        let file = source.join("pack.mcmeta");
+        std::fs::write(&file, "{}").unwrap();
+        let project = Project::discover_isolated(root.path()).unwrap();
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let watcher = spawn_watcher(root.path(), &source, &config, vec![], tx).unwrap();
+        let packs = PackStore::default();
+        let mut session = DevSession::new(project, watcher, packs.clone());
+        session.initial_build().unwrap();
+        let original = packs.metadata();
 
-    #[test]
-    fn reload_suppressed_when_unchanged() {
-        assert!(reload_payload_if_changed(&[]).unwrap().is_none());
-    }
-
-    #[test]
-    fn reload_emitted_when_changed() {
-        let payload = reload_payload_if_changed(&["x.json".to_string()])
+        assert!(session
+            .rebuild_once(&ChangeBatch::default())
+            .unwrap()
+            .is_none());
+        std::fs::write(&file, "{\"changed\":true}").unwrap();
+        let event = session
+            .rebuild_once(&ChangeBatch::default())
             .unwrap()
             .unwrap();
-        let v: serde_json::Value = serde_json::from_str(&payload).unwrap();
-        assert_eq!(v["changed"], serde_json::json!(["x.json"]));
+        let event: serde_json::Value = serde_json::from_str(&event).unwrap();
+        assert_eq!(event["type"], "reload");
+        assert_eq!(event["changed"], serde_json::json!(["pack.mcmeta"]));
+        assert_eq!(event["pack"], packs.metadata());
+        assert_ne!(event["pack"], original);
+
+        std::fs::write(&config, "invalid toml").unwrap();
+        assert!(session
+            .rebuild_once(&ChangeBatch {
+                kind_config: true,
+                ..Default::default()
+            })
+            .is_err());
+        assert_eq!(packs.metadata(), event["pack"]);
     }
 }

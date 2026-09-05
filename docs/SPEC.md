@@ -503,6 +503,48 @@ pub fn run_packsquash(binary: &str, pack_dir: &Path, zip_path: &Path, options_fi
   `update [id] [--global]` / `search <query>` — manages `[[plugin]]` entries
   (toml_edit, preserve formatting) and the corresponding lockfile.
 
+### Dev-server pack update protocol
+
+`GET /events` is an SSE stream with unnamed JSON data events and 15-second
+keepalive comments. On connection it immediately sends the latest successful pack
+snapshot. Successful rebuilds with changed pack outputs send reload events:
+
+```json
+{"type":"reload","changed":["assets/minecraft/lang/en_us.json"],"pack":{"url":"/packs/<sha1>.zip","sha1":"<40 lowercase hex characters>","size":1234}}
+```
+
+`changed` preserves the existing changed-path contract. The connection snapshot
+uses an empty array. `pack` describes the latest available archive when an event
+is consumed; queued notifications may be coalesced to that snapshot. Broadcast
+lag also yields the current snapshot, rather than silently losing the newest pack.
+Clients deduplicate pack offers by SHA-1, including after reconnects. There is no
+event ID/replay history; disconnected clients catch up to the latest pack.
+
+After every successful build, dev creates a deterministic, unsquashed ZIP outside
+the engine-owned output and computes its SHA-1 (the Minecraft download hash).
+Release squash and ZIP settings do not disable this archive. The bytes and metadata
+are published together only after archive creation succeeds. Identical bytes do
+not produce a new pack update. External-output-only changes do not update the pack.
+The initial build must succeed before HTTP starts.
+
+`GET /packs/<sha1>.zip` returns the current archive with `application/zip`.
+The URL is root-relative; callers may resolve it against a player-reachable base
+address. Only the latest archive is retained in memory; unknown or superseded
+hashes return 404. A response already started holds its immutable bytes even if a
+rebuild publishes a newer pack. Loose files remain available via the static
+fallback; `/events` and `/packs/:file` are reserved.
+
+Failed rebuilds or archive creation leave the last successful archive available
+and send `{"type":"build_error","message":"..."}`, with no pack update.
+Unchanged successful rebuilds emit no event. Build errors are live notifications,
+not persistent history, and startup failures terminate the CLI.
+
+The Java 21+ client in `integrations/jvm` connects to this protocol. It exposes
+URL/hash/size metadata and connection, protocol, build, and callback failures,
+reconnects after interruptions, and leaves player scheduling and resource-pack
+responses to platform integrations. Its README contains a runnable Minestom
+example and Spigot caller integration.
+
 ## 10. Examples (must actually work)
 
 - `examples/pack/` — a complete project: `rpp.toml` (uses local example plugins +

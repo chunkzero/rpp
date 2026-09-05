@@ -1,6 +1,7 @@
 //! `rpp dev`: watch sources + plugins, incrementally rebuild, serve the output
 //! statically, and push live-reload events over SSE.
 
+mod pack;
 mod rebuild;
 mod server;
 mod watch;
@@ -44,7 +45,12 @@ async fn serve(project: Project) -> Result<()> {
     // they queue in the channel until the rebuild loop starts.
     let (fs_tx, fs_rx) = tokio::sync::mpsc::unbounded_channel();
     let watcher = spawn_watcher(&root, &source_dir, &config_path, plugin_dirs, fs_tx)?;
-    let session = Arc::new(tokio::sync::Mutex::new(DevSession::new(project, watcher)));
+    let packs = pack::PackStore::default();
+    let session = Arc::new(tokio::sync::Mutex::new(DevSession::new(
+        project,
+        watcher,
+        packs.clone(),
+    )));
     let (reload_tx, _) = broadcast::channel::<String>(64);
 
     {
@@ -63,7 +69,7 @@ async fn serve(project: Project) -> Result<()> {
         tokio::spawn(rebuild_loop(session, fs_rx, reload_tx));
     }
 
-    serve_http(output_dir, reload_tx, &host, port, open_browser).await
+    serve_http(output_dir, reload_tx, packs, &host, port, open_browser).await
 }
 
 #[cfg(test)]

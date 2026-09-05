@@ -125,3 +125,5 @@ dependencies.
 ## License
 
 MIT
+
+For Minecraft server live pack updates, see the [JVM client and Minestom/Spigot examples](integrations/jvm/README.md).
