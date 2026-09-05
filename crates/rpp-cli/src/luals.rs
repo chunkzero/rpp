@@ -250,7 +250,7 @@ function Component.load(name) end
 ---@field cwd string|nil
 ---@field env table<string, string>|nil
 ---@field stdin string|nil Binary-safe standard input.
----@field timeout number|nil Timeout in seconds.
+---@field timeout number|nil Timeout in seconds, including stdin and output draining; bounded by the Lua deadline.
 
 ---@class rpp.ProcessOutput
 ---@field status integer
@@ -259,6 +259,7 @@ function Component.load(name) end
 
 ---@class rpp.Process
 local Process = {}
+---Runs on Unix only. Remaining process-group members are terminated when the call finishes.
 ---@param request rpp.ProcessRequest
 ---@return rpp.ProcessOutput
 function Process.run(request) end

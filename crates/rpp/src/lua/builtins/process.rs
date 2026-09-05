@@ -110,32 +110,20 @@ mod tests {
         assert!(parse_timeout(Value::Number(f64::INFINITY)).is_err());
     }
 
-    #[cfg(all(feature = "wasm", unix))]
+    #[cfg(unix)]
     #[test]
     fn process_is_bounded_by_lua_deadline() {
-        use std::collections::BTreeMap;
-
-        use crate::config::{PluginPermissions, SecurityMode};
-
         let lua = Lua::new();
         let deadline = std::sync::Arc::new(parking_lot::Mutex::new(Some(
             Instant::now() + Duration::from_millis(100),
         )));
-        let access = RuntimeAccess::new(
-            SecurityMode::Trusted,
-            PluginPermissions {
-                process: vec!["/bin/sh".into()],
-                ..Default::default()
-            },
-            std::env::current_dir().unwrap(),
-            BTreeMap::new(),
-            BTreeMap::new(),
-        );
+        let mut access = RuntimeAccess::sandboxed(std::env::current_dir().unwrap());
+        access.permissions.process.push("/bin/sh".into());
         access.phase.set(Phase::Generator);
         let process = module(&lua, access, deadline).unwrap();
         let request = lua.create_table().unwrap();
         request.set("program", "/bin/sh").unwrap();
-        request.set("args", vec!["-c", "sleep 2"]).unwrap();
+        request.set("args", vec!["-c", "sleep 2 &"]).unwrap();
 
         let started = Instant::now();
         let error = process
