@@ -268,8 +268,23 @@ fn packsquash_generates_options_file() {
 #[ignore = "requires a real packsquash binary on PATH"]
 fn packsquash_real_invocation() {
     let dir = tempfile::tempdir().unwrap();
-    build_tree(dir.path());
-    let out = dir.path().join("out.zip");
+    let metadata = br#"{"pack":{"pack_format":34,"description":"PackSquash integration test"}}"#;
+    let language = br#"{"item.rpp.test":"Test item"}"#;
+    fs::write(dir.path().join("pack.mcmeta"), metadata).unwrap();
+    fs::create_dir_all(dir.path().join("assets/rpp/lang")).unwrap();
+    fs::write(dir.path().join("assets/rpp/lang/en_us.json"), language).unwrap();
+    let output_dir = tempfile::tempdir().unwrap();
+    let out = output_dir.path().join("out.zip");
     run_packsquash("packsquash", dir.path(), &out, None).unwrap();
-    assert!(out.exists());
+
+    let mut archive = zip::ZipArchive::new(fs::File::open(out).unwrap()).unwrap();
+    for (path, expected) in [
+        ("pack.mcmeta", metadata.as_slice()),
+        ("assets/rpp/lang/en_us.json", language.as_slice()),
+    ] {
+        let actual: serde_json::Value =
+            serde_json::from_reader(archive.by_name(path).unwrap()).unwrap();
+        let expected: serde_json::Value = serde_json::from_slice(expected).unwrap();
+        assert_eq!(actual, expected, "archive contents differ for {path}");
+    }
 }
