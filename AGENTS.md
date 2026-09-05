@@ -42,7 +42,7 @@ Rust tooling for building Minecraft resource packs with incremental Lua and WASI
 ## Git
 
 - Use Conventional Commits for commits and PR titles.
-- Squash-merge all PRs.
+- When merging a PR, use squash merge.
 - Do not revert unrelated changes.
 - Summarize changes, validation results, and known limitations when handing work back.
 
