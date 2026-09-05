@@ -14,3 +14,9 @@ examples/plugins/*/plugin.wasm
 .vscode/
 *.swp
 .DS_Store
+
+# JVM integration
+integrations/jvm/.gradle/
+integrations/jvm/**/build/
+integrations/jvm/examples/pack/.rpp/
+integrations/jvm/examples/pack/dist/
