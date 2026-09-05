@@ -88,9 +88,12 @@ WASIp2 component plugin (`just example-wasm` builds its guest crate).
 
 ## Development
 
-Install [mise](https://mise.jdx.dev/getting-started.html) and a native C/C++ build
-toolchain (for example, `build-essential` on Ubuntu or Xcode Command Line Tools on
-macOS). From the repository root:
+Install [mise](https://mise.jdx.dev/getting-started.html) and a C compiler and native
+linker (for example, `build-essential` on Ubuntu or Xcode Command Line Tools on
+macOS). RPP's `mlua` dependency builds bundled Lua 5.4 from C source, and the final
+Rust executable needs a native linker.
+
+From the repository root:
 
 ```bash
 mise trust
