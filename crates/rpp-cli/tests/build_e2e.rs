@@ -118,7 +118,7 @@ fn build_minifies_and_zips_then_caches() {
     let zip = root.join("dist/test-pack.zip");
     assert!(zip.is_file(), "zip produced at {}", zip.display());
     let archive_bytes = std::fs::read(&zip).unwrap();
-    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(archive_bytes)).unwrap();
+    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(&archive_bytes)).unwrap();
     let mut archived_release = String::new();
     std::io::Read::read_to_string(
         &mut archive.by_name("assets/minecraft/release.json").unwrap(),
@@ -150,9 +150,9 @@ fn build_minifies_and_zips_then_caches() {
         "release archive should be preserved by output sync: {stdout2}"
     );
 
-    // Output and zip still present after the cached build.
-    assert!(produced.is_file());
-    assert!(zip.is_file());
+    assert_eq!(std::fs::read_to_string(&produced).unwrap(), body);
+    assert_eq!(std::fs::read_to_string(&release_json).unwrap(), loose);
+    assert_eq!(std::fs::read(&zip).unwrap(), archive_bytes);
 }
 
 #[test]

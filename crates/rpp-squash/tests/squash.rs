@@ -67,40 +67,43 @@ fn make_png() -> Vec<u8> {
         // No filtering / fast compression so the encoder leaves plenty for oxipng.
         encoder.set_compression(png::Compression::Fast);
         let mut writer = encoder.write_header().unwrap();
-        // Solid color: 16*16*4 bytes, all identical -> highly compressible and
-        // oxipng will reduce the color type / palette.
-        let data = vec![128u8; 16 * 16 * 4];
+        // A solid, translucent color is compressible and exercises alpha preservation.
+        let data = [40u8, 100, 180, 128].repeat(16 * 16);
         writer.write_image_data(&data).unwrap();
     }
     buf
 }
 
-fn is_valid_png(bytes: &[u8]) -> (u32, u32) {
-    let decoder = png::Decoder::new(bytes);
+fn decode_png(bytes: &[u8]) -> (u32, u32, Vec<u8>) {
+    let mut decoder = png::Decoder::new(bytes);
+    decoder.set_transformations(png::Transformations::EXPAND);
     let mut reader = decoder.read_info().expect("output must decode as PNG");
     let mut out = vec![0; reader.output_buffer_size()];
     let info = reader.next_frame(&mut out).expect("decode frame");
-    (info.width, info.height)
+    assert_eq!(info.color_type, png::ColorType::Rgba);
+    assert_eq!(info.bit_depth, png::BitDepth::Eight);
+    out.truncate(info.buffer_size());
+    (info.width, info.height, out)
 }
 
 #[test]
-fn png_fast_shrinks_and_stays_valid() {
+fn png_fast_shrinks_and_preserves_pixels() {
     let opts = SquashOptions::builder().png(PngLevel::Fast).build();
     let input = make_png();
     let out = squash_file("tex.png", input.clone(), &opts).unwrap();
     let out = out.expect("oxipng should shrink a redundant PNG");
     assert!(out.len() < input.len(), "expected smaller output");
-    assert_eq!(is_valid_png(&out), (16, 16));
+    assert_eq!(decode_png(&out), decode_png(&input));
 }
 
 #[test]
-fn png_max_shrinks_and_stays_valid() {
+fn png_max_shrinks_and_preserves_pixels() {
     let opts = SquashOptions::builder().png(PngLevel::Max).build();
     let input = make_png();
     let out = squash_file("tex.png", input.clone(), &opts).unwrap();
     let out = out.expect("oxipng max should shrink a redundant PNG");
     assert!(out.len() < input.len());
-    assert_eq!(is_valid_png(&out), (16, 16));
+    assert_eq!(decode_png(&out), decode_png(&input));
 }
 
 #[test]
@@ -230,10 +233,22 @@ fn zip_roundtrips_contents() {
 
     let reader = std::io::Cursor::new(fs::read(&zip_path).unwrap());
     let mut archive = zip::ZipArchive::new(reader).unwrap();
-    let mut file = archive.by_name("readme.txt").unwrap();
-    let mut s = String::new();
-    file.read_to_string(&mut s).unwrap();
-    assert_eq!(s, "hi");
+    let paths = [
+        "pack.mcmeta",
+        "assets/minecraft/apple.json",
+        "assets/minecraft/zebra.json",
+        "readme.txt",
+    ];
+    assert_eq!(archive.len(), paths.len());
+    for path in paths {
+        let mut contents = Vec::new();
+        archive
+            .by_name(path)
+            .unwrap()
+            .read_to_end(&mut contents)
+            .unwrap();
+        assert_eq!(contents, fs::read(root.join(path)).unwrap(), "{path}");
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -268,8 +283,23 @@ fn packsquash_generates_options_file() {
 #[ignore = "requires a real packsquash binary on PATH"]
 fn packsquash_real_invocation() {
     let dir = tempfile::tempdir().unwrap();
-    build_tree(dir.path());
-    let out = dir.path().join("out.zip");
+    let metadata = br#"{"pack":{"pack_format":34,"description":"PackSquash integration test"}}"#;
+    let language = br#"{"item.rpp.test":"Test item"}"#;
+    fs::write(dir.path().join("pack.mcmeta"), metadata).unwrap();
+    fs::create_dir_all(dir.path().join("assets/rpp/lang")).unwrap();
+    fs::write(dir.path().join("assets/rpp/lang/en_us.json"), language).unwrap();
+    let output_dir = tempfile::tempdir().unwrap();
+    let out = output_dir.path().join("out.zip");
     run_packsquash("packsquash", dir.path(), &out, None).unwrap();
-    assert!(out.exists());
+
+    let mut archive = zip::ZipArchive::new(fs::File::open(out).unwrap()).unwrap();
+    for (path, expected) in [
+        ("pack.mcmeta", metadata.as_slice()),
+        ("assets/rpp/lang/en_us.json", language.as_slice()),
+    ] {
+        let actual: serde_json::Value =
+            serde_json::from_reader(archive.by_name(path).unwrap()).unwrap();
+        let expected: serde_json::Value = serde_json::from_slice(expected).unwrap();
+        assert_eq!(actual, expected, "archive contents differ for {path}");
+    }
 }
