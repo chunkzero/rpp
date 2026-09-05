@@ -17,6 +17,18 @@ world window-host {
         warnings: list<string>,
     }
 
+    record optional-values {
+        items: list<option<bool>>,
+        pair: tuple<option<bool>, option<bool>>,
+        nested: list<option<option<bool>>>,
+        success: result<option<string>, string>,
+        failure: result<string, option<bool>>,
+        boolean: result<bool, bool>,
+        empty: result,
+    }
+
+    export round-trip-options: func(values: optional-values) -> optional-values;
+
     export compile: func(
         namespace: string,
         project-json: string,

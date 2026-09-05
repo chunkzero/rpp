@@ -241,11 +241,12 @@ fn lua_to_wasm(value: Value, ty: &ValueType) -> Result<WasmValue, String> {
             let Value::Table(table) = value else {
                 return Err(expected("tuple table", &value));
             };
-            if table.raw_len() != types.len() {
+            let length = sequence_length(&table)?;
+            if length != types.len() {
                 return Err(format!(
                     "tuple expects {} element(s), got {}",
                     types.len(),
-                    table.raw_len()
+                    length
                 ));
             }
             let mut out = Vec::with_capacity(types.len());
@@ -294,10 +295,23 @@ fn lua_to_wasm(value: Value, ty: &ValueType) -> Result<WasmValue, String> {
             WasmValue::Enum(case)
         }
         ValueType::Option(inner) => {
-            if value.is_nil() {
-                WasmValue::Option(None)
-            } else {
-                WasmValue::Option(Some(Box::new(lua_to_wasm(value, inner)?)))
+            let Value::Table(table) = value else {
+                return Err(expected("tagged option table", &value));
+            };
+            let tag = table
+                .raw_get::<String>("tag")
+                .map_err(|_| "option requires a string `tag` field".to_string())?;
+            let payload = table
+                .raw_get::<Value>("value")
+                .map_err(|error| error.to_string())?;
+            match tag.as_str() {
+                "none" if payload.is_nil() => WasmValue::Option(None),
+                "none" => return Err("option `none` does not accept a payload".into()),
+                "some" => WasmValue::Option(Some(Box::new(
+                    lua_to_wasm(payload, inner)
+                        .map_err(|message| format!("option `some` payload: {message}"))?,
+                ))),
+                _ => return Err("option tag must be `none` or `some`".into()),
             }
         }
         ValueType::Result { ok, err } => {
@@ -345,13 +359,32 @@ fn lua_to_wasm(value: Value, ty: &ValueType) -> Result<WasmValue, String> {
 }
 
 #[cfg(feature = "wasm")]
+fn sequence_length(table: &Table) -> Result<usize, String> {
+    let length = table.raw_len();
+    let mut count = 0;
+    for pair in table.pairs::<Value, Value>() {
+        let (key, _) = pair.map_err(|error| error.to_string())?;
+        if !matches!(key, Value::Integer(index) if index > 0 && (index as u64) <= length as u64) {
+            return Err("sequence must have exactly the integer keys 1..n (no holes)".into());
+        }
+        count += 1;
+    }
+    if count != length {
+        return Err("sequence must have exactly the integer keys 1..n (no holes)".into());
+    }
+    Ok(length)
+}
+
+#[cfg(feature = "wasm")]
 fn list_to_wasm(value: Value, inner: &ValueType) -> Result<WasmValue, String> {
     let Value::Table(table) = value else {
         return Err(expected("list table or byte string", &value));
     };
-    let mut out = Vec::new();
-    for (index, value) in table.sequence_values::<Value>().enumerate() {
-        let value = value
+    let length = sequence_length(&table)?;
+    let mut out = Vec::with_capacity(length);
+    for index in 0..length {
+        let value = table
+            .raw_get::<Value>(index + 1)
             .map_err(|error| format!("list element {} could not be read: {error}", index + 1))?;
         out.push(
             lua_to_wasm(value, inner)
@@ -503,9 +536,17 @@ fn wasm_to_lua(lua: &Lua, value: WasmValue, ty: &ValueType) -> Result<Value, Str
             }
             Value::String(lua.create_string(tag).map_err(|error| error.to_string())?)
         }
-        (WasmValue::Option(None), ValueType::Option(_)) => Value::Nil,
-        (WasmValue::Option(Some(value)), ValueType::Option(inner)) => {
-            wasm_to_lua(lua, *value, inner)?
+        (WasmValue::Option(value), ValueType::Option(inner)) => {
+            let table = lua.create_table().map_err(|error| error.to_string())?;
+            table
+                .raw_set("tag", if value.is_some() { "some" } else { "none" })
+                .map_err(|error| error.to_string())?;
+            if let Some(value) = value {
+                table
+                    .raw_set("value", wasm_to_lua(lua, *value, inner)?)
+                    .map_err(|error| error.to_string())?;
+            }
+            Value::Table(table)
         }
         (WasmValue::Result(result), ValueType::Result { ok, err }) => {
             let table = lua.create_table().map_err(|error| error.to_string())?;
@@ -799,6 +840,29 @@ mod tests {
         let error = lua_to_wasm(Value::Table(record), &record_type).unwrap_err();
         assert!(error.contains("field `items`: list element 1"), "{error}");
         assert!(error.contains("outside the range of u8"), "{error}");
+    }
+
+    #[test]
+    fn options_and_sequences_reject_ambiguous_input() {
+        let lua = Lua::new();
+        let option = ValueType::Option(Box::new(ValueType::Bool));
+        for expression in [
+            "nil",
+            "false",
+            "{}",
+            "{tag='some'}",
+            "{tag='none', value=false}",
+        ] {
+            let value = lua.load(format!("return {expression}")).eval().unwrap();
+            assert!(lua_to_wasm(value, &option).is_err(), "{expression}");
+        }
+        for expression in ["{[1]=false,[3]=true}", "{[2]=false}", "{false,n=1}"] {
+            let value: Value = lua.load(format!("return {expression}")).eval().unwrap();
+            assert!(
+                lua_to_wasm(value.clone(), &ValueType::List(Box::new(ValueType::Bool))).is_err()
+            );
+            assert!(lua_to_wasm(value, &ValueType::Tuple(vec![ValueType::Bool])).is_err());
+        }
     }
 
     #[test]

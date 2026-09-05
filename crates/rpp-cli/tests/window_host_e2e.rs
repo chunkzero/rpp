@@ -170,7 +170,7 @@ plugin:generator("window", function(ctx)
         ctx.options.namespace,
         json.encode(project),
         files,
-        ctx.options.kotlin_package
+        { tag = "some", value = ctx.options.kotlin_package }
     )
     if result.err ~= nil then
         error(result.err)
@@ -302,5 +302,63 @@ fn window_component_diagnostic_keeps_stable_plugin_context() {
     assert!(
         error.contains("Window schema v4 requires hud_shaders=true and host pack_format=84"),
         "{error}"
+    );
+}
+
+#[test]
+fn component_options_round_trip_without_losing_positions_or_branches() {
+    if !wasip2_available() {
+        eprintln!("SKIP: wasm32-wasip2 target is unavailable");
+        return;
+    }
+    let temporary = tempfile::tempdir().unwrap();
+    let root = temporary.path().join("project");
+    std::fs::create_dir_all(&root).unwrap();
+    let target = std::env::var_os("CARGO_TARGET_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| temporary.path().join("component-target"))
+        .join("option-guest");
+    let component = build_component(&target, false);
+    scaffold(&root, &component);
+    std::fs::write(
+        root.join("plugin/init.lua"),
+        r#"
+local rpp = require("rpp")
+local component = rpp.component.load("compiler")
+local plugin = rpp.plugin()
+local function none() return { tag = "none" } end
+local function some(value) return { tag = "some", value = value } end
+plugin:generator("round-trip", function(ctx)
+    local values = {
+        items = { none(), some(false), none() },
+        pair = { some(false), none() },
+        nested = { none(), some(none()), some(some(false)) },
+        success = { ok = none() },
+        failure = { err = none() },
+        boolean = { ok = false },
+        empty = { ok = true },
+    }
+    for _ = 1, 2 do
+        values = component:call("round-trip-options", values)
+        assert(#values.items == 3 and values.items[1].tag == "none")
+        assert(values.items[2].value == false and values.items[3].tag == "none")
+        assert(#values.pair == 2 and values.pair[2].tag == "none")
+        assert(values.nested[1].tag == "none")
+        assert(values.nested[2].tag == "some" and values.nested[2].value.tag == "none")
+        assert(values.nested[3].value.value == false)
+        assert(values.success.ok.tag == "none" and values.success.err == nil)
+        assert(values.failure.err.tag == "none" and values.failure.ok == nil)
+        assert(values.boolean.ok == false and values.empty.ok == true)
+    end
+    ctx:emit("round-trip.txt", "passed")
+end)
+return plugin
+"#,
+    )
+    .unwrap();
+    assert_eq!(build(&root).unwrap().generated, 1);
+    assert_eq!(
+        std::fs::read(root.join("dist/round-trip.txt")).unwrap(),
+        b"passed"
     );
 }

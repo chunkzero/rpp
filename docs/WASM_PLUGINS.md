@@ -56,6 +56,17 @@ and returns Lua strings; records are Lua tables; `result<T, E>` is represented
 as `{ ok = value }` or `{ err = value }`. Type/range errors identify the
 component export and parameter that failed conversion.
 
+Options always use `{ tag = "none" }` or `{ tag = "some", value = payload }`.
+For example, `some(none)` is `{ tag = "some", value = { tag = "none" } }`,
+and `ok(none)` is `{ ok = { tag = "none" } }`. Use these tags for arguments
+as well as returned values; migrate previous `nil`/bare option arguments to these
+tables and regenerate wrappers. `some(false)` keeps `value = false`.
+A result branch without a WIT payload uses `true`, such as `{ ok = true }`.
+Check result branches with `~= nil`, because `{ ok = false }` is valid.
+Lists and tuples are dense 1-based tables with exactly the keys `1..n`; holes and
+extra keys are rejected. Options occupy real entries, including trailing `none`,
+so a separate length field is unnecessary.
+
 ## WASI And Trust
 
 By default, components run without filesystem preopens, network access, passed

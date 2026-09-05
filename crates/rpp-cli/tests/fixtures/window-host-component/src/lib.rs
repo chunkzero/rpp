@@ -6,6 +6,17 @@ wit_bindgen::generate!({
 struct Component;
 
 impl Guest for Component {
+    fn round_trip_options(values: OptionalValues) -> OptionalValues {
+        assert_eq!(values.items, vec![None, Some(false), None]);
+        assert_eq!(values.pair, (Some(false), None));
+        assert_eq!(values.nested, vec![None, Some(None), Some(Some(false))]);
+        assert_eq!(values.success, Ok(None));
+        assert_eq!(values.failure, Err(None));
+        assert_eq!(values.boolean, Ok(false));
+        assert_eq!(values.empty, Ok(()));
+        values
+    }
+
     fn compile(
         namespace: String,
         project_json: String,
