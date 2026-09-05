@@ -1,94 +1,133 @@
-# rpp-example-pack
+# RPP example pack
 
-A small but **complete and real** Minecraft resource pack, built end-to-end by
-[rpp](../../README.md). It exists to show what an actual rpp project looks like:
-a `rpp.toml`, hand-authored `src/` assets, and three local Lua plugins wired into
-the build.
+A resource pack project showing per-file processors, ordered generators, Lua
+source loading, incremental dependencies, and declared external outputs. The
+baseline uses sandboxed Lua and checked-in PNGs; no guest compilation is needed.
 
-## Layout
+## Build and develop
 
-```
-examples/pack/
-├── rpp.toml                 # project config: pack metadata, squash, plugins
-├── src/
-│   ├── pack.mcmeta          # pack_format 34 + description
-│   ├── .rppignore           # excludes *.txt (design notes) from the build
-│   ├── notes/design.txt     # ignored — never ships
-│   └── assets/minecraft/
-│       ├── blockstates/rpp_bricks.json
-│       ├── lang/en_us.json
-│       ├── sounds.json
-│       ├── models/
-│       │   ├── block/rpp_bricks.json     # deliberately whitespace-heavy
-│       │   └── item/diamond_sword.json, magic_gem.json
-│       └── textures/
-│           ├── block/rpp_bricks.png
-│           ├── block/ember.png (+ ember.png.mcmeta animation)
-│           ├── custom/gem.png            # fingerprinted by hash-rename
-│           └── item/diamond_sword.png
-└── tools/gen_textures.py    # regenerates the PNGs (stdlib only; see below)
-```
-
-The textures are real 16×16 (and one 16×64 animated) RGBA PNGs. They are
-checked in; `tools/gen_textures.py` regenerates them deterministically using only
-the Python standard library (no Pillow required).
-
-## What the build does
-
-The pipeline in `rpp.toml` runs three local plugins (in
-[`../plugins/`](../plugins)) and then the built-in squash pass:
-
-1. **json-minify** — re-encodes every `.json`/`.mcmeta` compactly. Watch the
-   whitespace-heavy `models/block/rpp_bricks.json` collapse to one line.
-2. **mcmeta-validate** — validates `pack.mcmeta` (including that its
-   `pack_format` matches `rpp.toml`) and the `ember.png.mcmeta` animation. Fails
-   the build if anything is wrong.
-3. **hash-rename** — fingerprints `custom/gem.png` to
-   `custom/gem.<hash>.png` and emits `rename_map.json` so references can be
-   rewritten. It is scoped to `custom/` so vanilla texture names (which models
-   and blockstates reference by fixed name) are left untouched.
-4. **squash** (built in) — minifies JSON, optimizes the PNGs with oxipng, strips
-   junk, and writes a deterministic `dist/rpp-example-pack.zip`.
-
-To also try the WASM-backed processor, run `just example-wasm` once and add
-`source = "path:../plugins/grayscale-wasm"` as another `[[plugin]]`.
-
-> Note: `magic_gem.json` references `minecraft:custom/gem`. After hash-rename the
-> texture file is `gem.<hash>.png`, so a real pack would also rewrite that
-> reference using `rename_map.json` — left as an exercise / a job for another
-> plugin. The example keeps the two concerns separate on purpose.
-
-## Building it
-
-From this directory:
+From `examples/pack`:
 
 ```bash
 cargo run -p rpp-cli -- build
+cargo run -p rpp-cli -- build       # unchanged inputs reuse cached work
+cargo run -p rpp-cli -- dev         # watch sources and rebuild; Ctrl-C to stop
+cargo run -p rpp-cli -- clean       # remove build artifacts and owned catalog files
 ```
 
-Or, if a `just rpp` recipe is configured, run it with this directory as the
-working directory. Output lands in `dist/`:
+The example retains pack format 34. Its diamond sword texture replaces a vanilla
+asset. The custom models demonstrate asset generation; adding a model does not
+register a new Minecraft item or automatically assign it to an in-game item.
 
+## Layout
+
+```text
+rpp.toml                         Pack metadata, limits, plugins, output roots
+plugins/catalog/                 Pack-local Lua plugin
+src/items/ember_gem.lua           Authoring input; never included in the pack
+src/pack.mcmeta                  Validated against rpp.toml
+src/assets/minecraft/            Models, language, static and animated textures
+src/.rppignore                   Excludes design notes
+src/notes/design.txt             Ignored input
+tools/gen_textures.py            Deterministic PNG generation using Python stdlib
 ```
+
+The reusable processors and generators live in [`../plugins`](../plugins).
+
+## Pipeline
+
+All file processors run before generators. Generators run in registration order;
+each sees the outputs of earlier generators.
+
+1. **json-minify** compacts JSON and metadata with a per-file processor.
+2. **mcmeta-validate** checks source pack metadata and animation metadata,
+   demonstrating tracked source reads and a plugin-local `rules.lua` module.
+3. **hash-rename** fingerprints `textures/custom/` outputs and emits
+   `rename_map.json`. Vanilla texture paths stay fixed.
+4. **catalog**, the pack-local plugin, drops `items/*.lua` from shipped outputs
+   while keeping them available to `source_files` and `load_source`. Its generator
+   reads the rename map, fixes texture references in existing models, and emits
+   models and English translations from item definitions. It exports an item
+   catalog with `emit_output` to the `catalog` root declared in `rpp.toml`.
+5. **Built-in squash** minifies JSON and optimizes PNGs for the deterministic
+   release ZIP. Loose output stays at the pre-squash stage, so texture names hash
+   those processed bytes, not the ZIP's optimized PNG bytes.
+
+`[build.lua]` sets memory and execution limits. The catalog output root works in
+the default sandbox without filesystem or process grants.
+
+## Generated output
+
+```text
 dist/
-├── assets/...                       # processed + squashed pack contents
-├── rename_map.json                  # emitted by hash-rename
-└── rpp-example-pack.zip             # deterministic distributable
+  pack.mcmeta
+  assets/minecraft/models/item/magic_gem.json   Updated hashed texture reference
+  assets/minecraft/textures/custom/gem.<hash>.png
+  assets/rpp/models/item/ember_gem.json         Generated model
+  assets/rpp/lang/en_us.json                   Generated translations
+  rename_map.json
+  rpp-example-pack.zip
+generated/catalog/items.json                  External artifact, outside the ZIP
 ```
 
-## Regenerating textures
+The external catalog links each item ID to its model, translation key, and resolved
+texture. A server or another tool can consume it without unpacking the resource
+pack. RPP tracks ownership and cleans up its generated files while preserving
+unowned files in that directory.
+
+## Try a change
+
+Edit `src/items/ember_gem.lua` to change its display name, or add
+`src/items/frost_gem.lua`:
+
+```lua
+return {
+    name = "Frost Gem",
+    texture = "minecraft:custom/gem",
+}
+```
+
+Rebuild to generate the new model, translation, and catalog entry. Definitions
+must return `name` and `texture` strings; filenames use lowercase letters,
+digits, underscores, or hyphens. Textures must exist in this example pack.
+Deleting a definition removes its generated model and catalog entry on rebuild.
+The generator tracks both the source listing and loaded contents, so additions,
+edits, and deletions invalidate it. An unchanged build replays cached results.
+
+Change `namespace` in the catalog plugin options to relocate generated models
+and translations. Change the declared `catalog` output root to send the external
+artifact to another directory.
+
+## Optional WASM processor
+
+From the repository root, install the guest target and build the component:
 
 ```bash
-python3 tools/gen_textures.py
+rustup target add wasm32-wasip2
+just example-wasm
 ```
 
-This rewrites the PNGs under `src/assets/minecraft/textures`. The script is
-deterministic, so committed binaries stay stable across runs.
+Append this entry to `rpp.toml`:
 
-## Verified by
+```toml
+[[plugin]]
+source = "path:../plugins/grayscale-wasm"
+```
 
-`crates/rpp/tests/example_plugins.rs` drives the rpp `Engine` directly against
-this pack and the three plugins, asserting the JSON is minified, validation
-passes, files are hash-renamed with a consistent `rename_map.json`, the
-`.rppignore`d notes are absent, and the incremental cache behaves (a clean
-second build, and a one-file edit reprocessing only that file).
+The processor converts PNGs to grayscale through a WASIp2 component. Even when
+listed last, it runs before every generator, so hash-rename fingerprints the
+converted bytes and the catalog resolves the resulting texture names. See the
+[WASM example](../plugins/grayscale-wasm/README.md) for the guest implementation.
+
+To regenerate the original checked-in textures, run
+`python3 tools/gen_textures.py` from this directory.
+
+## Verification
+
+`cargo test -p rpp-cli --test build_e2e example_pack_builds_from_its_own_config`
+builds a temporary copy using this configuration. It checks repaired references,
+generated assets, external catalog output, ZIP exclusions, an identical cached
+rebuild, and stale asset removal after renaming an item definition.
+
+`cargo test -p rpp --test example_plugins` exercises the three shared plugins
+independently, including validation failures and per-file cache invalidation.
