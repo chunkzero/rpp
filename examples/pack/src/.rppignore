@@ -1,0 +1,3 @@
+# Files rpp should not copy into the built pack.
+# Design notes live alongside the assets but must never ship.
+*.txt

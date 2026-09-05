@@ -13,25 +13,34 @@ name = "rpp"
 path = "src/main.rs"
 
 [dependencies]
-clap = { version = "4.5.37", features = ["derive"] }
-tracing = "0.1.41"
-tracing-subscriber = "0.3.19"
-tokio = { version = "1.44.2", features = ["full"] }
-anyhow = "1.0.98"
-async-stream = "0.3.6"
-futures-util = "0.3.31"
-http = "1.3.1"
-tokio-stream = { version = "0.1.17", features = ["full"] }
-viz = { version = "0.10.0", features = ["default", "sse"] }
-mime = "0.3.17"
-rpp = { path = "../rpp", features = ["tracing"] }
-serde = { version = "1.0.219", features = ["derive"] }
-console = "0.16.1"
-dialoguer = "0.12.0"
-indicatif = { version = "0.18.2", features = ["tokio"] }
-regex = "1.12.2"
-once_cell = "1.21.3"
-askama = "0.14.0"
-toml_edit = "0.23.7"
-toml = "0.9.8"
-pathdiff = "0.2.3"
+rpp = { workspace = true, features = ["wasm", "tracing"] }
+rpp-fetch.workspace = true
+rpp-squash.workspace = true
+rpp-wasm.workspace = true
+
+anyhow.workspace = true
+clap = { version = "4.5", features = ["derive"] }
+toml.workspace = true
+toml_edit = "0.22"
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+
+tracing.workspace = true
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+console = "0.15"
+dialoguer = "0.11"
+dirs.workspace = true
+
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal", "time", "fs", "net"] }
+tokio-stream = { version = "0.1", features = ["sync"] }
+axum = "0.7"
+tower-http = { version = "0.6", features = ["fs"] }
+notify-debouncer-full = "0.3"
+open = "5"
+tempfile.workspace = true
+
+[dev-dependencies]
+png = "0.17"
+zip = "8.6"

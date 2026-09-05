@@ -1,0 +1,15 @@
+[package]
+name = "window-host-component"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+
+[features]
+v2 = []
+
+[dependencies]
+wit-bindgen = "0.46"
+
+[workspace]

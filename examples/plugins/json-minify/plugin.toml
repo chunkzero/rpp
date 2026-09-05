@@ -1,0 +1,6 @@
+[plugin]
+id = "json-minify"
+version = "1.0.0"
+description = "Minifies JSON and .mcmeta files by re-encoding them compactly."
+authors = ["rpp examples"]
+entry = "init.lua"

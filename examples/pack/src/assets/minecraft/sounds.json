@@ -1,0 +1,9 @@
+{
+    "block.rpp_bricks.place": {
+        "category": "block",
+        "sounds": [
+            "minecraft:block/stone/place1",
+            "minecraft:block/stone/place2"
+        ]
+    }
+}

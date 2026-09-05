@@ -1,0 +1,18 @@
+RPP example pack — design notes (NOT shipped)
+=============================================
+
+These notes are excluded from the built pack by src/.rppignore (`*.txt`).
+
+Palette
+-------
+- Diamond sword: pale blade (#d2dceb) on a wooden hilt.
+- Magic gem: cyan diamond, lighter top-left, darker bottom-right.
+- RPP bricks: staggered red-brick rows with light mortar.
+- Ember: a 4-frame animated flame (see ember.png.mcmeta).
+
+Build pipeline (see ../../rpp.toml)
+-----------------------------------
+1. json-minify     — compact every .json / .mcmeta.
+2. mcmeta-validate — gate the build on valid pack.mcmeta + animations.
+3. hash-rename     — fingerprint custom/ textures, emit rename_map.json.
+Then the built-in squash pass minifies JSON, optimizes PNGs, and zips.

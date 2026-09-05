@@ -1,0 +1,26 @@
+package test:window-host;
+
+world window-host {
+    record source-file {
+        path: string,
+        contents: list<u8>,
+    }
+
+    record output-file {
+        path: string,
+        contents: list<u8>,
+    }
+
+    record compile-output {
+        files: list<output-file>,
+        kotlin-files: list<output-file>,
+        warnings: list<string>,
+    }
+
+    export compile: func(
+        namespace: string,
+        project-json: string,
+        files: list<source-file>,
+        kotlin-package: option<string>,
+    ) -> result<compile-output, string>;
+}

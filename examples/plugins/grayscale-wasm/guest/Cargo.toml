@@ -1,0 +1,18 @@
+[package]
+name = "grayscale-wasm-guest"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+png = "0.17"
+wit-bindgen = "0.46"
+
+[profile.release]
+opt-level = "s"
+strip = true
+
+[workspace]

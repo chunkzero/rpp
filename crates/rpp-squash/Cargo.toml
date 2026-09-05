@@ -1,0 +1,31 @@
+[package]
+name = "rpp-squash"
+description = "Resource pack optimization: JSON minify, PNG optimization, deterministic zip"
+
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[features]
+default = ["tracing"]
+# Emit `tracing` log events for warnings/diagnostics. When disabled, warnings are
+# still collected into `SquashReport`, just not logged.
+tracing = ["dep:tracing"]
+
+[dependencies]
+globset = "0.4"
+oxipng = { version = "10", default-features = false, features = ["parallel"] }
+rayon = "1"
+serde.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
+thiserror.workspace = true
+tracing = { workspace = true, optional = true }
+walkdir = "2"
+zip = { version = "8", default-features = false, features = ["deflate"] }
+
+[dev-dependencies]
+png = "0.17"
+tempfile.workspace = true
