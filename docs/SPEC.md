@@ -143,8 +143,13 @@ Global plugin entries live in `~/.rpp/plugins.toml`, with GitHub pins in
 `~/.rpp/plugins.lock`. Directory sources are copied into `~/.rpp/plugins/<id>` so
 they can be used from unrelated projects without retaining a relative source path.
 
-Global plugins are loaded before project plugins. A project plugin with the same
-plugin id overrides the global plugin.
+Package manifests are resolved before loading executable code. A project plugin with
+the same plugin id overrides the global plugin; only effective entries load Lua or
+components, with remaining globals ordered before project entries. Both scopes use
+the same identity and capability validation; global entries require a source.
+
+Source `pack.mcmeta` format validation runs on each build, rather than configuration
+loading, so configuration-only commands such as `clean` work with malformed sources.
 
 ## 2. Plugin manifest: `plugin.toml`
 

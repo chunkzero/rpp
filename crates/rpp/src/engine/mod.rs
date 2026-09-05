@@ -175,6 +175,7 @@ impl Engine {
 
     /// Run a full (incremental) build.
     pub fn build(&self) -> Result<BuildResult> {
+        self.config.validate_source(&self.project_root)?;
         let start = Instant::now();
         validate_build_dirs(&self.config, &self.project_root)?;
         for factory in self.factories.iter() {

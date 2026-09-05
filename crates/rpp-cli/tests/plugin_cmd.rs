@@ -356,3 +356,28 @@ fn cached_subdir_add_and_remove_keep_config_and_lock_aligned() {
     assert_eq!(lock.plugins()[0].subdir.as_deref(), Some("a"));
     assert!(lock.get_for("github:owner/repo", None, Some("a")).is_some());
 }
+
+#[test]
+fn clean_accepts_malformed_source_metadata_but_build_rejects_it() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::create_dir_all(root.join("dist")).unwrap();
+    std::fs::write(root.join("src/pack.mcmeta"), "not json").unwrap();
+    std::fs::write(
+        root.join("rpp.toml"),
+        "[pack]\nname = 'test'\npack_format = 34\n",
+    )
+    .unwrap();
+    let build = run(root, &["build", "--no-squash"]);
+    assert!(!build.status.success());
+    assert!(String::from_utf8_lossy(&build.stderr).contains("pack.mcmeta"));
+    let clean = run(root, &["clean"]);
+    assert!(
+        clean.status.success(),
+        "{}",
+        String::from_utf8_lossy(&clean.stderr)
+    );
+    assert!(!root.join("dist").exists());
+    assert!(root.join("src/pack.mcmeta").exists());
+}

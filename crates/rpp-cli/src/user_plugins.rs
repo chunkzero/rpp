@@ -96,6 +96,10 @@ fn parse_manifest(text: &str) -> Result<(Vec<PluginConfig>, BTreeMap<String, Pat
             None => None,
         };
         let plugin: PluginConfig = toml::Value::Table(entry).try_into()?;
+        plugin.validate(Path::new(USER_MANIFEST_FILE))?;
+        if plugin.source.is_none() {
+            anyhow::bail!("global plugin `{}` must have a source", plugin.label());
+        }
         if let (Some(origin), Some(source)) = (origin, plugin.source.as_deref()) {
             origins.insert(source.to_string(), origin);
         }
@@ -209,6 +213,27 @@ fn copy_dir_contents(source: &Path, destination: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn global_and_project_entries_share_validation() {
+        for entry in [
+            "source = 'path:x'\n[plugin.permissions]\nnetwork = true\n",
+            "source = 'path:x'\nsecurity = 'trusted'\n[plugin.permissions]\nread = ['/absolute']\n",
+            "source = 'path:x'\nid = 'x'\n",
+            "id = 'bad id'\n",
+        ] {
+            let text = format!("[[plugin]]\n{entry}");
+            let global = parse_manifest(&text).err().unwrap().to_string();
+            let project = rpp::config::Config::parse(
+                &format!("[pack]\nname = 'test'\n{text}"),
+                USER_MANIFEST_FILE,
+            )
+            .unwrap_err()
+            .to_string();
+            assert_eq!(global, project);
+        }
+        assert!(parse_manifest("[[plugin]]\nid = 'valid'\n").is_err());
+    }
 
     #[test]
     fn copies_package_without_build_artifacts() {
