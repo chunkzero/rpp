@@ -259,7 +259,7 @@ function Component.load(name) end
 
 ---@class rpp.Process
 local Process = {}
----Runs on Unix only. Remaining process-group members are terminated when the call finishes.
+---Remaining members of the invocation's process group (Unix) or job object (Windows) are terminated when the call finishes.
 ---@param request rpp.ProcessRequest
 ---@return rpp.ProcessOutput
 function Process.run(request) end

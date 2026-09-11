@@ -28,11 +28,21 @@ bincode = { version = "2.0.1", features = ["serde"] }
 semver = "1.0"
 md5 = "0.7"
 crc32fast = "1.4"
-libc = "0.2"
 
 tracing = { workspace = true, optional = true }
 mlua = { version = "0.11", features = ["lua54", "vendored", "serde", "send"], optional = true }
 rpp-wasm = { workspace = true, optional = true }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_JobObjects",
+    "Win32_System_Threading",
+] }
 
 [features]
 default = ["lua"]

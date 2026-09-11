@@ -300,11 +300,11 @@ return plugin
   `component:call(export, ...)`. See §5.
 - `rpp.process` — `run{ program, args?, env?, stdin?, cwd?, timeout? } -> { status,
   stdout, stderr }`. Requires a `permissions.process` grant (or native mode) and is
-  only callable from generators and hooks. Process execution currently requires Unix.
-  The shorter of `timeout` and the remaining Lua deadline bounds stdin writing,
-  process execution, and stdout/stderr draining, including inherited descendant pipes.
-  RPP closes its pipes and terminates remaining members of the invocation's process
-  group on completion or error. Descendants that deliberately leave that group are
+  only callable from generators and hooks. The shorter of `timeout` and the
+  remaining Lua deadline bounds stdin writing, process execution, and stdout/stderr
+  draining, including inherited descendant pipes. RPP closes its pipes and terminates
+  remaining members of the invocation's process group (Unix) or job object (Windows)
+  on completion or error. Descendants that deliberately leave that group or job are
   outside this cleanup boundary. Each captured output stream is limited to 16 MiB;
   excess bytes are drained and discarded.
 
