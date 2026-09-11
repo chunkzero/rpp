@@ -460,11 +460,13 @@ published atomically from sibling temporary files and are never hard-linked to t
 immutable CAS. External-output collisions are build errors with both plugin ids in the
 diagnostic.
 
-Build and clean validate filesystem destinations before mutation. Source, pack
-output, bookkeeping paths, and external roots must not contain symlink components;
-existing ancestors are checked even when the final directory does not exist yet.
-External roots must not overlap source, pack output, or `.rpp` in either direction.
-Sibling roots such as `../server/generated` remain supported. External emitted and
+Build and clean validate filesystem destinations before mutation. Pack output,
+bookkeeping paths, and external roots inside the project must not pass through
+symlinks below the project root; existing ancestors are checked even when the final
+directory does not exist yet. `build.source` is read-only and may be a symlink.
+External roots outside the project, such as `../server/generated`, are resolved
+through their existing ancestors (symlinked parents are allowed) and must not
+resolve into source, pack output, or `.rpp`, nor contain them. External emitted and
 previously owned paths are checked below their roots before writing or removing
 files, including during clean after configuration changes. Symlinked pack output
 ancestors are rejected; individual pack output file symlinks are replaced safely.

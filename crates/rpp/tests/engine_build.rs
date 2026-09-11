@@ -1024,3 +1024,71 @@ fn destination_boundaries_reject_retargeted_owned_external_parent() {
         "keep"
     );
 }
+
+#[cfg(unix)]
+#[test]
+fn destination_boundaries_allow_symlinked_source_and_sibling_parents() {
+    use std::os::unix::fs::symlink;
+
+    let parent = tempfile::tempdir().unwrap();
+    let project = parent.path().join("project");
+    std::fs::create_dir_all(&project).unwrap();
+    std::fs::create_dir_all(parent.path().join("real-src")).unwrap();
+    std::fs::write(parent.path().join("real-src/a.txt"), "a").unwrap();
+    symlink(parent.path().join("real-src"), project.join("src")).unwrap();
+    std::fs::create_dir_all(parent.path().join("real-server")).unwrap();
+    symlink(
+        parent.path().join("real-server"),
+        parent.path().join("server"),
+    )
+    .unwrap();
+
+    let plugin = PluginDir::lua(
+        "sibling",
+        r#"
+        local rpp = require('rpp')
+        local plugin = rpp.plugin()
+        plugin:generator('code', function(ctx) ctx:emit_output('code', 'generated.txt', 'generated') end)
+        return plugin
+    "#,
+    );
+    let factory = |root: &str| {
+        Arc::new(
+            LuaPluginFactory::load(
+                plugin.path(),
+                toml::Value::Table(Default::default()),
+                PackInfo {
+                    name: "test".into(),
+                    description: None,
+                    format: None,
+                },
+                LuaPluginLimits::default(),
+                RuntimeAccess::sandboxed(project.clone())
+                    .with_outputs(BTreeMap::from([("code".into(), root.into())])),
+            )
+            .unwrap(),
+        )
+    };
+    let engine = Engine::builder(Project::new().config())
+        .project_root(&project)
+        .plugin(factory("../server/generated"))
+        .build_engine()
+        .unwrap();
+    engine.build().unwrap();
+    assert_eq!(
+        std::fs::read_to_string(parent.path().join("real-server/generated/generated.txt")).unwrap(),
+        "generated"
+    );
+    assert_eq!(
+        std::fs::read_to_string(project.join("dist/a.txt")).unwrap(),
+        "a"
+    );
+
+    // A symlinked parent that resolves into the pack output is still rejected.
+    symlink(project.join("dist"), parent.path().join("alias")).unwrap();
+    assert!(Engine::builder(Project::new().config())
+        .project_root(&project)
+        .plugin(factory("../alias/generated"))
+        .build_engine()
+        .is_err());
+}
