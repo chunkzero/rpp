@@ -214,6 +214,10 @@ impl Project {
             factories.push(loaded);
         }
 
+        // Pins for requests no longer configured (including pre-v2 default-branch
+        // pins that now load as explicit refs) are dropped on save.
+        global_lock_dirty |= global_lock.prune(&configured_sources(&self.user_plugins.plugins));
+        project_lock_dirty |= project_lock.prune(&configured_sources(&self.config.plugins));
         if global_lock_dirty {
             self.user_plugins.ensure_root()?;
             global_lock
@@ -424,6 +428,16 @@ enum PluginScope {
 }
 
 /// Whether a freshly-resolved pin differs from what the lockfile recorded.
+fn configured_sources(plugins: &[PluginConfig]) -> Vec<PluginSource> {
+    plugins
+        .iter()
+        .filter_map(|plugin| {
+            let source = plugin.source.as_deref()?;
+            PluginSource::parse(source, plugin.r#ref.as_deref(), plugin.subdir.as_deref()).ok()
+        })
+        .collect()
+}
+
 fn pin_changed(locked: Option<&rpp_fetch::LockedPlugin>, pin: &Pin, subdir: Option<&str>) -> bool {
     match locked {
         None => true,

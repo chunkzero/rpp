@@ -17,7 +17,7 @@ use crate::user_plugins::{copy_plugin_dir, UserPlugins};
 
 mod edit;
 
-pub use edit::{add_plugin, remove_plugin, PluginEntry};
+pub use edit::{add_plugin, PluginEntry};
 
 /// Plugin subcommands (`add`/`remove`/`list`/`update`/`search`).
 #[derive(Debug, Subcommand)]

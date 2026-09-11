@@ -20,6 +20,7 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
+use crate::source::PluginSource;
 
 /// The current lockfile schema version this crate writes and accepts.
 pub const LOCKFILE_VERSION: u32 = 2;
@@ -168,6 +169,20 @@ impl Lockfile {
         std::fs::write(path, text).map_err(|e| Error::io(format!("writing {}", path.display()), e))
     }
 
+    /// Drop pins whose source, requested ref, and subdir no longer match any
+    /// configured plugin. Returns whether anything was removed.
+    pub fn prune(&mut self, configured: &[PluginSource]) -> bool {
+        let before = self.plugins.len();
+        self.plugins.retain(|pin| {
+            configured.iter().any(|source| {
+                source.canonical() == pin.source
+                    && source.requested_ref() == pin.requested_ref.as_deref()
+                    && source.subdir() == pin.subdir.as_deref()
+            })
+        });
+        self.plugins.len() != before
+    }
+
     /// Look up the first locked pin by its canonical source string.
     ///
     /// Prefer [`get_for`](Self::get_for) when a source may have multiple pins
@@ -300,6 +315,30 @@ mod tests {
                 .commit,
             "old"
         );
+    }
+
+    #[test]
+    fn prune_drops_pins_for_unconfigured_requests() {
+        let mut lock = Lockfile::new();
+        let mut default = pin("github:a/b", "main", "default", None);
+        default.requested_ref = None;
+        lock.upsert(default);
+        lock.upsert(pin("github:a/b", "main", "legacy", None));
+        lock.upsert(pin("github:a/b", "v1", "tagged", Some("sub")));
+        let configured = [
+            PluginSource::parse("github:a/b", None, None).unwrap(),
+            PluginSource::parse("github:a/b", Some("v1"), Some("sub")).unwrap(),
+            PluginSource::parse("path:local", None, None).unwrap(),
+        ];
+        assert!(lock.prune(&configured));
+        assert_eq!(
+            lock.plugins()
+                .iter()
+                .map(|pin| pin.commit.as_str())
+                .collect::<Vec<_>>(),
+            ["default", "tagged"]
+        );
+        assert!(!lock.prune(&configured));
     }
 
     #[test]

@@ -2,10 +2,8 @@
 //! preserving the user's formatting and comments. Pure string-in/string-out so
 //! it is straightforward to unit test.
 
-use std::path::Path;
-
 use anyhow::{bail, Context, Result};
-use rpp_fetch::{parse_manifest_summary, PluginSource};
+use rpp_fetch::PluginSource;
 use toml_edit::{ArrayOfTables, DocumentMut, Item, Table};
 
 /// A `[[plugin]]` entry to add.
@@ -62,53 +60,6 @@ pub fn add_plugin(toml_text: &str, entry: PluginEntry) -> Result<String> {
     Ok(doc.to_string())
 }
 
-/// Remove the `[[plugin]]` entry matching `id_or_source` from `rpp.toml` text.
-///
-/// Matching is by exact `source` or `id` string first; if that fails, each
-/// path/github source is resolved enough to read its plugin id (path sources
-/// resolve their `plugin.toml` relative to `project_root`).
-///
-/// Returns `(updated_text, removed_source)` where `removed_source` is `None`
-/// when the removed entry has no source or nothing matched. Unmatched input
-/// is returned unchanged.
-pub fn remove_plugin(
-    toml_text: &str,
-    id_or_source: &str,
-    project_root: &Path,
-) -> Result<(String, Option<String>)> {
-    let mut doc: DocumentMut = toml_text.parse().context("parsing rpp.toml for editing")?;
-
-    let Some(array) = doc.get_mut("plugin").and_then(Item::as_array_of_tables_mut) else {
-        return Ok((toml_text.to_owned(), None));
-    };
-
-    let mut found_index = None;
-    let mut removed_source = None;
-    for (i, table) in array.iter().enumerate() {
-        let source = table.get("source").and_then(|v| v.as_str());
-        let id = table.get("id").and_then(|v| v.as_str());
-        if source == Some(id_or_source)
-            || id == Some(id_or_source)
-            || source
-                .is_some_and(|source| plugin_id_matches(table, source, project_root, id_or_source))
-        {
-            anyhow::ensure!(
-                found_index.is_none(),
-                "multiple plugins match `{id_or_source}`; select a plugin id"
-            );
-            found_index = Some(i);
-            removed_source = source.map(str::to_string);
-        }
-    }
-
-    if let Some(i) = found_index {
-        array.remove(i);
-    } else {
-        return Ok((toml_text.to_owned(), None));
-    }
-    Ok((doc.to_string(), removed_source))
-}
-
 /// Remove the exact entry selected by the command's resolver.
 pub(super) fn remove_plugin_at(toml_text: &str, index: usize) -> Result<String> {
     let mut doc: DocumentMut = toml_text
@@ -124,30 +75,6 @@ pub(super) fn remove_plugin_at(toml_text: &str, index: usize) -> Result<String> 
     );
     array.remove(index);
     Ok(doc.to_string())
-}
-
-/// Whether the plugin entry's resolved id equals `target`.
-fn plugin_id_matches(table: &Table, source: &str, project_root: &Path, target: &str) -> bool {
-    let parsed = match PluginSource::parse(
-        source,
-        table.get("ref").and_then(|v| v.as_str()),
-        table.get("subdir").and_then(|v| v.as_str()),
-    ) {
-        Ok(p) => p,
-        Err(_) => return false,
-    };
-    // Only path sources can be resolved offline without network/cache.
-    if let PluginSource::Path { dir } = parsed {
-        let abs = if dir.is_absolute() {
-            dir
-        } else {
-            project_root.join(dir)
-        };
-        if let Ok(summary) = parse_manifest_summary(&abs) {
-            return summary.id == target;
-        }
-    }
-    false
 }
 
 /// Collect normalized source identities of all configured plugins.
@@ -237,57 +164,5 @@ pretty = false
         .unwrap();
         assert!(out.contains("[[plugin]]"));
         assert!(out.contains("source = \"github:a/b\""));
-    }
-
-    #[test]
-    fn remove_by_source() {
-        let dir = tempfile::tempdir().unwrap();
-        let (out, removed) = remove_plugin(BASE, "path:plugins/json-minify", dir.path()).unwrap();
-        assert_eq!(removed.as_deref(), Some("path:plugins/json-minify"));
-        assert!(!out.contains("json-minify"));
-        // Pack section preserved.
-        assert!(out.contains("name = \"demo\""));
-    }
-
-    #[test]
-    fn remove_nonexistent_returns_none() {
-        let dir = tempfile::tempdir().unwrap();
-        let (out, removed) = remove_plugin(BASE, "github:no/such", dir.path()).unwrap();
-        assert_eq!(removed, None);
-        assert_eq!(out, BASE);
-    }
-
-    #[test]
-    fn remove_by_plugin_id() {
-        // Build a real plugin dir so id resolution works.
-        let dir = tempfile::tempdir().unwrap();
-        let plugin_dir = dir.path().join("plugins/json-minify");
-        std::fs::create_dir_all(&plugin_dir).unwrap();
-        std::fs::write(
-            plugin_dir.join("plugin.toml"),
-            "[plugin]\nid = \"json-minify\"\nversion = \"1.0.0\"\n",
-        )
-        .unwrap();
-
-        let (out, removed) = remove_plugin(BASE, "json-minify", dir.path()).unwrap();
-        assert_eq!(removed.as_deref(), Some("path:plugins/json-minify"));
-        assert!(!out.contains("[[plugin]]"));
-    }
-
-    #[test]
-    fn remove_by_global_id_entry() {
-        let text = r#"[pack]
-name = "demo"
-
-[[plugin]]
-id = "window"
-[plugin.options]
-namespace = "window"
-"#;
-        let dir = tempfile::tempdir().unwrap();
-        let (out, removed) = remove_plugin(text, "window", dir.path()).unwrap();
-        assert_eq!(removed, None);
-        assert!(!out.contains("[[plugin]]"));
-        assert!(out.contains("name = \"demo\""));
     }
 }
