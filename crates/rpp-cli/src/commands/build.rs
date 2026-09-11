@@ -216,6 +216,14 @@ fn write_release_zip(staging_dir: &Path, zip_path: &Path) -> Result<()> {
     tmp.as_file()
         .sync_all()
         .with_context(|| format!("flushing zip {}", zip_path.display()))?;
+    // Temporary files are private by default; the archive is a shareable artifact.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        tmp.as_file()
+            .set_permissions(std::fs::Permissions::from_mode(0o644))
+            .with_context(|| format!("setting permissions on {}", zip_path.display()))?;
+    }
     tmp.persist(zip_path)
         .map_err(|error| error.error)
         .with_context(|| format!("replacing zip {}", zip_path.display()))?;
@@ -242,6 +250,14 @@ mod tests {
         let path = dir.path().join("pack.zip");
         write_release_zip(input.path(), &path).unwrap();
         let previous = std::fs::read(&path).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o644
+            );
+        }
 
         assert!(write_release_zip(&input.path().join("missing"), &path).is_err());
         assert_eq!(std::fs::read(&path).unwrap(), previous);
