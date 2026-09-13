@@ -18,6 +18,13 @@ pub(crate) fn sync_output(
     output: &OutputSet,
     store: &ObjectStore,
 ) -> Result<ChangeReport> {
+    super::boundary::checked_path(output_dir, Path::new("."))?;
+    for rel in output.files.keys() {
+        crate::util::path::validate_relative(rel).map_err(Error::Build)?;
+        if let Some(parent) = Path::new(rel).parent() {
+            super::boundary::checked_path(output_dir, parent)?;
+        }
+    }
     std::fs::create_dir_all(output_dir).map_err(|e| Error::io(output_dir, e))?;
 
     let existing = list_existing(output_dir)?;
