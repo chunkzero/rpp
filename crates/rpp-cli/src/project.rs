@@ -127,7 +127,7 @@ impl Project {
         Ok((engine, wasm_engine))
     }
 
-    /// Resolve and load every configured plugin into a factory, in order.
+    /// Resolve package metadata, select overrides, then load effective plugins in order.
     fn resolve_factories(&self, wasm_engine: Option<WasmEngine>) -> Result<ResolvedFactories> {
         let global_resolver = Resolver::new(&self.user_plugins.root)
             .context("initializing the global plugin resolver")?;
@@ -142,77 +142,63 @@ impl Project {
         let mut global_lock_dirty = false;
         let mut project_lock_dirty = false;
 
-        let mut factories: Vec<LoadedFactory> = Vec::new();
+        let mut selected: Vec<ResolvedPackage> = Vec::new();
         let mut shared_wasm = wasm_engine;
-
-        let mut global_plugins = BTreeMap::<String, PluginConfig>::new();
+        let mut global_plugins = BTreeMap::new();
 
         for plugin_cfg in &self.user_plugins.plugins {
-            let loaded = self.resolve_factory(
+            let package = self.resolve_package(
                 plugin_cfg,
                 &global_resolver,
                 &mut global_lock,
                 &mut global_lock_dirty,
-                &mut shared_wasm,
                 PluginScope::Global,
             )?;
-            if factories.iter().any(|existing| existing.id == loaded.id) {
-                bail!(
-                    "global plugin id `{}` is configured more than once",
-                    loaded.id
-                );
+            let id = package.manifest.id.clone();
+            if global_plugins.insert(id.clone(), package.clone()).is_some() {
+                bail!("global plugin id `{id}` is configured more than once");
             }
-            global_plugins.insert(loaded.id.clone(), plugin_cfg.clone());
-            factories.push(loaded);
+            selected.push(package);
         }
 
         for plugin_cfg in &self.config.plugins {
-            let loaded = if let Some(id) = plugin_cfg.id.as_deref() {
-                let Some(global_cfg) = global_plugins.get(id) else {
+            let package = if let Some(id) = plugin_cfg.id.as_deref() {
+                let Some(global) = global_plugins.get(id) else {
                     bail!("project plugin id `{id}` does not match an installed global plugin");
                 };
-                let effective_cfg = PluginConfig {
-                    id: None,
-                    source: global_cfg.source.clone(),
-                    r#ref: global_cfg.r#ref.clone(),
-                    subdir: global_cfg.subdir.clone(),
-                    options: plugin_cfg.options.clone(),
-                    security: plugin_cfg.security,
-                    permissions: plugin_cfg.permissions.clone(),
-                    outputs: plugin_cfg.outputs.clone(),
-                };
-                self.resolve_factory(
-                    &effective_cfg,
-                    &global_resolver,
-                    &mut global_lock,
-                    &mut global_lock_dirty,
-                    &mut shared_wasm,
-                    PluginScope::Project,
-                )?
+                ResolvedPackage {
+                    config: plugin_cfg.clone(),
+                    scope: PluginScope::Project,
+                    ..global.clone()
+                }
             } else {
-                self.resolve_factory(
+                self.resolve_package(
                     plugin_cfg,
                     &project_resolver,
                     &mut project_lock,
                     &mut project_lock_dirty,
-                    &mut shared_wasm,
                     PluginScope::Project,
                 )?
             };
-            if let Some(index) = factories
+            if let Some(index) = selected
                 .iter()
-                .position(|existing| existing.id == loaded.id)
+                .position(|existing| existing.manifest.id == package.manifest.id)
             {
-                if factories[index].scope == PluginScope::Project {
+                if selected[index].scope == PluginScope::Project {
                     bail!(
                         "project plugin id `{}` is configured more than once",
-                        loaded.id
+                        package.manifest.id
                     );
                 }
-                factories.remove(index);
+                selected.remove(index);
             }
-            factories.push(loaded);
+            selected.push(package);
         }
+
+        let factories = selected
+            .into_iter()
+            .map(|package| self.load_factory(package, &mut shared_wasm))
+            .collect::<Result<Vec<_>>>()?;
 
         // Pins for requests no longer configured (including pre-v2 default-branch
         // pins that now load as explicit refs) are dropped on save.
@@ -252,15 +238,14 @@ impl Project {
         }
     }
 
-    fn resolve_factory(
+    fn resolve_package(
         &self,
         plugin_cfg: &PluginConfig,
         resolver: &Resolver,
         lockfile: &mut Lockfile,
         lock_dirty: &mut bool,
-        shared_wasm: &mut Option<WasmEngine>,
         scope: PluginScope,
-    ) -> Result<LoadedFactory> {
+    ) -> Result<ResolvedPackage> {
         let source_value = plugin_cfg
             .source
             .as_deref()
@@ -294,6 +279,30 @@ impl Project {
                 resolved.root.display()
             )
         })?;
+        Ok(ResolvedPackage {
+            manifest,
+            root: resolved.root,
+            config: plugin_cfg.clone(),
+            scope,
+        })
+    }
+
+    fn load_factory(
+        &self,
+        package: ResolvedPackage,
+        shared_wasm: &mut Option<WasmEngine>,
+    ) -> Result<LoadedFactory> {
+        let ResolvedPackage {
+            manifest,
+            root,
+            config: plugin_cfg,
+            scope,
+        } = package;
+        let config_path = match scope {
+            PluginScope::Global => self.user_plugins.manifest_path(),
+            PluginScope::Project => self.config_path(),
+        };
+        plugin_cfg.validate(&config_path)?;
         let id = manifest.id.clone();
 
         let engine = if manifest.components.is_empty() {
@@ -320,7 +329,7 @@ impl Project {
         let mut components = std::collections::BTreeMap::new();
         if let Some(engine) = engine.as_ref() {
             for (name, component) in &manifest.components {
-                let path = resolved.root.join(&component.module);
+                let path = root.join(&component.module);
                 let compiled = engine
                     .load(&path)
                     .with_context(|| format!("loading component `{name}` at {}", path.display()))?;
@@ -341,7 +350,7 @@ impl Project {
         };
         let factory: Arc<dyn PluginFactory> = Arc::new(
             LuaPluginFactory::load(
-                &resolved.root,
+                &root,
                 plugin_cfg.options.clone(),
                 pack,
                 LuaPluginLimits::from(&self.config.build.lua),
@@ -350,12 +359,7 @@ impl Project {
             .with_context(|| format!("loading Lua plugin `{}`", manifest.id))?,
         );
 
-        Ok(LoadedFactory {
-            id,
-            root: resolved.root,
-            factory,
-            scope,
-        })
+        Ok(LoadedFactory { id, root, factory })
     }
 
     /// The absolute output directory.
@@ -418,6 +422,13 @@ struct LoadedFactory {
     id: String,
     root: PathBuf,
     factory: Arc<dyn PluginFactory>,
+}
+
+#[derive(Clone)]
+struct ResolvedPackage {
+    manifest: PluginManifest,
+    root: PathBuf,
+    config: PluginConfig,
     scope: PluginScope,
 }
 
@@ -467,4 +478,97 @@ pub fn validate_plugin_dir(dir: &Path) -> Result<(String, String)> {
     let manifest = PluginManifest::load(dir)
         .with_context(|| format!("reading plugin manifest at {}", dir.display()))?;
     Ok((manifest.id, manifest.version.to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn package(root: &Path, id: &str, lua: &str, component: bool) {
+        std::fs::create_dir_all(root).unwrap();
+        std::fs::write(
+            root.join("plugin.toml"),
+            format!(
+                "[plugin]\nid = \"{id}\"\nversion = \"1.0.0\"\n{}",
+                if component {
+                    "[component.broken]\nmodule = \"missing.wasm\"\n"
+                } else {
+                    ""
+                }
+            ),
+        )
+        .unwrap();
+        std::fs::write(root.join("init.lua"), lua).unwrap();
+    }
+
+    fn project(root: &Path, global: &str, local: &str) -> Project {
+        let config = Config::parse(
+            &format!("[pack]\nname = \"test\"\n{local}"),
+            root.join("rpp.toml"),
+        )
+        .unwrap();
+        let globals = Config::parse(
+            &format!("[pack]\nname = \"global\"\n{global}"),
+            root.join("plugins.toml"),
+        )
+        .unwrap();
+        Project {
+            root: root.into(),
+            config,
+            user_plugins: UserPlugins {
+                root: root.into(),
+                plugins: globals.plugins,
+                ..UserPlugins::default()
+            },
+        }
+    }
+
+    #[test]
+    fn overrides_skip_broken_global_runtimes_and_preserve_order() {
+        for component in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let root = temp.path();
+            let valid = "return require('rpp').plugin()";
+            package(
+                &root.join("broken"),
+                "shared",
+                "error('overridden plugin executed')",
+                component,
+            );
+            for id in ["first", "last", "local"] {
+                package(
+                    &root.join(id),
+                    if id == "local" { "shared" } else { id },
+                    valid,
+                    false,
+                );
+            }
+            let project = project(root,
+                "[[plugin]]\nsource = 'path:first'\n[[plugin]]\nsource = 'path:broken'\n[[plugin]]\nsource = 'path:last'\n",
+                "[[plugin]]\nsource = 'path:local'\n");
+            let loaded = project.resolve_factories(None).unwrap();
+            assert_eq!(
+                loaded.factories.iter().map(|f| f.id()).collect::<Vec<_>>(),
+                ["first", "last", "shared"]
+            );
+            assert!(loaded.wasm_engine.is_none());
+        }
+    }
+
+    #[test]
+    fn id_override_loads_only_with_project_capabilities() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        package(
+            &root.join("shared"),
+            "shared",
+            "assert(os.time()); return require('rpp').plugin()",
+            false,
+        );
+        let project = project(root, "[[plugin]]\nsource = 'path:shared'\n",
+            "[[plugin]]\nid = 'shared'\nsecurity = 'trusted'\n[plugin.permissions]\nclocks = true\n");
+        let loaded = project.resolve_factories(None).unwrap();
+        assert_eq!(loaded.factories.len(), 1);
+        assert_eq!(loaded.factories[0].id(), "shared");
+    }
 }

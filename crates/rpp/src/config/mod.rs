@@ -343,6 +343,12 @@ pub(crate) fn empty_table() -> toml::Value {
 }
 
 impl PluginConfig {
+    /// Validate entry identity and capability policy, attributing errors to its manifest.
+    pub fn validate(&self, path: &Path) -> Result<()> {
+        validate_plugin_identity(self, path)?;
+        validate_plugin_security(self, path)
+    }
+
     /// Human-readable identity for diagnostics.
     pub fn label(&self) -> &str {
         self.source
@@ -400,8 +406,7 @@ impl Config {
             }
         }
         for plugin in &self.plugins {
-            validate_plugin_identity(plugin, path)?;
-            validate_plugin_security(plugin, path)?;
+            plugin.validate(path)?;
         }
 
         if self.build.lua.memory_limit_mb == 0 {
@@ -429,11 +434,15 @@ impl Config {
             });
         }
 
+        Ok(())
+    }
+
+    pub(crate) fn validate_source(&self, project_root: &Path) -> Result<()> {
+        let path = project_root.join("rpp.toml");
         if let Some(expected) = self.pack.pack_format {
-            let project_root = path.parent().unwrap_or_else(|| Path::new("."));
             let mcmeta_path = project_root.join(&self.build.source).join("pack.mcmeta");
             if mcmeta_path.is_file() {
-                validate_pack_format_mcmeta(&mcmeta_path, expected, path)?;
+                validate_pack_format_mcmeta(&mcmeta_path, expected, &path)?;
             }
         }
 
@@ -753,11 +762,12 @@ subdir = "plugins/atlas"
             r#"{"pack":{"pack_format":9}}"#,
         )
         .unwrap();
-        let err = Config::parse(
+        let config = Config::parse(
             "[pack]\nname=\"x\"\npack_format = 34\n",
             root.join("rpp.toml"),
         )
-        .unwrap_err();
+        .unwrap();
+        let err = config.validate_source(root).unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("does not match"), "{msg}");
     }
