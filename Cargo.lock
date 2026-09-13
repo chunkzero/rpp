@@ -2339,6 +2339,7 @@ dependencies = [
  "toml",
  "tracing",
  "twox-hash",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]

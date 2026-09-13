@@ -45,3 +45,17 @@ jobs:
       - run: integrations/jvm/gradlew -p integrations/jvm :test :examples:minestom:classes --no-daemon
         env:
           RPP_BIN: ${{ github.workspace }}/target/debug/rpp
+
+  windows:
+    name: Windows core check and process tests
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.96.0
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --locked -p rpp --all-targets -- -D warnings
+      - run: cargo test --locked -p rpp --lib lua::process
