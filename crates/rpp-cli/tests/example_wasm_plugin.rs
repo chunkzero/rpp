@@ -54,6 +54,19 @@ fn encode_png(pixels: &[[u8; 4]], width: u32, height: u32) -> Vec<u8> {
     out
 }
 
+fn encode_rgb_with_transparency() -> Vec<u8> {
+    let mut input = Vec::new();
+    {
+        let mut encoder = png::Encoder::new(&mut input, 2, 1);
+        encoder.set_color(png::ColorType::Rgb);
+        encoder.set_depth(png::BitDepth::Eight);
+        encoder.set_trns(vec![0, 255, 0, 0, 0, 0]);
+        let mut writer = encoder.write_header().unwrap();
+        writer.write_image_data(&[255, 0, 0, 0, 255, 0]).unwrap();
+    }
+    input
+}
+
 #[test]
 fn grayscale_example_converts_textures() {
     if !wasip2_available() {
@@ -91,10 +104,15 @@ fn grayscale_example_converts_textures() {
         encode_png(&[red, translucent_blue], 2, 1),
     )
     .unwrap();
+    std::fs::write(
+        textures.join("transparent.png"),
+        encode_rgb_with_transparency(),
+    )
+    .unwrap();
     let mut project = Project::discover_isolated(&root).unwrap();
     project.config.build.workers = 1;
     let result = project.build_engine().unwrap().build().unwrap();
-    assert_eq!(result.processed, 2);
+    assert_eq!(result.processed, 3);
 
     let out = std::fs::read(root.join("dist/assets/minecraft/textures/block/stone.png")).unwrap();
     let decoder = png::Decoder::new(out.as_slice());
@@ -104,6 +122,14 @@ fn grayscale_example_converts_textures() {
     assert_eq!(info.color_type, png::ColorType::GrayscaleAlpha);
     // luma(red) = 76, alpha kept; luma(blue) = 29, alpha 128.
     assert_eq!(&pixels[..info.buffer_size()], &[76, 255, 29, 128]);
+
+    let out =
+        std::fs::read(root.join("dist/assets/minecraft/textures/block/transparent.png")).unwrap();
+    let mut reader = png::Decoder::new(out.as_slice()).read_info().unwrap();
+    let mut pixels = vec![0; reader.output_buffer_size()];
+    let info = reader.next_frame(&mut pixels).unwrap();
+    assert_eq!(info.color_type, png::ColorType::GrayscaleAlpha);
+    assert_eq!(&pixels[..info.buffer_size()], &[76, 0, 149, 255]);
 
     // Warm build replays from cache.
     let warm = project.build_engine().unwrap().build().unwrap();

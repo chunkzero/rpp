@@ -1,19 +1,12 @@
 //! Tests for `rpp init` scaffolding (non-interactive) and that the scaffolded
 //! project builds.
 
-use std::path::Path;
-use std::process::Command;
+mod common;
 
-fn rpp_bin() -> &'static str {
-    env!("CARGO_BIN_EXE_rpp")
-}
+use std::path::Path;
 
 fn run(root: &Path, args: &[&str]) -> std::process::Output {
-    Command::new(rpp_bin())
-        .current_dir(root)
-        .args(args)
-        .output()
-        .expect("run rpp")
+    common::command(root).args(args).output().expect("run rpp")
 }
 
 #[test]
@@ -82,8 +75,7 @@ fn init_refuses_to_overwrite_any_scaffold_file() {
     let root = dir.path();
     std::fs::write(root.join(".gitignore"), "keep\n").unwrap();
 
-    let out = Command::new(rpp_bin())
-        .current_dir(root)
+    let out = common::command(root)
         .args(["init", "--yes"])
         .output()
         .expect("run init");
@@ -100,7 +92,7 @@ fn init_escapes_user_strings() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().join("quoted");
 
-    let out = Command::new(rpp_bin())
+    let out = common::command(dir.path())
         .args([
             "init",
             root.to_str().unwrap(),

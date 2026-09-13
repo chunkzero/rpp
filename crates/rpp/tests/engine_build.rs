@@ -385,6 +385,7 @@ return plugin
     // Second build with no changes: generator output reused from cache.
     let second = build(&project, vec![gen.factory_arc("")]);
     assert_eq!(project.read_out("count.txt").as_deref(), Some("1"));
+    assert_eq!(second.generated, 0);
     // No source change, no rewrite expected.
     assert!(second.changes.written.is_empty());
 }
@@ -502,21 +503,57 @@ fn lifecycle_hooks_run() {
     let project = Project::new();
     project.write_src("a.txt", "a");
 
-    // on_start/on_finish just must not error; use log.
     let plugin = PluginDir::lua(
         "hooks",
         r#"
 local rpp = require("rpp")
 local plugin = rpp.plugin()
-plugin:on_start(function(ctx) ctx.log.info("start") end)
-plugin:on_finish(function(ctx, stats) ctx.log.info("finish " .. stats.processed) end)
-plugin:processor("n", { files = { "**/*" } }, function(ctx, file) end)
+local function record(ctx, event)
+    local f = assert(io.open(ctx.options.events, "a"))
+    f:write(event .. "\n")
+    f:close()
+end
+plugin:on_start(function(ctx) record(ctx, "start") end)
+plugin:processor("n", { files = { "**/*" } }, function(ctx, file)
+    record(ctx, "process")
+    file.text = file.text .. " processed"
+end)
+plugin:generator("g", function(ctx)
+    record(ctx, "generate")
+    ctx:emit("generated.txt", ctx:read("a.txt"))
+end)
+plugin:on_finish(function(ctx, stats)
+    record(ctx, "finish " .. stats.processed .. " " .. stats.generated)
+end)
 return plugin
 "#,
     );
-
-    let result = build(&project, vec![plugin.factory_arc("")]);
+    let events = project.root().join("events.txt");
+    let mut access = RuntimeAccess::sandboxed(project.root().to_path_buf());
+    access.security = rpp::config::SecurityMode::Native;
+    let factory = LuaPluginFactory::load(
+        plugin.path(),
+        toml::Value::try_from(BTreeMap::from([("events", events.to_str().unwrap())])).unwrap(),
+        PackInfo {
+            name: "test-pack".into(),
+            description: None,
+            format: Some(34),
+        },
+        LuaPluginLimits::default(),
+        access,
+    )
+    .unwrap();
+    let result = build(&project, vec![Arc::new(factory)]);
     assert_eq!(result.processed, 1);
+    assert_eq!(result.generated, 1);
+    assert_eq!(
+        project.read_out("generated.txt").as_deref(),
+        Some("a processed")
+    );
+    assert_eq!(
+        std::fs::read_to_string(events).unwrap(),
+        "start\nprocess\ngenerate\nfinish 1 1\n"
+    );
 }
 
 #[test]
@@ -678,14 +715,18 @@ local rpp = require("rpp")
 local plugin = rpp.plugin()
 plugin:generator("g", function(ctx)
     ctx:emit("marker.txt", "marker")
-    ctx:files()
+    ctx:emit("observed.txt", table.concat(ctx:files(), "\n"))
 end)
 return plugin
 "#,
     );
 
-    build(&project, vec![plugin.factory_arc("")]);
+    let first = build(&project, vec![plugin.factory_arc("")]);
+    assert_eq!(first.generated, 1);
+    assert_eq!(project.read_out("observed.txt").as_deref(), Some("a.txt"));
     let second = build(&project, vec![plugin.factory_arc("")]);
+    assert_eq!(second.generated, 0);
+    assert_eq!(project.read_out("observed.txt").as_deref(), Some("a.txt"));
     assert!(second.changes.written.is_empty());
 }
 

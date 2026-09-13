@@ -60,27 +60,3 @@ impl Guest for Component {
 }
 
 export!(Component);
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn preserves_rgb_transparency() {
-        let mut input = Vec::new();
-        {
-            let mut encoder = png::Encoder::new(&mut input, 2, 1);
-            encoder.set_color(png::ColorType::Rgb);
-            encoder.set_depth(png::BitDepth::Eight);
-            encoder.set_trns(vec![0, 255, 0, 0, 0, 0]);
-            let mut writer = encoder.write_header().unwrap();
-            writer.write_image_data(&[255, 0, 0, 0, 255, 0]).unwrap();
-        }
-        let output = Component::grayscale(input).unwrap();
-        let mut reader = png::Decoder::new(output.as_slice()).read_info().unwrap();
-        let mut pixels = vec![0; reader.output_buffer_size()];
-        let info = reader.next_frame(&mut pixels).unwrap();
-        assert_eq!(info.color_type, png::ColorType::GrayscaleAlpha);
-        assert_eq!(&pixels[..info.buffer_size()], &[76, 0, 149, 255]);
-    }
-}
