@@ -315,6 +315,8 @@ mod windows {
             // Closing the last job handle terminates every remaining member, which
             // releases the pipes held by descendants so reader threads reach EOF.
             self.job.take();
+            // Assignment may have failed before the child joined the job.
+            let _ = self.child.kill();
             self.child.stdin.take();
             self.child.stdout.take();
             self.child.stderr.take();
@@ -405,6 +407,36 @@ mod windows {
         reader
             .join()
             .map_err(|_| "process output reader panicked".to_string())?
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use std::process::Stdio;
+        use std::time::Duration;
+
+        use super::*;
+
+        #[test]
+        fn dropping_unassigned_child_terminates_it() {
+            let job = Job::new().unwrap();
+            let child = Command::new("ping.exe")
+                .args(["-n", "6", "127.0.0.1"])
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .unwrap();
+            // Failed assignment leaves a live child and an empty job.
+            let mut supervisor = Supervisor {
+                child,
+                job: Some(job),
+            };
+            assert!(supervisor.child.try_wait().unwrap().is_none());
+
+            let started = Instant::now();
+            drop(supervisor);
+            assert!(started.elapsed() < Duration::from_secs(2));
+        }
     }
 }
 
