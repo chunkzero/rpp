@@ -52,18 +52,24 @@ pub fn run(args: InitArgs) -> Result<()> {
 
     let name = match args.name {
         Some(n) => n,
-        None if interactive => ui::input("Pack name", &default_name)?,
+        None if interactive => cliclack::input("Pack name")
+            .default_input(&default_name)
+            .interact()?,
         None => default_name,
     };
     let description = match args.description {
         Some(d) => d,
-        None if interactive => ui::input("Description", "A Minecraft resource pack")?,
+        None if interactive => cliclack::input("Description")
+            .default_input("A Minecraft resource pack")
+            .interact()?,
         None => "A Minecraft resource pack".to_string(),
     };
     let pack_format = match args.pack_format {
         Some(f) => f,
         None if interactive => loop {
-            let answer = ui::input("Pack format", &DEFAULT_PACK_FORMAT.to_string())?;
+            let answer: String = cliclack::input("Pack format")
+                .default_input(&DEFAULT_PACK_FORMAT.to_string())
+                .interact()?;
             match answer.trim().parse::<u32>() {
                 Ok(format) if format > 0 => break format,
                 _ => ui::warn(format!("`{answer}` is not a valid pack format")),

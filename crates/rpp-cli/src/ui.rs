@@ -1,4 +1,4 @@
-//! Cliclack prompts and status output on stderr, with plain output for scripts.
+//! Cliclack status output and terminal detection, with plain output for scripts.
 
 use std::io::{self, IsTerminal};
 use std::time::Duration;
@@ -10,14 +10,6 @@ pub fn is_terminal() -> bool {
 
 pub(crate) fn is_interactive() -> bool {
     io::stdin().is_terminal() && is_terminal()
-}
-
-pub(crate) fn input(label: &str, default: &str) -> io::Result<String> {
-    cliclack::input(label).default_input(default).interact()
-}
-
-pub(crate) fn select<T: Clone + Eq>(label: &str, items: &[(T, &str, &str)]) -> io::Result<T> {
-    cliclack::select(label).items(items).interact()
 }
 
 fn display(text: &str, prefix: &str, render: impl FnOnce(&str) -> io::Result<()>) {

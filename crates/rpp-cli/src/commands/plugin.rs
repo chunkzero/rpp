@@ -108,13 +108,12 @@ fn install_scope(global: bool, project: bool) -> Result<InstallScope> {
     if project || !ui::is_interactive() {
         return Ok(InstallScope::Project);
     }
-    Ok(ui::select(
-        "Where should this plugin be installed?",
-        &[
+    Ok(cliclack::select("Where should this plugin be installed?")
+        .items(&[
             (InstallScope::Project, "This project", ""),
             (InstallScope::Global, "Globally for this user", ""),
-        ],
-    )?)
+        ])
+        .interact()?)
 }
 
 fn add(
