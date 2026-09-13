@@ -43,7 +43,7 @@ Sandboxed Lua therefore omits `os` and `math.random` by default. Trusted
 
 ```lua
 plugin:generator("index", function(ctx)
-    local index = {}
+    local index = rpp.json.array()
     for _, path in ipairs(ctx:files("assets/*/textures/**/*.png")) do
         index[#index + 1] = { path = path, hash = rpp.hash.xxh3(ctx:read(path)) }
     end
@@ -106,3 +106,27 @@ per-call execution limits, set by `[build.lua] memory_limit_mb` and
 package-relative paths.
 
 See [`examples/plugins`](../examples/plugins) for complete plugins.
+
+## JSON and TOML values
+
+Decoded objects and arrays retain their identity, including when empty. JSON
+null is `rpp.json.null`, so `[1, null, 3]` remains a three-element Lua array.
+Assigning `nil` to a table entry removes it; assign `rpp.json.null` to keep an
+explicit null.
+
+```lua
+local data = rpp.json.object({ items = rpp.json.array(), optional = rpp.json.null })
+assert(rpp.json.encode(data) == '{"items":[],"optional":null}')
+```
+
+`object(table?)` and `array(table?)` create an empty table or mark the supplied
+table in place, replacing its metatable. Both JSON and TOML expose these
+constructors and understand the same markers. Plain `{}` encodes as an object;
+nonempty plain tables with consecutive integer keys starting at 1 encode as
+arrays. Other tables must have string keys. Marked arrays reject holes and named
+keys, and marked objects reject non-string keys. Encoding uses raw entries and
+does not call table metamethods. TOML rejects null in every position. Non-finite numbers are unsupported.
+
+Conversions reject cycles, nesting beyond 64 levels below the root, and more
+than 100,000 values including the root. Shared tables are allowed but count once
+per occurrence. These failures produce ordinary attributed plugin errors.

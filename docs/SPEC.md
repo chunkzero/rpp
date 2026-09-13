@@ -288,8 +288,25 @@ return plugin
 
 - `rpp` — root: `rpp.plugin()`, plus re-exports of the submodules below.
 - `rpp.json` — `decode(str) -> value`, `encode(value, opts?) -> str` where
-  `opts = { pretty = false }`; preserves JSON semantics via serde.
-- `rpp.toml` — `decode(str)`, `encode(value)`.
+  `opts = { pretty = false }`; `null` is the JSON null sentinel. `object(table?)`
+  and `array(table?)` mark a supplied table in place or create a new empty one.
+- `rpp.toml` — `decode(str)`, `encode(value)`, `object(table?)`, `array(table?)`.
+
+JSON/TOML decoding marks container identity, so empty objects/tables and arrays
+retain their type even after their entries are removed. JSON null uses
+`rpp.json.null`, including inside arrays; Lua `nil` removes a table entry.
+Encoding honors marked identity and rejects invalid keys. Plain empty tables
+encode as objects; nonempty plain tables with exactly the keys `1..n` encode as
+arrays, and other plain tables require string keys. Object keys are never
+stringified. Use constructors whenever empty table identity matters. Constructors
+replace a table's metatable with a protected shape marker; encoding reads raw
+entries without invoking metamethods. TOML uses the same conversion contract and
+rejects null anywhere instead of dropping values. Non-finite numbers are unsupported. Conversion in either direction
+allows at most 64 levels below the root and 100,000 values (including the root);
+encoding rejects cycles but permits shared subtrees within that work budget.
+Parser recursion limits may reject deeply nested text before conversion.
+
+Other builtin modules:
 - `rpp.hash` — `xxh3(str) -> hex string`, `sha256(str) -> hex`, `md5(str) -> hex`,
   `crc32(str) -> integer`.
 - `rpp.path` — `join(...)`, `dirname(p)`, `basename(p)`, `ext(p)`, `with_ext(p, e)`,

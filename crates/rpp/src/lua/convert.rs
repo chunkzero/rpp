@@ -1,19 +1,133 @@
-//! Conversions between Lua values and serde data models.
-//!
-//! mlua's built-in serde support is convenient for decoding into Lua, but
-//! encoding Lua tables back out is ambiguous (sequence vs map, integer vs float).
-//! These helpers apply consistent rules:
-//!
-//! - A table whose keys are exactly `1..=n` becomes a JSON/TOML array.
-//! - An empty table becomes an empty array.
-//! - Any other table becomes an object, with non-string keys stringified.
+//! Bounded conversions between Lua and the shared serde JSON data model.
 
-use mlua::Value;
+use std::collections::HashSet;
 
-/// Convert a Lua value into a `serde_json::Value`.
+use mlua::{Lua, LuaSerdeExt, Table, Value};
+use serde::Deserialize;
+
+const MAX_DEPTH: usize = 64;
+const MAX_VALUES: usize = 100_000;
+const SHAPE: &str = "__rpp_serde_shape";
+
+/// Mark a table's semantic identity independently of its current contents.
+pub(crate) fn mark(lua: &Lua, table: Table, array: bool) -> mlua::Result<Table> {
+    let name = if array {
+        "rpp.serde.array"
+    } else {
+        "rpp.serde.object"
+    };
+    let metatable = match lua.named_registry_value::<Table>(name) {
+        Ok(table) => table,
+        Err(_) => {
+            let table = lua.create_table()?;
+            table.raw_set(SHAPE, array)?;
+            table.raw_set("__metatable", name)?;
+            lua.set_named_registry_value(name, table.clone())?;
+            table
+        }
+    };
+    table.set_metatable(Some(metatable))?;
+    Ok(table)
+}
+
+pub(crate) fn constructors(lua: &Lua, module: &Table) -> mlua::Result<()> {
+    for (name, array) in [("array", true), ("object", false)] {
+        module.set(
+            name,
+            lua.create_function(move |lua, table: Option<Table>| {
+                mark(lua, table.map_or_else(|| lua.create_table(), Ok)?, array)
+            })?,
+        )?;
+    }
+    Ok(())
+}
+
+#[derive(Default)]
+struct Budget {
+    values: usize,
+    active: HashSet<*const std::ffi::c_void>,
+}
+
+impl Budget {
+    fn visit(&mut self, depth: usize) -> Result<(), String> {
+        if depth > MAX_DEPTH {
+            return Err(format!("maximum nesting depth ({MAX_DEPTH}) exceeded"));
+        }
+        self.values += 1;
+        if self.values > MAX_VALUES {
+            return Err(format!("maximum value count ({MAX_VALUES}) exceeded"));
+        }
+        Ok(())
+    }
+}
+
+/// Decode using the same shapes and null representation consumed by the encoder.
+pub(crate) fn json_to_lua(lua: &Lua, value: &serde_json::Value) -> mlua::Result<Value> {
+    fn convert(
+        lua: &Lua,
+        value: &serde_json::Value,
+        depth: usize,
+        budget: &mut Budget,
+    ) -> mlua::Result<Value> {
+        budget.visit(depth).map_err(mlua::Error::external)?;
+        match value {
+            serde_json::Value::Array(values) => {
+                let table = mark(lua, lua.create_table()?, true)?;
+                for (index, value) in values.iter().enumerate() {
+                    table.raw_set(index + 1, convert(lua, value, depth + 1, budget)?)?;
+                }
+                Ok(Value::Table(table))
+            }
+            serde_json::Value::Object(values) => {
+                let table = mark(lua, lua.create_table()?, false)?;
+                for (key, value) in values {
+                    table.raw_set(key.as_str(), convert(lua, value, depth + 1, budget)?)?;
+                }
+                Ok(Value::Table(table))
+            }
+            _ => lua.to_value(value),
+        }
+    }
+    convert(lua, value, 0, &mut Budget::default())
+}
+
+/// Validate TOML before its serde conversion, which also represents datetimes.
+pub(crate) fn toml_to_lua(lua: &Lua, value: &toml::Value) -> mlua::Result<Value> {
+    fn validate(value: &toml::Value, depth: usize, budget: &mut Budget) -> Result<(), String> {
+        budget.visit(depth)?;
+        match value {
+            toml::Value::Array(values) => {
+                for value in values {
+                    validate(value, depth + 1, budget)?;
+                }
+            }
+            toml::Value::Table(values) => {
+                for value in values.values() {
+                    validate(value, depth + 1, budget)?;
+                }
+            }
+            toml::Value::Float(value) if !value.is_finite() => {
+                return Err("non-finite number cannot be converted".to_string());
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+    validate(value, 0, &mut Budget::default()).map_err(mlua::Error::external)?;
+    let value = serde_json::to_value(value).map_err(mlua::Error::external)?;
+    json_to_lua(lua, &value)
+}
+
+/// Encode marked containers; plain tables use string-keyed objects or dense arrays.
 pub(crate) fn lua_to_json(value: Value) -> Result<serde_json::Value, String> {
+    convert(value, 0, &mut Budget::default())
+}
+
+fn convert(value: Value, depth: usize, budget: &mut Budget) -> Result<serde_json::Value, String> {
+    budget.visit(depth)?;
     match value {
         Value::Nil => Ok(serde_json::Value::Null),
+        Value::LightUserData(p) if p.0.is_null() => Ok(serde_json::Value::Null),
         Value::Boolean(b) => Ok(serde_json::Value::Bool(b)),
         Value::Integer(i) => Ok(serde_json::Value::Number(i.into())),
         Value::Number(n) => serde_json::Number::from_f64(n)
@@ -22,108 +136,69 @@ pub(crate) fn lua_to_json(value: Value) -> Result<serde_json::Value, String> {
         Value::String(s) => Ok(serde_json::Value::String(
             s.to_str().map_err(|e| e.to_string())?.to_string(),
         )),
-        Value::Table(t) => table_to_json(t),
+        Value::Table(table) => {
+            let pointer = table.to_pointer();
+            if !budget.active.insert(pointer) {
+                return Err("cyclic table cannot be encoded".to_string());
+            }
+            let result = table_to_json(table, depth, budget);
+            budget.active.remove(&pointer);
+            result
+        }
         other => Err(format!("cannot encode Lua {} value", other.type_name())),
     }
 }
 
-fn table_to_json(table: mlua::Table) -> Result<serde_json::Value, String> {
-    let len = table.raw_len();
-    let mut is_array = len > 0;
-    let mut count = 0usize;
-    // Verify the table is a clean 1..=len sequence to treat it as an array.
-    if is_array {
-        for pair in table.clone().pairs::<Value, Value>() {
-            let (k, _) = pair.map_err(|e| e.to_string())?;
-            count += 1;
-            match k {
-                Value::Integer(i) if i >= 1 && (i as usize) <= len => {}
-                _ => {
-                    is_array = false;
-                    break;
-                }
-            }
+fn table_to_json(
+    table: Table,
+    depth: usize,
+    budget: &mut Budget,
+) -> Result<serde_json::Value, String> {
+    let shape = table
+        .metatable()
+        .map(|m| m.raw_get::<Option<bool>>(SHAPE))
+        .transpose()
+        .map_err(|e| e.to_string())?
+        .flatten();
+    let mut entries = Vec::new();
+    for pair in table.pairs::<Value, Value>() {
+        if entries.len() >= MAX_VALUES - budget.values {
+            return Err(format!("maximum value count ({MAX_VALUES}) exceeded"));
         }
-        if is_array && count != len {
-            is_array = false;
-        }
-    } else {
-        // Empty table => empty array.
-        if table.clone().pairs::<Value, Value>().next().is_none() {
-            return Ok(serde_json::Value::Array(Vec::new()));
-        }
+        entries.push(pair.map_err(|e| e.to_string())?);
     }
-
-    if is_array {
-        let mut arr = Vec::with_capacity(len);
-        for i in 1..=len {
-            let v: Value = table.raw_get(i).map_err(|e| e.to_string())?;
-            arr.push(lua_to_json(v)?);
+    let dense = !entries.is_empty() && entries.iter().all(|(key, _)| {
+        matches!(key, Value::Integer(i) if *i >= 1 && (*i as u64) <= entries.len() as u64)
+    });
+    if shape.unwrap_or(dense) {
+        if !entries.is_empty() && !dense {
+            return Err("array must have only consecutive integer keys starting at 1".to_string());
         }
-        Ok(serde_json::Value::Array(arr))
+        entries.sort_unstable_by_key(|(key, _)| match key {
+            Value::Integer(i) => *i,
+            _ => 0,
+        });
+        entries
+            .into_iter()
+            .map(|(_, value)| convert(value, depth + 1, budget))
+            .collect::<Result<Vec<_>, _>>()
+            .map(serde_json::Value::Array)
     } else {
-        let mut map = serde_json::Map::new();
-        for pair in table.pairs::<Value, Value>() {
-            let (k, v) = pair.map_err(|e| e.to_string())?;
-            let key = match k {
-                Value::String(s) => s.to_str().map_err(|e| e.to_string())?.to_string(),
-                Value::Integer(i) => i.to_string(),
-                Value::Number(n) => n.to_string(),
-                other => {
-                    return Err(format!(
-                        "cannot use Lua {} as object key",
-                        other.type_name()
-                    ))
-                }
+        let mut object = serde_json::Map::new();
+        for (key, value) in entries {
+            let Value::String(key) = key else {
+                return Err("object keys must be strings (arrays must be dense)".to_string());
             };
-            map.insert(key, lua_to_json(v)?);
+            object.insert(
+                key.to_str().map_err(|e| e.to_string())?.to_string(),
+                convert(value, depth + 1, budget)?,
+            );
         }
-        Ok(serde_json::Value::Object(map))
+        Ok(serde_json::Value::Object(object))
     }
 }
 
-/// Convert a Lua value into a `toml::Value`.
-///
-/// TOML has no null; nil/null values are omitted from tables and rejected at the
-/// top level.
+/// TOML uses the same container contract and rejects null, which it cannot represent.
 pub(crate) fn lua_to_toml(value: Value) -> Result<toml::Value, String> {
-    let json = lua_to_json(value)?;
-    json_to_toml(json)
-}
-
-fn json_to_toml(value: serde_json::Value) -> Result<toml::Value, String> {
-    match value {
-        serde_json::Value::Null => Err("TOML cannot represent nil".to_string()),
-        serde_json::Value::Bool(b) => Ok(toml::Value::Boolean(b)),
-        serde_json::Value::Number(n) => {
-            if let Some(i) = n.as_i64() {
-                Ok(toml::Value::Integer(i))
-            } else if let Some(f) = n.as_f64() {
-                Ok(toml::Value::Float(f))
-            } else {
-                Err("number out of range for TOML".to_string())
-            }
-        }
-        serde_json::Value::String(s) => Ok(toml::Value::String(s)),
-        serde_json::Value::Array(a) => {
-            let mut out = Vec::with_capacity(a.len());
-            for v in a {
-                if matches!(v, serde_json::Value::Null) {
-                    continue;
-                }
-                out.push(json_to_toml(v)?);
-            }
-            Ok(toml::Value::Array(out))
-        }
-        serde_json::Value::Object(o) => {
-            let mut table = toml::map::Map::new();
-            for (k, v) in o {
-                if matches!(v, serde_json::Value::Null) {
-                    continue;
-                }
-                table.insert(k, json_to_toml(v)?);
-            }
-            Ok(toml::Value::Table(table))
-        }
-    }
+    toml::Value::deserialize(lua_to_json(value)?).map_err(|e| e.to_string())
 }
