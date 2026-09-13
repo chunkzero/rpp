@@ -214,6 +214,10 @@ impl Project {
             factories.push(loaded);
         }
 
+        // Pins for requests no longer configured (including pre-v2 default-branch
+        // pins that now load as explicit refs) are dropped on save.
+        global_lock_dirty |= global_lock.prune(&configured_sources(&self.user_plugins.plugins));
+        project_lock_dirty |= project_lock.prune(&configured_sources(&self.config.plugins));
         if global_lock_dirty {
             self.user_plugins.ensure_root()?;
             global_lock
@@ -270,11 +274,7 @@ impl Project {
 
         let canonical = source.canonical();
         let locked = lockfile
-            .get_for(
-                &canonical,
-                plugin_cfg.r#ref.as_deref(),
-                plugin_cfg.subdir.as_deref(),
-            )
+            .get_for(&canonical, source.requested_ref(), source.subdir())
             .cloned();
         let resolved = resolver
             .resolve(&source, locked.as_ref())
@@ -282,7 +282,7 @@ impl Project {
 
         if let Some(pinned) = &resolved.pinned {
             let prev = lockfile.record_resolved(&source, &resolved);
-            if pin_changed(prev.as_ref(), pinned, plugin_cfg.subdir.as_deref()) {
+            if pin_changed(prev.as_ref(), pinned, source.subdir()) {
                 *lock_dirty = true;
             }
         }
@@ -390,11 +390,7 @@ pub fn resolve_plugin_meta(
     let canonical = parsed.canonical();
 
     let locked = lock
-        .get_for(
-            &canonical,
-            plugin.r#ref.as_deref(),
-            plugin.subdir.as_deref(),
-        )
+        .get_for(&canonical, parsed.requested_ref(), parsed.subdir())
         .cloned();
     if matches!(parsed, PluginSource::GitHub { .. }) && locked.is_none() {
         return Ok(None);
@@ -432,6 +428,16 @@ enum PluginScope {
 }
 
 /// Whether a freshly-resolved pin differs from what the lockfile recorded.
+fn configured_sources(plugins: &[PluginConfig]) -> Vec<PluginSource> {
+    plugins
+        .iter()
+        .filter_map(|plugin| {
+            let source = plugin.source.as_deref()?;
+            PluginSource::parse(source, plugin.r#ref.as_deref(), plugin.subdir.as_deref()).ok()
+        })
+        .collect()
+}
+
 fn pin_changed(locked: Option<&rpp_fetch::LockedPlugin>, pin: &Pin, subdir: Option<&str>) -> bool {
     match locked {
         None => true,

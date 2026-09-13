@@ -437,16 +437,26 @@ pub struct ResolvedPlugin { pub root: PathBuf, pub pinned: Option<Pin> }  // Pin
 ### Lockfile `rpp.lock` (TOML, lives next to rpp.toml; managed by CLI)
 
 ```toml
-version = 1
+version = 2
 [[plugin]]
 source = "github:example/rpp-plugins"
-ref = "v1.2.0"          # what was requested (or default branch name)
+ref = "v1.2.0"          # resolved ref (or default branch name)
+requested_ref = "v1.2.0" # omitted when the default branch was requested
 commit = "<full sha>"
 subdir = "plugins/atlas"
 ```
 
-`rpp-fetch` provides `Lockfile::load/save`, lookup by source string, and update logic.
-Path sources are never locked.
+`rpp-fetch` owns source parsing and normalization; core config retains source fields
+without interpreting their grammar. Plugin identity is the normalized source,
+requested ref, and subdirectory. Multiple plugins may use different subdirectories
+or refs of one repository. Commands retain the selected entry; ambiguous source
+selectors require a plugin id.
+
+`rpp-fetch` provides `Lockfile::load/save` and lookup/update by that full identity.
+Default-branch requests are distinct from explicit requests for the branch name,
+even when they resolve to the same commit. Version 1 locks load as explicit-ref
+pins because they did not record default-request provenance; default-branch
+requests must resolve once to obtain a version 2 pin. Path sources are never locked.
 
 ### Discovery / search
 
