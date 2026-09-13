@@ -1,7 +1,7 @@
 //! Per-plugin sandbox: environment construction, stdlib whitelist, builtin
 //! module preloading, and plugin-local `require` resolution (spec §4).
 
-use std::path::Path;
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -49,7 +49,7 @@ pub(crate) fn run_limited<T>(
 
 /// A sandbox bound to one plugin within one Lua state.
 ///
-/// Holds the plugin's private `_ENV` and the root directory used to resolve
+/// Holds the plugin's private `_ENV` and the immutable sources used to resolve
 /// `require` of plugin-local modules.
 pub(crate) struct Sandbox {
     /// The plugin's private global environment.
@@ -57,25 +57,24 @@ pub(crate) struct Sandbox {
 }
 
 impl Sandbox {
-    /// Build a fresh sandbox `_ENV` for `plugin_id` rooted at `root`.
+    /// Build a fresh sandbox `_ENV` for `plugin_id` using captured package sources.
     ///
     /// Installs the whitelisted stdlib, `print` → `log.info`, the `rpp` builtin
     /// modules, and a plugin-local `require` that resolves only builtin `rpp*`
-    /// modules and files within `root`.
+    /// modules and files in the package snapshot.
     pub(crate) fn new(
         lua: &Lua,
         plugin_id: &str,
-        root: &Path,
+        modules: Arc<BTreeMap<String, Vec<u8>>>,
         access: RuntimeAccess,
         deadline: Deadline,
         memory_limit: usize,
     ) -> mlua::Result<Self> {
-        let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
         let env = lua.create_table()?;
 
         install_stdlib(lua, &env, &access, memory_limit)?;
         install_print(lua, &env, plugin_id)?;
-        install_require(lua, &env, plugin_id, &root, access, deadline)?;
+        install_require(lua, &env, plugin_id, modules, access, deadline)?;
 
         // `_G` self-reference for plugins that reflect on globals.
         env.set("_G", &env)?;
@@ -429,7 +428,7 @@ fn install_require(
     lua: &Lua,
     env: &Table,
     plugin_id: &str,
-    root: &Path,
+    sources: Arc<BTreeMap<String, Vec<u8>>>,
     access: RuntimeAccess,
     deadline: Deadline,
 ) -> mlua::Result<()> {
@@ -447,7 +446,6 @@ fn install_require(
     loaded.set("rpp.process", modules.process)?;
     loaded.set("rpp.component", modules.component)?;
 
-    let root = root.to_path_buf();
     let env_for_require = env.clone();
     let require = lua.create_function(move |lua, name: mlua::String| {
         let name = name.to_str()?.to_string();
@@ -467,9 +465,9 @@ fn install_require(
         }
 
         // Plugin-local resolution.
-        let source = resolve_local(&root, &name)?;
+        let source = resolve_local(&sources, &name)?;
         let module: Value = lua
-            .load(&source.code)
+            .load(source.code)
             .set_name(format!("@{}", source.display))
             .set_environment(env_for_require.clone())
             .eval()?;
@@ -481,13 +479,16 @@ fn install_require(
     Ok(())
 }
 
-struct LocalSource {
-    code: String,
+struct LocalSource<'a> {
+    code: &'a [u8],
     display: String,
 }
 
 /// Resolve a plugin-local module name to source, rejecting path escapes.
-fn resolve_local(root: &Path, name: &str) -> mlua::Result<LocalSource> {
+fn resolve_local<'a>(
+    sources: &'a BTreeMap<String, Vec<u8>>,
+    name: &str,
+) -> mlua::Result<LocalSource<'a>> {
     // Reject names that could escape the package (`..`, absolute, raw slashes).
     if name.contains("..") || name.starts_with('/') || name.contains('/') || name.contains('\\') {
         return Err(mlua::Error::external(format!(
@@ -496,26 +497,9 @@ fn resolve_local(root: &Path, name: &str) -> mlua::Result<LocalSource> {
     }
 
     let rel = name.replace('.', "/");
-    let candidates = [
-        root.join(format!("{rel}.lua")),
-        root.join(&rel).join("init.lua"),
-    ];
-
-    for candidate in candidates {
-        if let Ok(canon) = candidate.canonicalize() {
-            // Defense in depth: ensure the resolved file is under root.
-            if !canon.starts_with(root) {
-                return Err(mlua::Error::external(format!(
-                    "require(`{name}`) escapes the plugin directory"
-                )));
-            }
-            let code = std::fs::read_to_string(&canon)
-                .map_err(|e| mlua::Error::external(format!("require(`{name}`): {e}")))?;
-            let display = canon
-                .strip_prefix(root)
-                .unwrap_or(&canon)
-                .to_string_lossy()
-                .replace('\\', "/");
+    let candidates = [format!("{rel}.lua"), format!("{rel}/init.lua")];
+    for display in candidates {
+        if let Some(code) = sources.get(&display) {
             return Ok(LocalSource { code, display });
         }
     }

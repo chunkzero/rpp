@@ -1,6 +1,7 @@
 //! [`LuaPluginFactory`]: validation-load on the main thread plus per-worker
 //! instantiation (spec §4).
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -58,6 +59,7 @@ struct Shared {
     root: PathBuf,
     entry: String,
     entry_source: String,
+    modules: Arc<BTreeMap<String, Vec<u8>>>,
     options: toml::Value,
     pack: PackInfo,
     processors: Vec<ProcessorDef>,
@@ -83,7 +85,10 @@ impl LuaPluginFactory {
         access: RuntimeAccess,
     ) -> Result<Self> {
         let dir = dir.as_ref();
-        let manifest = PluginManifest::load(dir)?;
+        let manifest_path = dir.join("plugin.toml");
+        let manifest_source =
+            std::fs::read_to_string(&manifest_path).map_err(|e| Error::io(&manifest_path, e))?;
+        let manifest = PluginManifest::parse(&manifest_source, &manifest_path)?;
         let root = dir.to_path_buf();
 
         let entry_path = root.join(&manifest.entry);
@@ -97,17 +102,32 @@ impl LuaPluginFactory {
                 message: format!("entry `{}` escapes the plugin directory", manifest.entry),
             });
         }
-        let entry_source = std::fs::read_to_string(&entry_path).map_err(|e| Error::PluginLoad {
+        let mut modules = BTreeMap::new();
+        collect_lua(&canonical_root, &canonical_root, &mut modules)?;
+        let entry_bytes = if let Some(bytes) = modules.get(&manifest.entry) {
+            bytes.clone()
+        } else {
+            std::fs::read(&canonical_entry).map_err(|e| Error::io(&entry_path, e))?
+        };
+        let entry_source = String::from_utf8(entry_bytes).map_err(|e| Error::PluginLoad {
             plugin: manifest.id.clone(),
             message: format!("cannot read entry `{}`: {e}", manifest.entry),
         })?;
-
-        let cache_key = compute_cache_key(&root, &manifest, &options, &access)?;
+        let modules = Arc::new(modules);
+        let cache_key = compute_cache_key(
+            &root,
+            &manifest,
+            &manifest_source,
+            &entry_source,
+            &modules,
+            &options,
+            &access,
+        )?;
 
         // Validation load: extract processor defs and generator presence.
         let (processors, has_generator) = validation_load(
             &manifest.id,
-            &root,
+            Arc::clone(&modules),
             &manifest.entry,
             &entry_source,
             limits,
@@ -120,6 +140,7 @@ impl LuaPluginFactory {
                 root,
                 entry: manifest.entry,
                 entry_source,
+                modules,
                 options,
                 pack,
                 processors,
@@ -147,6 +168,10 @@ impl LuaPluginFactory {
 
     pub(crate) fn entry(&self) -> (&str, &str) {
         (&self.shared.entry, &self.shared.entry_source)
+    }
+
+    pub(crate) fn modules(&self) -> Arc<BTreeMap<String, Vec<u8>>> {
+        Arc::clone(&self.shared.modules)
     }
 
     pub(crate) fn memory_limit(&self) -> usize {
@@ -204,7 +229,7 @@ impl PluginFactory for LuaPluginFactory {
 /// Run the entry script once to collect processor defs and generator presence.
 fn validation_load(
     plugin_id: &str,
-    root: &Path,
+    modules: Arc<BTreeMap<String, Vec<u8>>>,
     entry_name: &str,
     entry_source: &str,
     limits: LuaPluginLimits,
@@ -212,7 +237,7 @@ fn validation_load(
 ) -> Result<(Vec<ProcessorDef>, bool)> {
     let eval = eval_entry(
         plugin_id,
-        root,
+        modules,
         entry_name,
         entry_source,
         limits.memory_limit,
@@ -234,27 +259,24 @@ fn validation_load(
 fn compute_cache_key(
     root: &Path,
     manifest: &PluginManifest,
+    manifest_source: &str,
+    entry_source: &str,
+    modules: &BTreeMap<String, Vec<u8>>,
     options: &toml::Value,
     access: &RuntimeAccess,
 ) -> Result<u64> {
     let mut writer = HashWriter::new();
 
-    // Collect all `*.lua` files under root, sorted by relative path.
-    let mut lua_files: Vec<(String, Vec<u8>)> = Vec::new();
-    collect_lua(root, root, &mut lua_files)?;
-    lua_files.sort_by(|a, b| a.0.cmp(&b.0));
-
-    writer.write_str("rpp.lua.plugin.v1");
-    for (rel, bytes) in &lua_files {
+    writer.write_str("rpp.lua.plugin.v2");
+    for (rel, bytes) in modules {
         writer.write_str(rel);
         writer.write(bytes);
     }
-
-    // plugin.toml
-    let manifest_path = root.join("plugin.toml");
-    let manifest_bytes = std::fs::read(&manifest_path).map_err(|e| Error::io(&manifest_path, e))?;
+    writer.write_str("entry");
+    writer.write_str(&manifest.entry);
+    writer.write(entry_source.as_bytes());
     writer.write_str("plugin.toml");
-    writer.write(&manifest_bytes);
+    writer.write(manifest_source.as_bytes());
 
     // A Lua wrapper and its component binary form one plugin implementation.
     // Hash declared component bytes explicitly so replacing a `.wasm` file
@@ -281,22 +303,39 @@ fn compute_cache_key(
     Ok(writer.finish())
 }
 
-fn collect_lua(root: &Path, dir: &Path, out: &mut Vec<(String, Vec<u8>)>) -> Result<()> {
+fn collect_lua(root: &Path, dir: &Path, out: &mut BTreeMap<String, Vec<u8>>) -> Result<()> {
     let entries = std::fs::read_dir(dir).map_err(|e| Error::io(dir, e))?;
     for entry in entries {
         let entry = entry.map_err(|e| Error::io(dir, e))?;
         let path = entry.path();
         let file_type = entry.file_type().map_err(|e| Error::io(&path, e))?;
+        if file_type.is_symlink() {
+            let target = path.canonicalize().map_err(|e| Error::io(&path, e))?;
+            if !target.starts_with(root) {
+                return Err(Error::Build(format!(
+                    "Lua package symlink `{}` escapes the plugin directory",
+                    path.display()
+                )));
+            }
+            if target.is_dir() {
+                return Err(Error::Build(format!(
+                    "Lua package directory symlinks are unsupported: `{}`",
+                    path.display()
+                )));
+            }
+        }
         if file_type.is_dir() {
             collect_lua(root, &path, out)?;
-        } else if file_type.is_file() && path.extension().and_then(|e| e.to_str()) == Some("lua") {
+        } else if (file_type.is_file() || file_type.is_symlink())
+            && path.extension().and_then(|e| e.to_str()) == Some("lua")
+        {
             let rel = path
                 .strip_prefix(root)
                 .unwrap_or(&path)
                 .to_string_lossy()
                 .replace('\\', "/");
             let bytes = std::fs::read(&path).map_err(|e| Error::io(&path, e))?;
-            out.push((rel, bytes));
+            out.insert(rel, bytes);
         }
     }
     Ok(())
