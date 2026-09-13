@@ -19,5 +19,4 @@ flate2 = "1"
 tar = "0.4"
 dirs.workspace = true
 
-[dev-dependencies]
 tempfile.workspace = true
