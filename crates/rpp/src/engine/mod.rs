@@ -250,9 +250,15 @@ impl Engine {
         finalize::finish_build(&mut main_instances, stats)?;
 
         validate_build_dirs(&self.config, &self.project_root)?;
-        external::validate_next(&self.config, &self.project_root, &new_manifest)?;
+        let external = external::PublicationPlan::prepare(
+            &self.config,
+            &self.project_root,
+            &new_manifest,
+            &store,
+        )?;
+        external.record_recovery(&self.project_root)?;
         let mut changes = finalize::sync_output(&self.config, &self.output, &output, &store)?;
-        changes.external = external::sync(&self.config, &self.project_root, &new_manifest, &store)?;
+        changes.external = external.publish(&self.project_root)?;
 
         new_manifest.save(&manifest_path)?;
         let live = finalize::collect_live_objects(&new_manifest);
