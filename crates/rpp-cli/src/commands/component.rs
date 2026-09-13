@@ -293,7 +293,7 @@ fn is_structural(ty: &ValueType) -> bool {
         | ValueType::Enum(_)
         | ValueType::Result { .. }
         | ValueType::Flags(_) => true,
-        ValueType::Option(inner) => is_structural(inner),
+        ValueType::Option(_) => true,
         _ => false,
     }
 }
@@ -339,7 +339,10 @@ fn lua_type(ty: &ValueType) -> String {
             .collect::<Vec<_>>()
             .join("|"),
         ValueType::Enum(cases) => string_union(cases),
-        ValueType::Option(inner) => format!("{}|nil", lua_type(inner)),
+        ValueType::Option(inner) => format!(
+            "{{ tag: \"none\" }}|{{ tag: \"some\", value: {} }}",
+            lua_type(inner)
+        ),
         ValueType::Result { ok, err } => format!(
             "{}|{}",
             result_branch("ok", ok.as_deref()),
@@ -447,6 +450,31 @@ mod tests {
         assert!(
             lua.contains("---@return WindowCompilerCompileResult"),
             "{lua}"
+        );
+    }
+
+    #[test]
+    fn annotates_tagged_options_inside_aggregates() {
+        let option = ValueType::Option(Box::new(ValueType::Bool));
+        assert_eq!(
+            lua_type(&option),
+            r#"{ tag: "none" }|{ tag: "some", value: boolean }"#
+        );
+        let nested = ValueType::Option(Box::new(option.clone()));
+        assert_eq!(
+            lua_type(&nested),
+            r#"{ tag: "none" }|{ tag: "some", value: { tag: "none" }|{ tag: "some", value: boolean } }"#
+        );
+        assert_eq!(
+            lua_type(&ValueType::Result {
+                ok: Some(Box::new(option.clone())),
+                err: None
+            }),
+            r#"{ ok: { tag: "none" }|{ tag: "some", value: boolean } }|{ err: true }"#
+        );
+        assert_eq!(
+            lua_type(&ValueType::List(Box::new(option))),
+            r#"({ tag: "none" }|{ tag: "some", value: boolean })[]"#
         );
     }
 

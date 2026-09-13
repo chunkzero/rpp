@@ -396,6 +396,19 @@ impl WasmInstance {
   Generator and hook calls may reuse an instance for a sequential component workflow.
 - Resource limits: memory cap via `StoreLimits` and epoch interruption.
 
+### Lua component value representation
+
+WIT `option<T>` always uses `{ tag = "none" }` or
+`{ tag = "some", value = payload }`, including top-level arguments and returns.
+`nil` and unwrapped payloads are not option values. Nested options keep every tag.
+Results use exactly one branch, `{ ok = payload }` or `{ err = payload }`;
+a branch with no WIT payload uses `true`. Check branch presence with `~= nil`,
+since a boolean payload may be `false`. Lists and tuples use dense 1-based tables
+(exact integer keys `1..n`); tagged options preserve every position, so no separate
+length field is needed. `list<u8>` also accepts strings and returns strings.
+Records use named fields and variants use `{ tag = case, value = payload }`
+(with no `value` for a payloadless case). Bindgen emits these same shapes.
+
 ## 6. Plugin fetch & discovery (`crates/rpp-fetch`)
 
 Standalone, blocking (`ureq`), no async.
