@@ -11,7 +11,7 @@ use crate::ui;
 pub fn run(dir: &Path) -> Result<()> {
     let project = Project::discover(dir)?;
 
-    ui::phase("Cleaning");
+    ui::intro("Clean build artifacts");
     project.clean_artifacts()?;
     ui::success(format!(
         "Removed {} and {}",

@@ -98,7 +98,9 @@ fn build_minifies_and_zips_then_caches() {
         "first build failed:\n{}",
         String::from_utf8_lossy(&out.stderr)
     );
-    let stdout1 = String::from_utf8_lossy(&out.stdout);
+    assert!(out.stdout.is_empty(), "build status belongs on stderr");
+    let report1 = String::from_utf8_lossy(&out.stderr);
+    assert!(!report1.contains('\x1b'), "redirected output must be plain");
 
     // Output JSON is minified (no newlines / indentation from the source).
     let produced = root.join("dist/assets/minecraft/data.json");
@@ -125,8 +127,8 @@ fn build_minifies_and_zips_then_caches() {
 
     // First build processed at least one file.
     assert!(
-        stdout1.contains("processed"),
-        "expected build stats: {stdout1}"
+        report1.contains("processed"),
+        "expected build stats: {report1}"
     );
 
     // Second build: nothing changed -> fully cached (processed 0).
@@ -136,14 +138,14 @@ fn build_minifies_and_zips_then_caches() {
         "second build failed:\n{}",
         String::from_utf8_lossy(&out2.stderr)
     );
-    let stdout2 = String::from_utf8_lossy(&out2.stdout);
+    let report2 = String::from_utf8_lossy(&out2.stderr);
     assert!(
-        stdout2.contains("processed 0"),
-        "second build should be fully cached: {stdout2}"
+        report2.contains("processed 0"),
+        "second build should be fully cached: {report2}"
     );
     assert!(
-        stdout2.contains("0 removed"),
-        "release archive should be preserved by output sync: {stdout2}"
+        report2.contains("0 removed"),
+        "release archive should be preserved by output sync: {report2}"
     );
 
     assert_eq!(std::fs::read_to_string(&produced).unwrap(), body);
@@ -344,11 +346,11 @@ fn example_pack_builds_from_its_own_config() {
     let first_bytes = std::fs::read(&zip_path).unwrap();
 
     let out = run_build(&root, &["--jobs", "2"]);
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(out.status.success(), "{stdout}");
+    let report = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{report}");
     assert!(
-        stdout.contains("processed 0"),
-        "second build must be cached: {stdout}"
+        report.contains("processed 0"),
+        "second build must be cached: {report}"
     );
     assert_eq!(
         std::fs::read(&zip_path).unwrap(),

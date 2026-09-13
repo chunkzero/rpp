@@ -13,6 +13,7 @@ use rpp_cli::commands::build::BuildArgs;
 use rpp_cli::commands::component::ComponentCommand;
 use rpp_cli::commands::init::InitArgs;
 use rpp_cli::commands::plugin::PluginCommand;
+use rpp_cli::ui;
 
 /// rpp — a Minecraft resource pack build tool.
 #[derive(Debug, Parser)]
@@ -108,7 +109,14 @@ fn main() {
     };
 
     if let Err(err) = result {
-        eprintln!("{} {:#}", console::style("error:").red().bold(), err);
+        if err
+            .downcast_ref::<std::io::Error>()
+            .is_some_and(|error| error.kind() == std::io::ErrorKind::Interrupted)
+        {
+            ui::cancel();
+            std::process::exit(130);
+        }
+        ui::error(format!("{err:#}"));
         std::process::exit(1);
     }
 }
@@ -127,6 +135,9 @@ fn init_tracing(verbose: u8) {
 
     fmt()
         .with_env_filter(filter)
+        .with_ansi(
+            ui::is_terminal() && std::env::var_os("NO_COLOR").is_none_or(|value| value.is_empty()),
+        )
         .with_target(false)
         .without_time()
         .with_writer(std::io::stderr)

@@ -10,7 +10,6 @@ use notify_debouncer_full::{new_debouncer, DebouncedEvent, Debouncer, FileIdMap}
 use tokio::sync::mpsc;
 
 use crate::project::Project;
-use crate::ui;
 
 /// What kind of change a filesystem event represents.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -112,7 +111,7 @@ pub fn spawn_watcher(
                 Ok(events) => events,
                 Err(errors) => {
                     for error in errors {
-                        ui::warn(format!("file watcher: {error}"));
+                        tracing::warn!(%error, "File watcher error");
                     }
                     return;
                 }

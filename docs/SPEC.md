@@ -577,6 +577,16 @@ pub fn run_packsquash(binary: &str, pack_dir: &Path, zip_path: &Path, options_fi
   `update [id] [--global]` / `search <query>` — manages `[[plugin]]` entries
   (toml_edit, preserve formatting) and the corresponding lockfile.
 
+Prompts and command status use cliclack on stderr. Redirected stderr and `TERM=dumb`
+receive plain status lines; command results such as plugin listings and search hits
+stay on stdout. Prompts require both stdin and stderr to be terminals. Otherwise,
+`init` accepts defaults and plugin installation defaults to project scope; `--yes`,
+`--project`, and `--global` bypass their respective prompts. Cancelling a prompt
+exits with status 130. `NO_COLOR` disables color.
+
+Diagnostics and ongoing dev-server activity use tracing on stderr, controlled by
+`-v` / `-vv` and `RUST_LOG`.
+
 ### Dev-server pack update protocol
 
 `GET /events` is an SSE stream with JSON data and 15-second keepalive comments.

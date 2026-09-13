@@ -2,8 +2,8 @@
 
 pub mod commands;
 pub mod project;
+pub mod ui;
 
 mod atomic;
 mod luals;
-mod ui;
 mod user_plugins;

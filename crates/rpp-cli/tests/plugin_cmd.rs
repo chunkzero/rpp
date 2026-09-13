@@ -61,7 +61,8 @@ fn add_then_remove_preserves_formatting() {
     assert!(toml.contains("# inline"), "inline comment preserved");
     assert!(toml.contains("source = \"path:plugins/b\""));
     // Output reports the id/version.
-    assert!(String::from_utf8_lossy(&out.stdout).contains("beta"));
+    assert!(out.stdout.is_empty(), "install status belongs on stderr");
+    assert!(String::from_utf8_lossy(&out.stderr).contains("beta"));
 
     // No lockfile for path sources.
     assert!(
