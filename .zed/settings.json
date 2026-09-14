@@ -1,0 +1,103 @@
+{
+  "preferred_line_length": 100,
+  "languages": {
+    "Rust": {
+      "format_on_save": "on",
+      "formatter": {
+        "external": {
+          "command": "mise",
+          "arguments": ["exec", "--", "rustfmt", "--emit", "stdout"]
+        }
+      }
+    },
+    "Java": {
+      "format_on_save": "on",
+      "formatter": {
+        "external": {
+          "command": "mise",
+          "arguments": ["exec", "--", "google-java-format", "--aosp", "-"]
+        }
+      }
+    },
+    "Kotlin": {
+      "format_on_save": "on",
+      "formatter": {
+        "external": {
+          "command": "mise",
+          "arguments": [
+            "exec",
+            "--",
+            "ktlint",
+            "--log-level=none",
+            "--format",
+            "--stdin",
+            "--stdin-path",
+            "{buffer_path}"
+          ]
+        }
+      }
+    },
+    "Lua": {
+      "format_on_save": "on",
+      "formatter": {
+        "external": {
+          "command": "mise",
+          "arguments": [
+            "exec",
+            "--",
+            "stylua",
+            "--respect-ignores",
+            "--stdin-filepath",
+            "{buffer_path}",
+            "-"
+          ]
+        }
+      }
+    },
+    "JSON": {
+      "format_on_save": "on",
+      "formatter": {
+        "external": {
+          "command": "mise",
+          "arguments": ["exec", "--", "oxfmt", "--stdin-filepath", "{buffer_path}"]
+        }
+      }
+    },
+    "JSONC": {
+      "format_on_save": "on",
+      "formatter": {
+        "external": {
+          "command": "mise",
+          "arguments": ["exec", "--", "oxfmt", "--stdin-filepath", "{buffer_path}"]
+        }
+      }
+    },
+    "YAML": {
+      "format_on_save": "on",
+      "formatter": {
+        "external": {
+          "command": "mise",
+          "arguments": ["exec", "--", "oxfmt", "--stdin-filepath", "{buffer_path}"]
+        }
+      }
+    },
+    "TOML": {
+      "format_on_save": "on",
+      "formatter": {
+        "external": {
+          "command": "mise",
+          "arguments": ["exec", "--", "oxfmt", "--stdin-filepath", "{buffer_path}"]
+        }
+      }
+    },
+    "Markdown": {
+      "format_on_save": "on",
+      "formatter": {
+        "external": {
+          "command": "mise",
+          "arguments": ["exec", "--", "oxfmt", "--stdin-filepath", "{buffer_path}"]
+        }
+      }
+    }
+  }
+}

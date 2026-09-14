@@ -1,10 +1,10 @@
 [workspace]
 members = [
-    "crates/rpp",
-    "crates/rpp-cli",
-    "crates/rpp-fetch",
-    "crates/rpp-squash",
-    "crates/rpp-wasm",
+  "crates/rpp",
+  "crates/rpp-cli",
+  "crates/rpp-fetch",
+  "crates/rpp-squash",
+  "crates/rpp-wasm",
 ]
 resolver = "2"
 
@@ -33,3 +33,9 @@ tempfile = "3.13"
 thiserror = "2"
 toml = "0.9"
 tracing = "0.1"
+
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+
+[workspace.lints.clippy]
+dbg_macro = "warn"

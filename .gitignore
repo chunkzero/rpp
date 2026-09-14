@@ -11,9 +11,14 @@ examples/plugins/*/plugin.wasm
 
 # Editors
 .idea/
-.vscode/
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
+.zed/*
+!.zed/settings.json
 *.swp
 .DS_Store
+mise.local.toml
 
 # JVM integration
 integrations/jvm/.gradle/

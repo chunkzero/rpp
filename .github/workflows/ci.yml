@@ -13,8 +13,19 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  formatting:
+    name: Repository formatting
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - uses: jdx/mise-action@v3
+        with:
+          version: 2026.9.1
+      - run: mise exec -- just fmt-check
+
   verify:
-    name: Format, lint, features, and tests (including WASM)
+    name: Rust lint, features, and tests (including WASM)
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -23,7 +34,7 @@ jobs:
         with:
           version: 2026.9.1
       - uses: Swatinem/rust-cache@v2
-      - run: mise exec -- just ci
+      - run: mise exec -- just verify-rust
 
   jvm:
     name: JVM client, real dev-server integration, and Minestom example
@@ -35,16 +46,7 @@ jobs:
         with:
           version: 2026.9.1
       - uses: Swatinem/rust-cache@v2
-      - uses: actions/setup-java@v5
-        with:
-          distribution: temurin
-          java-version: |
-            25
-            21
-      - run: mise exec -- cargo build --locked -p rpp-cli
-      - run: integrations/jvm/gradlew -p integrations/jvm :test :examples:minestom:classes --no-daemon
-        env:
-          RPP_BIN: ${{ github.workspace }}/target/debug/rpp
+      - run: mise exec -- just verify-jvm
 
   windows:
     name: Windows core check and process tests

@@ -6,11 +6,12 @@ in caller code. The runnable Minestom example requires Java 25 and Minecraft 26.
 
 ## Build and use
 
-With JDK 21 available to Gradle (for example through `JAVA_HOME`):
+From the repository root, `mise install` installs both required JDKs and
+`mise exec -- just verify-jvm` runs the client tests against RPP and compiles the
+Minestom example. For individual Gradle tasks:
 
 ```sh
-cd integrations/jvm
-./gradlew :test :publishToMavenLocal --no-daemon
+mise exec -- just jvm :test :publishToMavenLocal
 ```
 
 Consume `dev.chunkzero.rpp:rpp-dev-client:0.1.0-alpha.0` from `mavenLocal()`.
@@ -58,19 +59,19 @@ finish. Create a new client to start again after closing.
 
 ## End-to-end Minestom example
 
-Install JDKs 21 and 25. If Gradle does not discover both, pass
+Mise exposes JDKs 21 and 25 to Gradle through `JAVA_HOME_21` and `JAVA_HOME_25`.
+For a setup without mise, install both JDKs and, if Gradle does not discover them, pass
 `-Dorg.gradle.java.installations.paths=/path/to/jdk21,/path/to/jdk25`.
 From the repository root, start RPP:
 
 ```sh
-cargo run --locked -p rpp-cli -- -C integrations/jvm/examples/pack dev
+mise exec -- just rpp -C integrations/jvm/examples/pack dev
 ```
 
 In another terminal:
 
 ```sh
-cd integrations/jvm
-./gradlew :examples:minestom:run --no-daemon
+mise exec -- just jvm :examples:minestom:run
 ```
 
 Join `127.0.0.1:25565` with Minecraft 26.2, allow server resource packs, and open
@@ -95,7 +96,7 @@ Saving unchanged content does not offer another pack.
 For remote players, configure RPP's `[dev].host` and pass server/player base URLs:
 
 ```sh
-./gradlew :examples:minestom:run --args='http://127.0.0.1:8080/ https://packs.example/' --no-daemon
+mise exec -- just jvm :examples:minestom:run --args='http://127.0.0.1:8080/ https://packs.example/'
 ```
 
 The public endpoint must proxy both the download paths and, if used as the event
@@ -106,7 +107,7 @@ server has no authentication; use it on a trusted development network.
 
 Use the same library in your plugin, keeping scheduling and player status handling
 in the plugin. This example uses
-[Spigot's UUID, URL and raw SHA-1 overload](https://hub.spigotmc.org/javadocs/spigot/org/bukkit/entity/Player.html#setResourcePack(java.util.UUID,java.lang.String,byte%5B%5D,java.lang.String,boolean)).
+[Spigot's UUID, URL and raw SHA-1 overload](<https://hub.spigotmc.org/javadocs/spigot/org/bukkit/entity/Player.html#setResourcePack(java.util.UUID,java.lang.String,byte%5B%5D,java.lang.String,boolean)>).
 Inside your `JavaPlugin`, keep `client` as a field and initialize it in `onEnable`:
 
 ```java
@@ -166,16 +167,14 @@ should log the resulting player status and offer the newest pack. Dev archives a
 unsquashed and independent of release squash/ZIP settings. Archive creation adds
 work to each successful dev rebuild.
 
-`./gradlew :test` runs local HTTP fixture tests. To also exercise an actual RPP
-process, build the CLI and set `RPP_BIN` to its absolute path:
+`just jvm :test` runs local HTTP fixture tests. To also exercise an actual RPP
+process, run the verification recipe from the repository root:
 
 ```sh
-cargo build --locked -p rpp-cli
-RPP_BIN="$PWD/target/debug/rpp" integrations/jvm/gradlew -p integrations/jvm :test --rerun-tasks --no-daemon
+mise exec -- just verify-jvm
 ```
 
-Run those two commands from the repository root. The integration test uses a
-temporary pack and isolated RPP user directory, verifies downloaded hashes,
+The integration test uses a temporary pack and isolated RPP user directory, verifies downloaded hashes,
 unchanged/failed rebuild suppression, and reconnects across a server restart.
 It stops the child server on completion. CI runs this test and compiles the
 Minestom example; applying packs in a graphical Minecraft client is a manual check.

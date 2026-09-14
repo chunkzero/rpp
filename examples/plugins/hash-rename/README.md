@@ -21,9 +21,9 @@ replay the same rename without relying on state shared across worker threads.
 
 ## Options
 
-| Option  | Type            | Default                                  | Meaning                                   |
-| ------- | --------------- | ---------------------------------------- | ----------------------------------------- |
-| `files` | list of globs   | `["assets/*/textures/custom/**/*.png"]`  | Which files to fingerprint.               |
+| Option  | Type          | Default                                 | Meaning                     |
+| ------- | ------------- | --------------------------------------- | --------------------------- |
+| `files` | list of globs | `["assets/*/textures/custom/**/*.png"]` | Which files to fingerprint. |
 
 The default deliberately targets an author-owned `custom/` texture subtree:
 renaming a vanilla texture would break the fixed name a model or blockstate

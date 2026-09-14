@@ -105,12 +105,18 @@ function M.validate_animation(path, data)
                     -- `{ index = N, time = T }` form.
                     c.check(
                         is_positive_integer(frame.index) or frame.index == 0,
-                        path .. ": animation.frames[" .. i .. "].index must be a non-negative integer"
+                        path
+                            .. ": animation.frames["
+                            .. i
+                            .. "].index must be a non-negative integer"
                     )
                     if frame.time ~= nil then
                         c.check(
                             is_positive_integer(frame.time),
-                            path .. ": animation.frames[" .. i .. "].time must be a positive integer"
+                            path
+                                .. ": animation.frames["
+                                .. i
+                                .. "].time must be a positive integer"
                         )
                     end
                 else

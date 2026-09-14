@@ -108,8 +108,9 @@ mise exec -- just --list
 mise exec -- just check-crate rpp
 ```
 
-`mise.toml` pins Rust and just and installs rustfmt, Clippy, and the `wasm32-wasip2`
-target. The workspace's supported Rust baseline is 1.96.0. Keep the manifest baseline
+`mise.toml` pins Rust, just, JDKs 21 and 25, Node (for oxfmt), and the repository
+formatters. It installs rustfmt, Clippy, and the `wasm32-wasip2` target, and exposes
+both JDKs to Gradle. The workspace's supported Rust baseline is 1.96.0. Keep the manifest baseline
 and mise toolchain pin aligned when updating Rust, and run `just verify-wasm`
 before adopting a new toolchain: guest imports must remain compatible with the sandbox. With mise activated in your shell,
 you can run `just` and `cargo` directly.
@@ -119,12 +120,31 @@ Use `just check-crate <crate>`, `just lint-crate <crate>`, and
 Cargo feature flags. `just check-features` checks the core library independently in
 its core-only, default Lua, and Lua + WASM + tracing configurations.
 
+`just fmt` formats Rust (including standalone WASM guests), Java, Gradle Kotlin
+scripts, Lua, configuration, documentation, and the justfile. `just fmt-check`
+checks the same files. Scoped recipes are `fmt-rust`, `fmt-jvm`, `fmt-lua`, and
+`fmt-config`; use `fmt-rust --check` or the other recipes' `-check` variants to
+check without writing. Generated files, lockfiles, and pack data used by examples
+are excluded from configuration formatting. Lua formatting uses Lua 5.4 syntax.
+
+Shared VS Code and Zed settings select these formatters. For VS Code, install the
+recommended extensions and launch it with `mise exec -- code .` so its formatter
+extensions find the pinned binaries. Zed's external formatters invoke mise directly.
+Both editors should open the repository root. On Windows, the just recipes require
+Git Bash; the dedicated Windows core checks also run directly through Cargo.
+
 Run `just verify-wasm` for component host and CLI integration tests. It fails when
 the guest target is missing, instead of allowing those tests to skip. Guest crates
 have their own committed lockfiles outside the workspace.
 
+Run `just verify-jvm` to build the CLI, test the JVM client against an actual dev
+server, and compile the Minestom example. `just jvm <tasks>` runs the Gradle wrapper
+with the configured JDKs. The verification recipe reruns the test task so a previous
+run without `RPP_BIN` cannot silently skip the process integration test.
+
 Run `just ci` before publishing substantial changes. GitHub Actions runs the same
-format, lint, feature, and workspace test checks, including WASM prerequisites.
+format, lint, feature, workspace test, and JVM checks in separate jobs on standard
+GitHub runners, including WASM prerequisites. `just verify-rust` runs only the Rust checks.
 Verification commands use `--locked`; update lockfiles deliberately when changing
 dependencies.
 
