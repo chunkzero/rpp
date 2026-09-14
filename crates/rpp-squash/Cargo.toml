@@ -30,3 +30,6 @@ zip = { version = "8", default-features = false, features = ["deflate"] }
 [dev-dependencies]
 png = "0.17"
 tempfile.workspace = true
+
+[lints]
+workspace = true

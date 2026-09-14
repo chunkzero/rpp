@@ -1,5 +1,11 @@
 package dev.chunkzero.rpp;
 
+import static org.junit.jupiter.api.Assertions.*;
+
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
+import org.junit.jupiter.api.io.TempDir;
+
 import java.net.ServerSocket;
 import java.net.URI;
 import java.nio.file.Files;
@@ -10,21 +16,16 @@ import java.util.HexFormat;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
-import org.junit.jupiter.api.io.TempDir;
-
-import static org.junit.jupiter.api.Assertions.*;
-
 @EnabledIfEnvironmentVariable(named = "RPP_BIN", matches = ".+")
 class RppIntegrationTest {
-    @TempDir
-    Path project;
+    @TempDir Path project;
 
     @Test
     void edits_downloads_failures_and_restart_use_the_real_dev_server() throws Exception {
         int port;
-        try (var socket = new ServerSocket(0)) { port = socket.getLocalPort(); }
+        try (var socket = new ServerSocket(0)) {
+            port = socket.getLocalPort();
+        }
         var config = project.resolve("rpp.toml");
         String validConfig = "[pack]\nname = 'jvm-test'\n[dev]\nport = " + port + "\n";
         Files.writeString(config, validConfig);
@@ -36,18 +37,27 @@ class RppIntegrationTest {
         var connections = new LinkedBlockingQueue<Boolean>();
         URI base = URI.create("http://127.0.0.1:" + port);
         Process server = launch();
-        try (var client = new DevClient(base, base, Duration.ofMillis(100), new DevClient.Listener() {
-            @Override
-            public void onConnected() { connections.add(true); }
+        try (var client =
+                new DevClient(
+                        base,
+                        base,
+                        Duration.ofMillis(100),
+                        new DevClient.Listener() {
+                            @Override
+                            public void onConnected() {
+                                connections.add(true);
+                            }
 
-            @Override
-            public void onUpdate(PackUpdate pack) { updates.add(pack); }
+                            @Override
+                            public void onUpdate(PackUpdate pack) {
+                                updates.add(pack);
+                            }
 
-            @Override
-            public void onFailure(DevClient.FailureKind kind, Exception failure) {
-                if (kind == DevClient.FailureKind.BUILD) buildFailures.add(failure);
-            }
-        })) {
+                            @Override
+                            public void onFailure(DevClient.FailureKind kind, Exception failure) {
+                                if (kind == DevClient.FailureKind.BUILD) buildFailures.add(failure);
+                            }
+                        })) {
             client.start();
             var first = updates.poll(20, TimeUnit.SECONDS);
             assertNotNull(first);
@@ -86,7 +96,8 @@ class RppIntegrationTest {
         var builder = new ProcessBuilder(System.getenv("RPP_BIN"), "-C", project.toString(), "dev");
         builder.environment().put("RPP_HOME", project.resolve("user").toString());
         return builder.redirectErrorStream(true)
-                .redirectOutput(ProcessBuilder.Redirect.appendTo(project.resolve("server.log").toFile()))
+                .redirectOutput(
+                        ProcessBuilder.Redirect.appendTo(project.resolve("server.log").toFile()))
                 .start();
     }
 
@@ -94,7 +105,9 @@ class RppIntegrationTest {
         try (var stream = pack.url().toURL().openStream()) {
             byte[] zip = stream.readAllBytes();
             assertEquals(pack.size(), zip.length);
-            assertEquals(pack.sha1(), HexFormat.of().formatHex(MessageDigest.getInstance("SHA-1").digest(zip)));
+            assertEquals(
+                    pack.sha1(),
+                    HexFormat.of().formatHex(MessageDigest.getInstance("SHA-1").digest(zip)));
         }
     }
 }

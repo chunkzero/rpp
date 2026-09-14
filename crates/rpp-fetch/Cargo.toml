@@ -20,3 +20,6 @@ tar = "0.4"
 dirs.workspace = true
 
 tempfile.workspace = true
+
+[lints]
+workspace = true

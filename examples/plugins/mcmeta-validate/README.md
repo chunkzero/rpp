@@ -1,6 +1,6 @@
 # mcmeta-validate
 
-An example **rpp** Lua *generator* plugin that validates a resource pack's
+An example **rpp** Lua _generator_ plugin that validates a resource pack's
 `.mcmeta` files and fails the build if anything is malformed.
 
 ## What it demonstrates

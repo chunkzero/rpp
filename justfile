@@ -1,6 +1,8 @@
 # rpp task runner — https://github.com/casey/just
 # `just` with no arguments lists available recipes.
 
+set shell := ["bash", "-euo", "pipefail", "-c"]
+
 _default:
     @just --list
 
@@ -10,23 +12,56 @@ check:
 
 # Type-check one crate, e.g. `just check-crate rpp --no-default-features`
 check-crate crate *ARGS:
-    cargo check --locked -p {{crate}} --all-targets {{ARGS}}
+    cargo check --locked -p {{ crate }} --all-targets {{ ARGS }}
 
 # Run all tests (workspace)
 test *ARGS:
-    cargo test --locked --workspace {{ARGS}}
+    cargo test --locked --workspace {{ ARGS }}
 
 # Run tests for a single crate, e.g. `just test-crate rpp`
 test-crate crate *ARGS:
-    cargo test --locked -p {{crate}} {{ARGS}}
+    cargo test --locked -p {{ crate }} {{ ARGS }}
 
-# Format all code
-fmt:
-    cargo fmt --all
+# Format sources, configuration, and documentation
+fmt: fmt-rust fmt-jvm fmt-lua fmt-config
+    just --unstable --fmt
 
 # Check formatting without modifying
-fmt-check:
-    cargo fmt --all -- --check
+fmt-check: (fmt-rust "--check") fmt-jvm-check fmt-lua-check fmt-config-check
+    just --unstable --fmt --check
+
+# Format Rust, including guest crates outside the workspace; accepts --check
+fmt-rust *ARGS:
+    cargo fmt --all -- {{ ARGS }}
+    cargo fmt --manifest-path crates/rpp-wasm/tests/fixtures/math-component/Cargo.toml -- {{ ARGS }}
+    cargo fmt --manifest-path crates/rpp-cli/tests/fixtures/window-host-component/Cargo.toml -- {{ ARGS }}
+    cargo fmt --manifest-path examples/plugins/grayscale-wasm/guest/Cargo.toml -- {{ ARGS }}
+
+# Format Java and Gradle Kotlin scripts
+fmt-jvm:
+    ktlint --format "integrations/jvm/**/*.kts" "!**/build/**" "!**/.gradle/**"
+    git ls-files -z --cached --others --exclude-standard -- '*.java' | xargs -0 google-java-format --aosp --replace
+
+# Check Java and Gradle Kotlin script formatting
+fmt-jvm-check:
+    ktlint "integrations/jvm/**/*.kts" "!**/build/**" "!**/.gradle/**"
+    git ls-files -z --cached --others --exclude-standard -- '*.java' | xargs -0 google-java-format --aosp --dry-run --set-exit-if-changed
+
+# Format Lua plugins and examples
+fmt-lua:
+    stylua --verify examples
+
+# Check Lua formatting
+fmt-lua-check:
+    stylua --check examples
+
+# Format configuration and documentation
+fmt-config:
+    oxfmt --write .
+
+# Check configuration and documentation formatting
+fmt-config-check:
+    oxfmt --check .
 
 # Clippy with warnings denied
 lint:
@@ -34,7 +69,7 @@ lint:
 
 # Lint one crate, with optional Cargo feature flags
 lint-crate crate *ARGS:
-    cargo clippy --locked -p {{crate}} --all-targets {{ARGS}} -- -D warnings
+    cargo clippy --locked -p {{ crate }} --all-targets {{ ARGS }} -- -D warnings
 
 # Check the core library's supported configurations independently of the CLI
 check-features:
@@ -57,10 +92,23 @@ build:
 
 # Run the rpp CLI, e.g. `just rpp build`
 rpp *ARGS:
-    cargo run --locked -p rpp-cli -- {{ARGS}}
+    cargo run --locked -p rpp-cli -- {{ ARGS }}
+
+# Run the JVM Gradle wrapper with mise's JDKs, e.g. `just jvm :test`
+[positional-arguments]
+jvm *ARGS:
+    integrations/jvm/gradlew -p integrations/jvm "$@" --no-daemon
+
+# Test the JVM client against an actual CLI and compile the Minestom example
+verify-jvm:
+    cargo build --locked -p rpp-cli
+    RPP_BIN="{{ justfile_directory() }}/target/debug/rpp" just jvm :test --rerun :examples:minestom:classes
+
+# Verify Rust independently of JVM checks
+verify-rust: require-wasm lint check-features test
 
 # Full verification before publishing substantial changes
-ci: require-wasm fmt-check lint check-features test
+ci: fmt-check verify-rust verify-jvm
 
 # Remove build artifacts and example caches
 clean:

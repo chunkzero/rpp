@@ -1,0 +1,24 @@
+{
+  "$schema": "https://raw.githubusercontent.com/oxc-project/oxc/main/npm/oxfmt/configuration_schema.json",
+  "printWidth": 100,
+  "tabWidth": 2,
+  "proseWrap": "preserve",
+  "embeddedLanguageFormatting": "off",
+  "ignorePatterns": [
+    "**/AGENTS.md",
+    "**/CLAUDE.md",
+    "LICENSE*",
+    "**/Cargo.lock",
+    "**/*.lockfile",
+    "**/target/**",
+    "**/build/**",
+    "**/.gradle/**",
+    "**/.rpp/**",
+    "**/dist/**",
+    "**/generated/**",
+    "**/node_modules/**",
+    "**/tests/fixtures/**",
+    "examples/pack/src/**",
+    "integrations/jvm/examples/pack/src/**"
+  ]
+}

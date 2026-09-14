@@ -6,7 +6,7 @@ pack_format = 34
 [build]
 source = "src"
 output = "dist"
-workers = 0          # 0 = use all available cores
+workers = 0 # 0 = use all available cores
 
 [build.lua]
 memory_limit_mb = 64
@@ -15,9 +15,9 @@ execution_deadline_seconds = 5
 [build.squash]
 enabled = true
 engine = "builtin"
-json = true          # minify .json/.mcmeta in the output
-png = "fast"         # oxipng "fast" preset
-zip = true           # also write dist/rpp-example-pack.zip
+json = true # minify .json/.mcmeta in the output
+png = "fast" # oxipng "fast" preset
+zip = true # also write dist/rpp-example-pack.zip
 
 # --- Plugins ---------------------------------------------------------------
 # Ordered list. Order is the tie-break for processors that share a priority.

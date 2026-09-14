@@ -116,6 +116,7 @@ Any granted capability other than `outputs` makes the plugin non-deterministic
 from RPP's point of view and disables cache replay for it.
 
 `source` grammar:
+
 - `path:<relative-or-absolute-dir>` — local plugin package directory.
 - `github:<owner>/<repo>` — GitHub repository (optionally with `ref` and `subdir` keys).
 
@@ -215,6 +216,7 @@ pub trait GeneratorHost {
 ```
 
 Notes:
+
 - Per-plugin **options** (from `rpp.toml [plugin.options]`) are provided to the factory
   at construction (as `toml::Value`/JSON) and exposed through the runtime context.
   `GeneratorHost` itself has no `options()` method. Options are part of `cache_key()`.
@@ -312,6 +314,7 @@ encoding rejects cycles but permits shared subtrees within that work budget.
 Parser recursion limits may reject deeply nested text before conversion.
 
 Other builtin modules:
+
 - `rpp.hash` — `xxh3(str) -> hex string`, `sha256(str) -> hex`, `md5(str) -> hex`,
   `crc32(str) -> integer`.
 - `rpp.path` — `join(...)`, `dirname(p)`, `basename(p)`, `ext(p)`, `with_ext(p, e)`,
@@ -321,7 +324,7 @@ Other builtin modules:
 - `rpp.component` — `load(name) -> component` for components declared in `plugin.toml`;
   `component:call(export, ...)`. See §5.
 - `rpp.process` — `run{ program, args?, env?, stdin?, cwd?, timeout? } -> { status,
-  stdout, stderr }`. Requires a `permissions.process` grant (or native mode) and is
+stdout, stderr }`. Requires a `permissions.process` grant (or native mode) and is
   only callable from generators and hooks. The shorter of `timeout` and the
   remaining Lua deadline bounds stdin writing, process execution, and stdout/stderr
   draining, including inherited descendant pipes. RPP closes its pipes and terminates
@@ -483,6 +486,7 @@ Layout: `.rpp/cache/manifest.bin` (bincode) + `.rpp/cache/objects/<xxh3-hex>` (C
 output contents).
 
 Manifest:
+
 - `global_key`: xxh3 of (rpp version, canonicalized full `rpp.toml` build-relevant
   sections, ordered list of plugin `cache_key`s).
 - Per source file: `{ fingerprint: {mtime_ns, size, xxh3}, chain_key: u64, outputs: Vec<{ path, object: u64 }> }`
@@ -491,6 +495,7 @@ Manifest:
 - Per generator: `{ plugin cache_key, read_set: Vec<{ kind: List|SourceList|File|Source, key: String, hash: u64 }>, outputs: Vec<{ path, object }> }`.
 
 Build flow:
+
 1. Discovery walks `source` (respect `.rppignore` via `ignore` crate), fingerprints
    files (mtime+size fast path; hash on mismatch).
 2. A file is **clean** iff global_key matches, fingerprint matches, and chain_key

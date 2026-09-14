@@ -1,3 +1,18 @@
 [tools]
-rust = { version = "1.96.0", profile = "minimal", components = ["rustfmt", "clippy"], targets = ["wasm32-wasip2"] }
+rust = { version = "1.96.0", profile = "minimal", components = [
+  "rustfmt",
+  "clippy",
+], targets = [
+  "wasm32-wasip2",
+] }
 just = "1.46.0"
+java = ["temurin-21.0.12+101.0.LTS", "temurin-25.0.4+101.0.LTS"]
+node = "24.20.0"
+ktlint = "1.8.0"
+stylua = "2.5.2"
+oxfmt = "0.67.0"
+"github:google/google-java-format" = { version = "1.36.1", bin = "google-java-format" }
+
+[env]
+JAVA_HOME_21 = { value = "{{ tools.java[0].path }}", tools = true }
+JAVA_HOME_25 = { value = "{{ tools.java[1].path }}", tools = true }

@@ -1,5 +1,8 @@
 package dev.chunkzero.rpp;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStreamReader;
@@ -9,12 +12,9 @@ import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.Objects;
 
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
-
 /**
- * Reconnecting RPP SSE client. Callbacks run serially on a private daemon thread.
- * Close on integration shutdown. Platform scheduling and player responses belong to callers.
+ * Reconnecting RPP SSE client. Callbacks run serially on a private daemon thread. Close on
+ * integration shutdown. Platform scheduling and player responses belong to callers.
  */
 public final class DevClient implements AutoCloseable {
     /** Distinguishes transport, malformed metadata, build, and caller update failures. */
@@ -35,8 +35,9 @@ public final class DevClient implements AutoCloseable {
         default void onConnected() {}
 
         /**
-         * Offer this pack or schedule an offer on the server thread.
-         * Throwing reports UPDATE and reconnects to retry the latest snapshot.
+         * Offer this pack or schedule an offer on the server thread. Throwing reports UPDATE and
+         * reconnects to retry the latest snapshot.
+         *
          * @param pack the latest available pack
          * @throws Exception if accepting or scheduling the update fails
          */
@@ -44,6 +45,7 @@ public final class DevClient implements AutoCloseable {
 
         /**
          * Reports failures; connection/protocol/update failures retry after the configured delay.
+         *
          * @param kind the failing operation
          * @param failure the cause or server diagnostic
          */
@@ -62,6 +64,7 @@ public final class DevClient implements AutoCloseable {
     /**
      * Creates an unstarted client. Both bases are HTTP(S) origins (optionally with a path prefix).
      * downloadBase must be reachable by players; it may differ from the server-side event origin.
+     *
      * @param serverBase base URL of the RPP event server
      * @param downloadBase player-reachable base URL for pack downloads
      * @param reconnectDelay fixed retry delay, at least one millisecond
@@ -79,7 +82,9 @@ public final class DevClient implements AutoCloseable {
     private static URI base(URI uri) {
         Objects.requireNonNull(uri, "base");
         if (!("http".equals(uri.getScheme()) || "https".equals(uri.getScheme()))
-                || uri.getHost() == null || uri.getQuery() != null || uri.getFragment() != null
+                || uri.getHost() == null
+                || uri.getQuery() != null
+                || uri.getFragment() != null
                 || uri.getUserInfo() != null) {
             throw new IllegalArgumentException("Expected an HTTP(S) base URL");
         }
@@ -94,6 +99,7 @@ public final class DevClient implements AutoCloseable {
 
     /**
      * Returns the last update accepted by the callback.
+     *
      * @return the accepted update, or null before the first successful callback
      */
     public PackUpdate latest() {
@@ -103,7 +109,8 @@ public final class DevClient implements AutoCloseable {
     private void run() {
         while (!closed) {
             try {
-                if (listen() && !closed) report(FailureKind.CONNECTION, new IOException("Event stream ended"));
+                if (listen() && !closed)
+                    report(FailureKind.CONNECTION, new IOException("Event stream ended"));
             } catch (Exception failure) {
                 if (!closed) report(FailureKind.CONNECTION, failure);
             }
@@ -130,13 +137,16 @@ public final class DevClient implements AutoCloseable {
                 throw new IOException("SSE HTTP status " + active.getResponseCode());
             }
             String contentType = active.getContentType();
-            if (contentType == null || !contentType.split(";")[0].trim().equals("text/event-stream")) {
+            if (contentType == null
+                    || !contentType.split(";")[0].trim().equals("text/event-stream")) {
                 throw new IOException("Expected text/event-stream");
             }
             if (closed) return false;
             listener.onConnected();
-            try (var reader = new BufferedReader(new InputStreamReader(
-                    active.getInputStream(), StandardCharsets.UTF_8))) {
+            try (var reader =
+                    new BufferedReader(
+                            new InputStreamReader(
+                                    active.getInputStream(), StandardCharsets.UTF_8))) {
                 StringBuilder data = new StringBuilder();
                 String line;
                 while (!closed && (line = reader.readLine()) != null) {
@@ -148,7 +158,8 @@ public final class DevClient implements AutoCloseable {
                         if (value.startsWith(" ")) value = value.substring(1);
                         if (!data.isEmpty()) data.append('\n');
                         data.append(value);
-                        if (data.length() > 1_048_576) throw new IOException("SSE event exceeds 1 MiB");
+                        if (data.length() > 1_048_576)
+                            throw new IOException("SSE event exceeds 1 MiB");
                     }
                 }
             }
@@ -165,19 +176,28 @@ public final class DevClient implements AutoCloseable {
             if (event == null) throw new IOException("Empty event");
             String type = event.path("type").asText();
             if (type.equals("build_error")) {
-                report(FailureKind.BUILD, new IOException(event.path("message").asText("Build failed")));
+                report(
+                        FailureKind.BUILD,
+                        new IOException(event.path("message").asText("Build failed")));
                 return true;
             }
-            if ((!type.equals("reload") && !type.equals("pack")) || event.path("pack").isNull()) return true;
+            if ((!type.equals("reload") && !type.equals("pack")) || event.path("pack").isNull())
+                return true;
             JsonNode pack = event.get("pack");
             if (pack == null) return true; // Changed-path-only events remain supported.
             String hash = pack.path("sha1").asText();
             String path = pack.path("url").asText();
-            if (!hash.matches("[0-9a-f]{40}") || !path.equals("/packs/" + hash + ".zip")
-                    || !pack.path("size").isIntegralNumber() || !pack.path("size").canConvertToLong()) {
+            if (!hash.matches("[0-9a-f]{40}")
+                    || !path.equals("/packs/" + hash + ".zip")
+                    || !pack.path("size").isIntegralNumber()
+                    || !pack.path("size").canConvertToLong()) {
                 throw new IOException("Invalid pack metadata");
             }
-            update = new PackUpdate(downloadBase.resolve(path.substring(1)), hash, pack.path("size").longValue());
+            update =
+                    new PackUpdate(
+                            downloadBase.resolve(path.substring(1)),
+                            hash,
+                            pack.path("size").longValue());
         } catch (Exception failure) {
             report(FailureKind.PROTOCOL, failure);
             return false;
@@ -199,8 +219,8 @@ public final class DevClient implements AutoCloseable {
             listener.onFailure(kind, failure);
         } catch (RuntimeException callbackFailure) {
             // A broken error handler must not silently kill the reconnect worker.
-            System.getLogger(DevClient.class.getName()).log(
-                    System.Logger.Level.ERROR, "RPP failure callback threw", callbackFailure);
+            System.getLogger(DevClient.class.getName())
+                    .log(System.Logger.Level.ERROR, "RPP failure callback threw", callbackFailure);
         }
     }
 

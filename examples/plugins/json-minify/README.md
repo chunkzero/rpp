@@ -17,9 +17,9 @@ whitespace so the shipped pack is as small as possible.
 
 ## Options
 
-| Option   | Type    | Default | Meaning                                              |
-| -------- | ------- | ------- | ---------------------------------------------------- |
-| `pretty` | boolean | `false` | When `true`, re-indent instead of minifying.         |
+| Option   | Type    | Default | Meaning                                      |
+| -------- | ------- | ------- | -------------------------------------------- |
+| `pretty` | boolean | `false` | When `true`, re-indent instead of minifying. |
 
 ```toml
 [[plugin]]
@@ -32,5 +32,5 @@ pretty = false
 
 `rpp build` also has a built-in JSON squash step (`[build.squash] json = true`),
 so on a real pack this plugin is somewhat redundant with squash. It is included
-because it is the smallest possible *realistic* processor and a good template
+because it is the smallest possible _realistic_ processor and a good template
 for writing your own.

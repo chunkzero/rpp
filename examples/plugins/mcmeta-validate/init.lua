@@ -55,16 +55,11 @@ plugin:generator("validate", function(ctx)
 
     -- 3. Report. Any problem fails the build with all problems listed.
     if #all_problems > 0 then
-        error(
-            "mcmeta validation failed:\n  - " .. table.concat(all_problems, "\n  - ")
-        )
+        error("mcmeta validation failed:\n  - " .. table.concat(all_problems, "\n  - "))
     end
 
     ctx.log.info(
-        string.format(
-            "validated pack.mcmeta and %d animation file(s); all OK",
-            animation_count
-        )
+        string.format("validated pack.mcmeta and %d animation file(s); all OK", animation_count)
     )
 end)
 
