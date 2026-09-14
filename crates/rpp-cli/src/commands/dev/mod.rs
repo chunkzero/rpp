@@ -14,6 +14,7 @@ use tokio::sync::broadcast;
 
 use crate::luals;
 use crate::project::Project;
+use crate::ui;
 
 use rebuild::{rebuild_loop, DevSession};
 use server::serve_http;
@@ -22,6 +23,7 @@ use watch::{local_plugin_dirs, spawn_watcher};
 /// Run the dev server (blocks until Ctrl-C).
 pub fn run(dir: &Path) -> Result<()> {
     let project = Project::discover(dir)?;
+    ui::intro("Start dev server");
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()

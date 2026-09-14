@@ -1,12 +1,10 @@
 //! `rpp plugin ...`: manage project and user-level plugin manifests (via
 //! `toml_edit`, preserving formatting and comments) and their lockfile pins.
 
-use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, Context, Result};
 use clap::Subcommand;
-use dialoguer::{theme::ColorfulTheme, Select};
 use rpp::config::PluginConfig;
 use rpp_fetch::{search, Lockfile, PluginSource, Resolver};
 
@@ -70,6 +68,12 @@ pub enum PluginCommand {
 
 /// Run a plugin subcommand from the current directory.
 pub fn run(dir: &Path, command: PluginCommand) -> Result<()> {
+    match &command {
+        PluginCommand::Add { .. } => ui::intro("Add a plugin"),
+        PluginCommand::Remove { .. } => ui::intro("Remove a plugin"),
+        PluginCommand::Update { .. } => ui::intro("Update plugins"),
+        PluginCommand::List { .. } | PluginCommand::Search { .. } => {}
+    }
     match command {
         PluginCommand::Add {
             source,
@@ -91,7 +95,7 @@ pub fn run(dir: &Path, command: PluginCommand) -> Result<()> {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum InstallScope {
     Project,
     Global,
@@ -101,19 +105,15 @@ fn install_scope(global: bool, project: bool) -> Result<InstallScope> {
     if global {
         return Ok(InstallScope::Global);
     }
-    if project || !std::io::stdin().is_terminal() {
+    if project || !ui::is_interactive() {
         return Ok(InstallScope::Project);
     }
-    let selection = Select::with_theme(&ColorfulTheme::default())
-        .with_prompt("Where should this plugin be installed?")
-        .items(&["This project", "Globally for this user"])
-        .default(0)
-        .interact()?;
-    Ok(if selection == 0 {
-        InstallScope::Project
-    } else {
-        InstallScope::Global
-    })
+    Ok(cliclack::select("Where should this plugin be installed?")
+        .items(&[
+            (InstallScope::Project, "This project", ""),
+            (InstallScope::Global, "Globally for this user", ""),
+        ])
+        .interact()?)
 }
 
 fn add(

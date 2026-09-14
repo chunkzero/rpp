@@ -59,6 +59,33 @@ fn init_scaffolds_a_buildable_project() {
 }
 
 #[test]
+fn init_uses_defaults_without_a_terminal() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let out = common::command(root)
+        .arg("init")
+        .env("TERM", "xterm-256color")
+        .output()
+        .expect("run init");
+    let report = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{report}");
+    assert!(out.stdout.is_empty(), "init status belongs on stderr");
+    assert!(report.contains("Initialized rpp project"), "{report}");
+    assert!(!report.contains('\x1b'), "redirected output must be plain");
+
+    let config = rpp::config::Config::load(root.join("rpp.toml")).unwrap();
+    assert_eq!(
+        config.pack.name,
+        root.file_name().unwrap().to_string_lossy()
+    );
+    assert_eq!(
+        config.pack.description.as_deref(),
+        Some("A Minecraft resource pack")
+    );
+    assert_eq!(config.pack.pack_format, Some(34));
+}
+
+#[test]
 fn init_refuses_to_overwrite() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();

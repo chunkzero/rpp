@@ -46,10 +46,12 @@ impl DevSession {
         self.rebuild_engine()?;
         let built = self.engine()?.build().context("initial build")?;
         self.packs.publish(&self.project.output_dir())?;
-        ui::success(format!(
-            "initial build: {} processed, {} cached, {} generated",
-            built.processed, built.cached, built.generated
-        ));
+        tracing::info!(
+            processed = built.processed,
+            cached = built.cached,
+            generated = built.generated,
+            "Initial build complete"
+        );
         Ok(())
     }
 
@@ -130,12 +132,12 @@ impl DevSession {
             "source"
         };
 
-        ui::detail(format!(
-            "rebuilt ({kind}) in {}: {} changed file{}",
-            ui::fmt_duration(started.elapsed()),
-            changed.len(),
-            if changed.len() == 1 { "" } else { "s" }
-        ));
+        tracing::info!(
+            kind,
+            elapsed = %ui::fmt_duration(started.elapsed()),
+            changed = changed.len(),
+            "Rebuilt resource pack"
+        );
 
         // Retry publication even on no-op builds: a previous archive failure may
         // have left the engine cache ahead of the last published pack.
@@ -179,7 +181,7 @@ pub async fn rebuild_loop(
             }
             Ok(Ok(None)) => {}
             Ok(Err(e)) => {
-                ui::warn(format!("rebuild failed: {e:#}"));
+                tracing::warn!("Rebuild failed: {e:#}");
                 let _ = reload_tx.send(
                     serde_json::json!({
                         "type": "build_error", "message": format!("{e:#}")
@@ -187,7 +189,7 @@ pub async fn rebuild_loop(
                     .to_string(),
                 );
             }
-            Err(e) => ui::warn(format!("rebuild task panicked: {e}")),
+            Err(e) => tracing::warn!("Rebuild task panicked: {e}"),
         }
     }
 }

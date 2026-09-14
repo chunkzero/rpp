@@ -1,10 +1,9 @@
 //! `rpp init`: scaffold a new rpp project (interactive when on a tty).
 
-use std::io::{IsTerminal, Write};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
-use dialoguer::{theme::ColorfulTheme, Input};
 
 use crate::luals;
 use crate::project::CONFIG_FILE;
@@ -41,7 +40,8 @@ pub fn run(args: InitArgs) -> Result<()> {
         );
     }
 
-    let interactive = !args.yes && std::io::stdin().is_terminal();
+    ui::intro("Create an rpp project");
+    let interactive = !args.yes && ui::is_interactive();
 
     let default_name = target
         .canonicalize()
@@ -52,18 +52,24 @@ pub fn run(args: InitArgs) -> Result<()> {
 
     let name = match args.name {
         Some(n) => n,
-        None if interactive => prompt("Pack name", &default_name)?,
+        None if interactive => cliclack::input("Pack name")
+            .default_input(&default_name)
+            .interact()?,
         None => default_name,
     };
     let description = match args.description {
         Some(d) => d,
-        None if interactive => prompt("Description", "A Minecraft resource pack")?,
+        None if interactive => cliclack::input("Description")
+            .default_input("A Minecraft resource pack")
+            .interact()?,
         None => "A Minecraft resource pack".to_string(),
     };
     let pack_format = match args.pack_format {
         Some(f) => f,
         None if interactive => loop {
-            let answer = prompt("Pack format", &DEFAULT_PACK_FORMAT.to_string())?;
+            let answer: String = cliclack::input("Pack format")
+                .default_input(&DEFAULT_PACK_FORMAT.to_string())
+                .interact()?;
             match answer.trim().parse::<u32>() {
                 Ok(format) if format > 0 => break format,
                 _ => ui::warn(format!("`{answer}` is not a valid pack format")),
@@ -74,17 +80,9 @@ pub fn run(args: InitArgs) -> Result<()> {
 
     scaffold(&target, &name, &description, pack_format)?;
 
-    ui::success(format!("Initialized rpp project in {}", target.display()));
     ui::detail("next: `rpp build`");
+    ui::success(format!("Initialized rpp project in {}", target.display()));
     Ok(())
-}
-
-fn prompt(label: &str, default: &str) -> Result<String> {
-    let value: String = Input::with_theme(&ColorfulTheme::default())
-        .with_prompt(label)
-        .default(default.to_string())
-        .interact_text()?;
-    Ok(value)
 }
 
 /// Write all scaffold files.

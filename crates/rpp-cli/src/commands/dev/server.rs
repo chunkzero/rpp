@@ -102,8 +102,8 @@ pub async fn serve_http(
         .with_context(|| format!("binding {addr}"))?;
 
     let url = format!("http://{addr}/");
-    ui::success(format!("dev server on {url}"));
     ui::detail("watching for changes (Ctrl-C to stop)");
+    ui::success(format!("dev server on {url}"));
     if open_browser {
         let _ = open::that(&url);
     }

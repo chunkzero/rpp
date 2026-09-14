@@ -29,6 +29,7 @@ pub struct BuildArgs {
 /// Run the build command from the current directory.
 pub fn run(dir: &Path, args: BuildArgs) -> Result<()> {
     let mut project = Project::discover(dir)?;
+    ui::intro("Build resource pack");
     if let Some(jobs) = args.jobs {
         project.config.build.workers = jobs;
     }

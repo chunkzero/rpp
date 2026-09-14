@@ -74,6 +74,12 @@ rpp plugin add ../window
 rpp plugin add github:owner/repo --global
 ```
 
+Prompts and build status go to stderr; plugin list and search results go to stdout.
+Redirected status output is plain text. Prompts use defaults when stdin or stderr
+is redirected; use `init --yes` or `plugin add --project` / `--global` to skip them
+in a terminal. Set `NO_COLOR=1` to disable color, and use `-v` / `-vv` or `RUST_LOG`
+to control diagnostic and dev-server logs.
+
 `rpp dev` serves loose output. Builtin squash and PackSquash are release archive
 operations and do not run in dev mode.
 

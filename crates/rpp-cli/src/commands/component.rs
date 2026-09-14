@@ -8,6 +8,8 @@ use anyhow::{Context, Result};
 use clap::Subcommand;
 use rpp_wasm::{Function, ValueType, WasmEngine};
 
+use crate::ui;
+
 /// Component subcommands.
 #[derive(Debug, Subcommand)]
 pub enum ComponentCommand {
@@ -34,6 +36,7 @@ pub fn run(dir: &Path, command: ComponentCommand) -> Result<()> {
 }
 
 fn bindgen(wasm: &Path, name: &str, out: &Path) -> Result<()> {
+    ui::intro("Generate component bindings");
     let engine = WasmEngine::new().context("initializing component engine")?;
     let component = engine
         .load(wasm)
@@ -43,7 +46,9 @@ fn bindgen(wasm: &Path, name: &str, out: &Path) -> Result<()> {
         std::fs::create_dir_all(parent)
             .with_context(|| format!("creating {}", parent.display()))?;
     }
-    std::fs::write(out, text).with_context(|| format!("writing {}", out.display()))
+    std::fs::write(out, text).with_context(|| format!("writing {}", out.display()))?;
+    ui::success(format!("Wrote {}", out.display()));
+    Ok(())
 }
 
 fn generate_lua(name: &str, functions: &[Function]) -> String {
