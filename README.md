@@ -108,12 +108,27 @@ mise exec -- just --list
 mise exec -- just check-crate rpp
 ```
 
-`mise.toml` pins Rust, just, JDKs 21 and 25, Node (for oxfmt), and the repository
+`mise.toml` pins Rust, kache, just, JDKs 21 and 25, Node (for oxfmt), and the repository
 formatters. It installs rustfmt, Clippy, and the `wasm32-wasip2` target, and exposes
 both JDKs to Gradle. The workspace's supported Rust baseline is 1.96.0. Keep the manifest baseline
 and mise toolchain pin aligned when updating Rust, and run `just verify-wasm`
 before adopting a new toolchain: guest imports must remain compatible with the sandbox. With mise activated in your shell,
 you can run `just` and `cargo` directly.
+
+[Kache](https://github.com/kunobi-ninja/kache) is enabled through mise's
+`RUSTC_WRAPPER` environment variable, including builds of the standalone WASM guests.
+It shares compiled artifacts between checkouts through its per-user cache. Keep
+that cache on the same filesystem as the checkouts to benefit from copy-on-write
+restores. Use `mise exec -- kache stats` to inspect it, or set `KACHE_DISABLED=1`
+for a build that bypasses caching. Cargo outside the mise environment uses your
+normal wrapper configuration.
+
+Kache does not remove existing `target/` directories when enabled. Preview stale
+targets with `mise exec -- kache clean --tracked --stale 14d --dry-run` before
+cleaning them, and run `mise exec -- kache gc` to reclaim unused cache entries.
+Cache size limits apply to the shared store; outputs retained by targets can keep
+disk space in use. GitHub Actions persists kache's store separately for each build
+job, with a 2 GiB retention budget per job.
 
 Use `just check-crate <crate>`, `just lint-crate <crate>`, and
 `just test-crate <crate> <test-filter>` while iterating. Check and lint recipes accept

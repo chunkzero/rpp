@@ -6,6 +6,7 @@ rust = { version = "1.96.0", profile = "minimal", components = [
   "wasm32-wasip2",
 ] }
 just = "1.46.0"
+"github:kunobi-ninja/kache" = "0.26.3"
 java = ["temurin-21.0.12+101.0.LTS", "temurin-25.0.4+101.0.LTS"]
 node = "24.20.0"
 ktlint = "1.8.0"
@@ -14,5 +15,6 @@ oxfmt = "0.67.0"
 "github:google/google-java-format" = { version = "1.36.1", bin = "google-java-format" }
 
 [env]
+RUSTC_WRAPPER = "kache"
 JAVA_HOME_21 = { value = "{{ tools.java[0].path }}", tools = true }
 JAVA_HOME_25 = { value = "{{ tools.java[1].path }}", tools = true }

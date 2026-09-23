@@ -33,7 +33,14 @@ jobs:
       - uses: jdx/mise-action@v3
         with:
           version: 2026.9.1
-      - uses: Swatinem/rust-cache@v2
+      - uses: kunobi-ninja/kache-action@cc1c9a8b07879bb477f580397d14ee669da26899 # v1
+        with:
+          version: 0.26.3
+          cache-dir: ${{ runner.temp }}/kache
+          cache-key-prefix: kache-${{ github.job }}
+          max-size: 2GiB
+          cache-executables: true
+          pr-comment: false
       - run: mise exec -- just verify-rust
 
   jvm:
@@ -45,7 +52,14 @@ jobs:
       - uses: jdx/mise-action@v3
         with:
           version: 2026.9.1
-      - uses: Swatinem/rust-cache@v2
+      - uses: kunobi-ninja/kache-action@cc1c9a8b07879bb477f580397d14ee669da26899 # v1
+        with:
+          version: 0.26.3
+          cache-dir: ${{ runner.temp }}/kache
+          cache-key-prefix: kache-${{ github.job }}
+          max-size: 2GiB
+          cache-executables: true
+          pr-comment: false
       - run: mise exec -- just verify-jvm
 
   windows:
@@ -58,6 +72,12 @@ jobs:
         with:
           toolchain: 1.96.0
           components: clippy
-      - uses: Swatinem/rust-cache@v2
+      - uses: kunobi-ninja/kache-action@cc1c9a8b07879bb477f580397d14ee669da26899 # v1
+        with:
+          version: 0.26.3
+          cache-dir: ${{ runner.temp }}/kache
+          cache-key-prefix: kache-${{ github.job }}
+          max-size: 2GiB
+          pr-comment: false
       - run: cargo clippy --locked -p rpp --all-targets -- -D warnings
       - run: cargo test --locked -p rpp --lib lua::process
