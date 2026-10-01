@@ -465,3 +465,60 @@ fn forbidden_globals_are_absent() {
     assert_eq!(types["TextEncoder"], "function");
     assert_eq!(types["URL"], "function");
 }
+
+#[test]
+fn hostile_prepare_stack_trace_cannot_outlive_deadline() {
+    let engine = Engine::new().unwrap();
+    let code = "export const spin = () => {
+        Error.prepareStackTrace = () => { for (;;) {} };
+        for (;;) {}
+    };";
+    let mut runtime = try_load(&engine, code, limits(32, Duration::from_millis(200))).unwrap();
+    let started = std::time::Instant::now();
+    let error = call(&mut runtime, &engine, "spin", Value::Null).unwrap_err();
+    assert!(matches!(error, Error::Deadline), "{error:?}");
+    assert!(started.elapsed() < Duration::from_secs(10));
+}
+
+#[test]
+fn discarded_buffers_beyond_budget_do_not_terminate() {
+    let engine = Engine::new().unwrap();
+    let code = "export const churn = () => {
+        let total = 0;
+        for (let i = 0; i < 40; i++) total += new Uint8Array(4_000_000).length;
+        return total;
+    };";
+    let mut runtime = try_load(&engine, code, limits(16, Duration::from_secs(20))).unwrap();
+    assert_eq!(
+        call(&mut runtime, &engine, "churn", Value::Null).unwrap(),
+        json!(160_000_000)
+    );
+    assert!(!runtime.is_terminated());
+}
+
+#[test]
+fn dates_are_utc() {
+    let engine = Engine::new().unwrap();
+    let code = "export const dates = () => [
+        new Date(0).getHours(),
+        new Date(0).getTimezoneOffset(),
+        new Date(2020, 0, 1).getTime(),
+        Date.parse('2020-01-01T00:00:00'),
+        new Date('2020-01-01T00:00:00').getTime(),
+        new Date(2020, 0, 1, 5).toString(),
+    ];";
+    let mut runtime = load(&engine, code);
+    let value = call(&mut runtime, &engine, "dates", Value::Null).unwrap();
+    let utc = 1_577_836_800_000_i64;
+    assert_eq!(
+        value,
+        json!([
+            0,
+            0,
+            utc,
+            utc,
+            utc,
+            "Wed Jan 01 2020 05:00:00 GMT+0000 (UTC)"
+        ])
+    );
+}

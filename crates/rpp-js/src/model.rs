@@ -9,7 +9,8 @@ use serde_json::Value;
 /// Resource limits for one runtime, applied to module evaluation and to each call.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Limits {
-    /// V8 heap plus `ArrayBuffer` backing stores, in bytes. At least 16 MiB.
+    /// Maximum V8 heap size in bytes; `ArrayBuffer` backing stores have a separate budget of the
+    /// same size. At least 16 MiB.
     pub heap_bytes: usize,
     /// Wall-clock budget for one evaluation or call, including awaited promises.
     pub time: Duration,

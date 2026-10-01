@@ -45,10 +45,7 @@ impl State {
             create_params: Some(
                 v8::Isolate::create_params()
                     .heap_limits(0, limits.heap_bytes)
-                    .array_buffer_allocator(crate::allocator::bounded(
-                        limits.heap_bytes,
-                        termination.clone(),
-                    )),
+                    .array_buffer_allocator(crate::allocator::bounded(limits.heap_bytes)),
             ),
             ..Default::default()
         });

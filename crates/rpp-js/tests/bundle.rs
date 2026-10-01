@@ -209,3 +209,22 @@ fn output_is_deterministic() {
         assert_eq!(bundle(&request(&root, "main.ts")).unwrap(), first);
     }
 }
+
+#[test]
+fn inputs_exclude_bundler_runtime_helpers() {
+    let dir = TempDir::new().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    write(&root, "legacy.cjs", "module.exports = { value: 1 };\n");
+    write(
+        &root,
+        "main.ts",
+        "import legacy from './legacy.cjs';\nexport const run = () => legacy.value;\n",
+    );
+
+    let bundle = bundle(&request(&root, "main.ts")).unwrap();
+
+    assert_eq!(
+        bundle.inputs,
+        vec![root.join("legacy.cjs"), root.join("main.ts")]
+    );
+}

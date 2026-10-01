@@ -45,10 +45,57 @@
 
   const construct = Reflect.construct;
   const NativeDate = Date;
-  const dateString = Function.prototype.call.bind(NativeDate.prototype.toString);
+  const proto = NativeDate.prototype;
+  const lock = (target, name, value) =>
+    Object.defineProperty(target, name, { value, writable: false, configurable: false });
+  const utcString = Function.prototype.call.bind(proto.toUTCString);
+  const utcParts = (date) => {
+    const text = utcString(date);
+    return text === "Invalid Date" ? undefined : text.split(" ");
+  };
+  const datePart = ([weekday, day, month, year]) => `${weekday.slice(0, 3)} ${month} ${day} ${year}`;
+  const timePart = (parts) => `${parts[4]} GMT+0000 (UTC)`;
+  const dateString = (date) => {
+    const parts = utcParts(date);
+    return parts ? `${datePart(parts)} ${timePart(parts)}` : "Invalid Date";
+  };
+  lock(proto, "toString", function toString() {
+    return dateString(this);
+  });
+  lock(proto, "toDateString", function toDateString() {
+    const parts = utcParts(this);
+    return parts ? datePart(parts) : "Invalid Date";
+  });
+  lock(proto, "toTimeString", function toTimeString() {
+    const parts = utcParts(this);
+    return parts ? timePart(parts) : "Invalid Date";
+  });
+  for (const unit of ["FullYear", "Month", "Date", "Hours", "Minutes", "Seconds", "Milliseconds"]) {
+    lock(proto, `get${unit}`, proto[`getUTC${unit}`]);
+    lock(proto, `set${unit}`, proto[`setUTC${unit}`]);
+  }
+  lock(proto, "getDay", proto.getUTCDay);
+  lock(proto, "getYear", function getYear() {
+    return this.getUTCFullYear() - 1900;
+  });
+  lock(proto, "setYear", function setYear(year) {
+    const value = Number(year);
+    return this.setUTCFullYear(value >= 0 && value <= 99 ? value + 1900 : value);
+  });
+  lock(proto, "getTimezoneOffset", function getTimezoneOffset() {
+    return this.getTime() - this.getTime();
+  });
+  const localIso = /^([+-]\d{6}|\d{4})-\d\d-\d\dT\d\d:\d\d(:\d\d(\.\d+)?)?$/;
+  const utcInput = (text) => (typeof text === "string" && localIso.test(text) ? `${text}Z` : text);
+  const nativeParse = NativeDate.parse;
+  lock(NativeDate, "parse", (text) => nativeParse(utcInput(String(text))));
   const controlledDate = new Proxy(NativeDate, {
     apply: () => dateString(new NativeDate(now())),
-    construct: (target, args, newTarget) => construct(target, args.length ? args : [now()], newTarget),
+    construct: (target, args, newTarget) => {
+      const input =
+        args.length >= 2 ? [NativeDate.UTC(...args)] : args.length === 1 ? [utcInput(args[0])] : [now()];
+      return construct(target, input, newTarget);
+    },
   });
   Object.defineProperty(NativeDate, "now", { value: now, writable: false, configurable: false });
   Object.defineProperty(NativeDate.prototype, "constructor", {
@@ -73,8 +120,15 @@
   const unavailable = () => {
     throw new Error("Locale-sensitive APIs are unavailable");
   };
-  for (const prototype of [String.prototype, Number.prototype, BigInt.prototype, Array.prototype]) {
-    for (const name of ["localeCompare", "toLocaleString", "toLocaleLowerCase", "toLocaleUpperCase"]) {
+  for (const prototype of [String.prototype, Number.prototype, BigInt.prototype, Array.prototype, Date.prototype]) {
+    for (const name of [
+      "localeCompare",
+      "toLocaleString",
+      "toLocaleLowerCase",
+      "toLocaleUpperCase",
+      "toLocaleDateString",
+      "toLocaleTimeString",
+    ]) {
       if (name in prototype)
         Object.defineProperty(prototype, name, { value: unavailable, writable: false, configurable: false });
     }

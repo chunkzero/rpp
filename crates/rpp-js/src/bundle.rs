@@ -141,8 +141,9 @@ pub fn bundle(request: &BundleRequest) -> Result<Bundle> {
         .module_ids
         .iter()
         .map(|id| id.as_str())
-        .filter(|id| !id.starts_with(VIRTUAL_PREFIX))
-        .map(PathBuf::from)
+        .map(Path::new)
+        .filter(|path| path.is_absolute() && path.is_file())
+        .map(Path::to_path_buf)
         .collect();
     inputs.sort();
     inputs.dedup();

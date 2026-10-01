@@ -7,16 +7,14 @@ use std::{
 
 use deno_core::v8;
 
-use crate::termination::{Reason, Termination};
-
 struct Budget {
     limit: usize,
     used: AtomicUsize,
-    exhausted: Termination,
 }
 
-/// V8 retains the allocator with its backing stores, including stores freed by GC.
-pub(crate) fn bounded(limit: usize, exhausted: Termination) -> v8::UniqueRef<v8::Allocator> {
+/// V8 retains the allocator with its backing stores, including stores freed by GC. A refused
+/// allocation is not final: V8 collects garbage and retries, then throws a `RangeError`.
+pub(crate) fn bounded(limit: usize) -> v8::UniqueRef<v8::Allocator> {
     const VTABLE: v8::RustAllocatorVtable<Budget> = v8::RustAllocatorVtable {
         allocate,
         allocate_uninitialized: allocate,
@@ -26,7 +24,6 @@ pub(crate) fn bounded(limit: usize, exhausted: Termination) -> v8::UniqueRef<v8:
     let budget = Box::new(Budget {
         limit,
         used: AtomicUsize::new(0),
-        exhausted,
     });
     // SAFETY: VTABLE receives this exact Budget until its drop callback reclaims
     // the Box. Atomic accounting supports V8's concurrent backing-store frees.
@@ -36,7 +33,6 @@ pub(crate) fn bounded(limit: usize, exhausted: Termination) -> v8::UniqueRef<v8:
 unsafe extern "C" fn allocate(budget: &Budget, len: usize) -> *mut c_void {
     let bytes = len.max(1);
     let Ok(layout) = Layout::from_size_align(bytes, 8) else {
-        budget.exhausted.record(Reason::Heap);
         return ptr::null_mut();
     };
     if budget
@@ -46,7 +42,6 @@ unsafe extern "C" fn allocate(budget: &Budget, len: usize) -> *mut c_void {
         })
         .is_err()
     {
-        budget.exhausted.record(Reason::Heap);
         return ptr::null_mut();
     }
     // SAFETY: Layout is valid and nonempty. Eight-byte alignment covers every
@@ -54,7 +49,6 @@ unsafe extern "C" fn allocate(budget: &Budget, len: usize) -> *mut c_void {
     let data = unsafe { alloc_zeroed(layout) };
     if data.is_null() {
         budget.used.fetch_sub(bytes, Ordering::AcqRel);
-        budget.exhausted.record(Reason::Heap);
     }
     data.cast()
 }

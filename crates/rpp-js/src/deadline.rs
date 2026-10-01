@@ -62,8 +62,9 @@ impl Deadline {
                             } else {
                                 Reason::Deadline
                             });
+                            // Re-issued every tick: error construction in deno_core cancels
+                            // termination and may run plugin code (`Error.prepareStackTrace`).
                             active.handle.terminate_execution();
-                            watch.at.store(0, Ordering::Release);
                         }
                     }
                 }
