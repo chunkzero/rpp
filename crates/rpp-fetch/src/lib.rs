@@ -42,7 +42,7 @@ mod resolver;
 mod search;
 mod source;
 
-pub use error::{Error, Result};
+pub use error::{Error, Incompatibility, Result};
 pub use http::{
     HttpConfig, DEFAULT_API_BASE, DEFAULT_CODELOAD_BASE, DEFAULT_REGISTRY_BASE, USER_AGENT,
 };

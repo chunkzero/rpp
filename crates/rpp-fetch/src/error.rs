@@ -105,19 +105,8 @@ pub enum Error {
     },
 
     /// A matching version exists but doesn't support this rpp version.
-    #[error("`{name}` {version} requires rpp {requires}, but this is rpp {rpp}; {hint}")]
-    Incompatible {
-        /// Dependency name.
-        name: String,
-        /// The newest matching (or pinned) version.
-        version: semver::Version,
-        /// The rpp range that version supports.
-        requires: semver::VersionReq,
-        /// The running rpp version.
-        rpp: semver::Version,
-        /// What the user can do about it.
-        hint: String,
-    },
+    #[error(transparent)]
+    Incompatible(Box<Incompatibility>),
 
     /// A downloaded archive did not match its recorded SHA-256.
     #[error("archive for `{name}` {version} has SHA-256 {actual}, expected {expected}")]
@@ -162,4 +151,20 @@ impl Error {
             source,
         }
     }
+}
+
+/// Why a plugin version can't be used with the running rpp.
+#[derive(Debug, Error)]
+#[error("`{name}` {version} requires rpp {requires}, but this is rpp {rpp}; {hint}")]
+pub struct Incompatibility {
+    /// Dependency name.
+    pub name: String,
+    /// The newest matching (or pinned) version.
+    pub version: semver::Version,
+    /// The rpp range that version supports.
+    pub requires: semver::VersionReq,
+    /// The running rpp version.
+    pub rpp: semver::Version,
+    /// What the user can do about it.
+    pub hint: String,
 }

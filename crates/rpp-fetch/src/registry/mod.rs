@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 use semver::{Version, VersionReq};
 use serde::Deserialize;
 
-use crate::error::{Error, Result};
+use crate::error::{Error, Incompatibility, Result};
 use crate::http::HttpConfig;
 
 pub use deps::{parse_dependencies, validate_name, Dependency, DependencySpec};
@@ -158,7 +158,35 @@ pub fn select<'a>(
     requested: &VersionReq,
     rpp: &Version,
 ) -> Result<&'a IndexVersion> {
-    todo!("{entry:?} {requested} {rpp}")
+    let mut matching: Vec<&IndexVersion> = entry
+        .versions
+        .iter()
+        .filter(|v| !v.yanked && requested.matches(&v.version))
+        .collect();
+    matching.sort_by(|a, b| b.version.cmp(&a.version));
+    let Some(newest) = matching.first() else {
+        return Err(Error::NoMatchingVersion {
+            name: entry.name.clone(),
+            requested: requested.to_string(),
+        });
+    };
+    let release = release_of(rpp);
+    matching
+        .iter()
+        .find(|v| v.rpp.matches(&release))
+        .copied()
+        .ok_or_else(|| {
+            Error::Incompatible(Box::new(Incompatibility {
+                name: entry.name.clone(),
+                version: newest.version.clone(),
+                requires: newest.rpp.clone(),
+                rpp: rpp.clone(),
+                hint: format!(
+                    "request an older version of `{}` or upgrade rpp",
+                    entry.name
+                ),
+            }))
+        })
 }
 
 /// Read `name` and `version` from the `rpp.json` in `dir`, ignoring other fields.
@@ -168,7 +196,32 @@ pub fn select<'a>(
 /// [`Error::MissingPackageManifest`] when absent; [`Error::InvalidManifest`] when
 /// it is not JSON, lacks either field, or has an invalid name or version.
 pub fn read_package_summary(dir: &Path) -> Result<PackageSummary> {
-    todo!("{}", dir.display())
+    let path = dir.join(PACKAGE_MANIFEST);
+    let text = match std::fs::read_to_string(&path) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Err(Error::MissingPackageManifest(dir.to_path_buf()));
+        }
+        Err(e) => return Err(Error::io(format!("reading {}", path.display()), e)),
+    };
+    let invalid = |reason: String| Error::InvalidManifest {
+        path: path.clone(),
+        reason,
+    };
+
+    #[derive(Deserialize)]
+    struct Fields {
+        name: String,
+        version: String,
+    }
+    let fields: Fields = serde_json::from_str(&text).map_err(|e| invalid(e.to_string()))?;
+    validate_name(&fields.name).map_err(|e| invalid(e.to_string()))?;
+    let version = Version::parse(&fields.version)
+        .map_err(|e| invalid(format!("invalid version `{}`: {e}", fields.version)))?;
+    Ok(PackageSummary {
+        name: fields.name,
+        version,
+    })
 }
 
 /// `rpp` with pre-release and build metadata removed, for compatibility checks.
@@ -176,5 +229,117 @@ pub(crate) fn release_of(rpp: &Version) -> Version {
     Version::new(rpp.major, rpp.minor, rpp.patch)
 }
 
-#[allow(dead_code)]
-fn _unused(_: Error) {}
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn version(v: &str, rpp: &str, yanked: bool) -> IndexVersion {
+        IndexVersion {
+            version: Version::parse(v).unwrap(),
+            url: format!("https://example.com/{v}.tgz"),
+            sha256: "00".repeat(32),
+            rpp: VersionReq::parse(rpp).unwrap(),
+            yanked,
+        }
+    }
+
+    fn entry(versions: Vec<IndexVersion>) -> IndexEntry {
+        IndexEntry {
+            name: "window".to_string(),
+            repository: "https://example.com/window".to_string(),
+            description: None,
+            versions,
+        }
+    }
+
+    fn req(text: &str) -> VersionReq {
+        VersionReq::parse(text).unwrap()
+    }
+
+    fn rpp(text: &str) -> Version {
+        Version::parse(text).unwrap()
+    }
+
+    #[test]
+    fn selects_highest_compatible() {
+        let e = entry(vec![
+            version("0.1.0", ">=0.1", false),
+            version("0.1.2", ">=0.1", false),
+            version("0.1.3", ">=0.3", false),
+        ]);
+        let chosen = select(&e, &req("^0.1"), &rpp("0.2.0")).unwrap();
+        assert_eq!(chosen.version, rpp("0.1.2"));
+    }
+
+    #[test]
+    fn skips_yanked() {
+        let e = entry(vec![
+            version("0.1.0", ">=0.1", false),
+            version("0.1.1", ">=0.1", true),
+        ]);
+        assert_eq!(
+            select(&e, &req("^0.1"), &rpp("0.2.0")).unwrap().version,
+            rpp("0.1.0")
+        );
+        let only_yanked = entry(vec![version("0.1.1", ">=0.1", true)]);
+        assert!(matches!(
+            select(&only_yanked, &req("^0.1"), &rpp("0.2.0")),
+            Err(Error::NoMatchingVersion { .. })
+        ));
+    }
+
+    #[test]
+    fn incompatible_names_newest_match() {
+        let e = entry(vec![
+            version("0.1.0", ">=0.5", false),
+            version("0.1.1", ">=0.6", false),
+        ]);
+        match select(&e, &req("^0.1"), &rpp("0.2.0")) {
+            Err(Error::Incompatible(info)) => {
+                assert_eq!(info.version, rpp("0.1.1"));
+                assert_eq!(info.requires, req(">=0.6"));
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[test]
+    fn prerelease_needs_explicit_range() {
+        let e = entry(vec![version("0.2.0-beta.1", ">=0.1", false)]);
+        assert!(matches!(
+            select(&e, &req("^0.2"), &rpp("0.2.0")),
+            Err(Error::NoMatchingVersion { .. })
+        ));
+        assert!(select(&e, &req(">=0.2.0-beta.1"), &rpp("0.2.0")).is_ok());
+    }
+
+    #[test]
+    fn prerelease_rpp_is_compatible() {
+        let e = entry(vec![version("0.1.0", ">=0.2", false)]);
+        assert!(select(&e, &req("^0.1"), &rpp("0.2.0-alpha.1")).is_ok());
+    }
+
+    #[test]
+    fn reads_package_summary() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(matches!(
+            read_package_summary(dir.path()),
+            Err(Error::MissingPackageManifest(_))
+        ));
+        let manifest = dir.path().join(PACKAGE_MANIFEST);
+        std::fs::write(
+            &manifest,
+            r#"{"name": "window", "version": "0.1.4", "extra": 1}"#,
+        )
+        .unwrap();
+        let summary = read_package_summary(dir.path()).unwrap();
+        assert_eq!(summary.name, "window");
+        assert_eq!(summary.version, rpp("0.1.4"));
+
+        std::fs::write(&manifest, r#"{"name": "Window", "version": "0.1.4"}"#).unwrap();
+        assert!(matches!(
+            read_package_summary(dir.path()),
+            Err(Error::InvalidManifest { .. })
+        ));
+    }
+}
