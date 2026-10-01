@@ -547,7 +547,7 @@ mod tests {
     #[test]
     fn captures_both_streams_while_writing_stdin() {
         let output = cmd(
-            "findstr x & (echo error) 1>&2 & exit 7",
+            r"C:\Windows\System32\findstr.exe x & (echo error) 1>&2 & exit 7",
             b"x\r\n".to_vec(),
             Duration::from_secs(10),
         )
