@@ -17,6 +17,7 @@ type GenerateFn = dyn Fn(&mut dyn GeneratorHost) -> rpp::Result<()> + Send + Syn
 struct MockFactory {
     id: String,
     key: u64,
+    processor_key: Option<u64>,
     processors: Vec<ProcessorDef>,
     has_generator: bool,
     behavior: Arc<ProcessFn>,
@@ -33,6 +34,7 @@ impl MockFactory {
         Self {
             id: id.into(),
             key,
+            processor_key: None,
             processors: vec![ProcessorDef {
                 name: "p".into(),
                 patterns: vec!["**/*".into()],
@@ -47,6 +49,16 @@ impl MockFactory {
 
     fn with_overrides(mut self, globs: &[&str]) -> Self {
         self.overrides = globs.iter().map(|glob| glob.to_string()).collect();
+        self
+    }
+
+    fn with_processor_key(mut self, key: u64) -> Self {
+        self.processor_key = Some(key);
+        self
+    }
+
+    fn with_key(mut self, key: u64) -> Self {
+        self.key = key;
         self
     }
 
@@ -67,6 +79,10 @@ impl PluginFactory for MockFactory {
 
     fn cache_key(&self) -> u64 {
         self.key
+    }
+
+    fn processor_key(&self) -> u64 {
+        self.processor_key.unwrap_or(self.key)
     }
 
     fn processors(&self) -> &[ProcessorDef] {
@@ -365,4 +381,85 @@ fn incremental_file_cache_uses_cas_without_reprocessing() {
     assert_eq!(second.processed, 0);
     assert_eq!(second.cached, 1);
     assert_eq!(project.read_out("a.txt").as_deref(), Some("HELLO"));
+}
+
+fn upper(id: &str, key: u64) -> MockFactory {
+    MockFactory::new(id, key, |_, file| {
+        file.contents = file.contents.to_ascii_uppercase();
+        ProcessOutcome::Modified
+    })
+}
+
+#[test]
+fn plugin_key_change_keeps_other_plugins_cached() {
+    let project = Project::new();
+    project.write_src("a.txt", "hello");
+
+    let stable = Arc::new(generator("stable", |host| {
+        host.emit("stable.txt", b"s".to_vec())
+    })) as Arc<dyn PluginFactory>;
+    let other = |key: u64| {
+        Arc::new(generator("other", |host| host.emit("other.txt", b"o".to_vec())).with_key(key))
+            as Arc<dyn PluginFactory>
+    };
+    let first = build(&project, vec![stable.clone(), other(1)]);
+    assert_eq!(first.generated, 2);
+
+    let second = build(&project, vec![stable, other(2)]);
+    assert_eq!(second.generated, 1);
+    assert_eq!(project.read_out("stable.txt").as_deref(), Some("s"));
+}
+
+#[test]
+fn processor_key_stable_reuses_files_but_reruns_generator() {
+    let project = Project::new();
+    project.write_src("a.txt", "hello");
+
+    let plugin = |key: u64| {
+        Arc::new(
+            upper("p", key)
+                .with_processor_key(7)
+                .with_generator(|host| {
+                    host.emit("out.txt", b"1".to_vec());
+                    Ok(())
+                }),
+        ) as Arc<dyn PluginFactory>
+    };
+    let first = build(&project, vec![plugin(1)]);
+    assert_eq!((first.processed, first.generated), (1, 1));
+
+    let second = build(&project, vec![plugin(2)]);
+    assert_eq!(
+        (second.processed, second.cached, second.generated),
+        (0, 1, 1)
+    );
+    assert_eq!(project.read_out("a.txt").as_deref(), Some("HELLO"));
+}
+
+#[test]
+fn removing_plugin_keeps_remaining_cache() {
+    let project = Project::new();
+    project.write_src("a.txt", "hello");
+
+    let keep = Arc::new(upper("keep", 1).with_generator(|host| {
+        host.emit("keep.txt", b"k".to_vec());
+        Ok(())
+    })) as Arc<dyn PluginFactory>;
+    let mut gone =
+        MockFactory::new("gone", 5, |_, _| ProcessOutcome::Unchanged).with_generator(|host| {
+            host.emit("gone.txt", b"g".to_vec());
+            Ok(())
+        });
+    gone.processors.clear();
+    let gone = Arc::new(gone) as Arc<dyn PluginFactory>;
+    build(&project, vec![keep.clone(), gone]);
+    assert!(project.out_exists("gone.txt"));
+
+    let second = build(&project, vec![keep]);
+    assert_eq!(
+        (second.processed, second.cached, second.generated),
+        (0, 1, 0)
+    );
+    assert!(!project.out_exists("gone.txt"));
+    assert_eq!(project.read_out("keep.txt").as_deref(), Some("k"));
 }

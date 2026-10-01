@@ -462,6 +462,7 @@ impl Project {
                     limits,
                     access,
                     &self.source_dir(),
+                    Some(&self.root.join(".rpp/cache")),
                 )
                 .with_context(|| format!("loading TypeScript plugin `{id}`"))?,
             )

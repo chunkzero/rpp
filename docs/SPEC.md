@@ -240,6 +240,8 @@ pub trait PluginFactory: Send + Sync {
     fn version(&self) -> &str;
     /// Hash covering plugin code AND its options — feeds cache invalidation.
     fn cache_key(&self) -> u64;
+    /// Hash of everything per-file processors depend on; defaults to `cache_key()`.
+    fn processor_key(&self) -> u64 { self.cache_key() }
     fn processors(&self) -> &[ProcessorDef];
     fn has_generator(&self) -> bool;
     /// Instantiate for one worker thread (Lua states are per-worker).
@@ -424,6 +426,19 @@ stdout, stderr }`. Requires a `permissions.process` grant (or native mode) and i
   by package path), the captured entry regardless of its extension, `plugin.toml`,
   every declared component binary, canonicalized options, and host-access/output-root
   policy. Package capture assumes files are not concurrently replaced while loading.
+- A TypeScript plugin has two keys. `processor_key` (chains, `compile_processors`) is xxh3 over
+  the rpp version, manifest, component binaries, canonical options, host-access policy and the
+  content of every bundled file outside the source directory (the plugin package).
+  `cache_key` (generators) adds the bundled code, which contains the discovered module list and
+  the source helpers they import. Adding, removing or editing a discovered module therefore
+  reruns generators but reuses cached processor results. Processors do not get
+  `ctx.discovered()` (it throws), and top-level side effects of discovered modules are not
+  tracked for processors.
+- TypeScript bundles are cached at `.rpp/cache/bundles/<xxh3-hex of plugin id>.bin` (bincode),
+  keyed by the bundler request (rpp version, root, virtual modules including the discovered
+  list, packages) and the content hash of every file the bundle read. A corrupt or stale entry
+  is a miss. A new file that changes import resolution without touching a recorded input needs
+  `rpp clean`.
 
 ## 5. WASM component system (`crates/rpp-wasm`)
 
@@ -581,9 +596,10 @@ output contents).
 Manifest:
 
 - `global_key`: xxh3 of (rpp version, canonicalized full `rpp.toml` build-relevant
-  sections, ordered list of plugin `cache_key`s).
+  sections). Plugin keys are not part of it: a plugin change invalidates only the chains
+  containing its processors (`processor_key`) and its own generator (`cache_key`).
 - Per source file: `{ fingerprint: {mtime_ns, size, xxh3}, chain_key: u64, outputs: Vec<{ path, object: u64 }> }`
-  (`outputs` empty = dropped). `chain_key` = xxh3 over the ordered `(plugin cache_key, processor name)`
+  (`outputs` empty = dropped). `chain_key` = xxh3 over the ordered `(plugin processor_key, processor name)`
   chain that applies to this file.
 - Per generator: `{ plugin cache_key, read_set: Vec<{ kind: List|SourceList|File|Source, key: String, hash: u64 }>, outputs: Vec<{ path, object }> }`.
 

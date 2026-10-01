@@ -2,9 +2,11 @@
 
 #![cfg(feature = "js")]
 
+use std::path::PathBuf;
+
 use rpp::host::{PackInfo, RuntimeAccess};
 use rpp::js::{JsPluginFactory, JsPluginLimits};
-use rpp::model::{GeneratorHost, PluginFactory};
+use rpp::model::{GeneratorHost, PackFile, PluginFactory, ProcessOutcome};
 use tempfile::TempDir;
 
 const PLUGIN: &str = r##"
@@ -23,12 +25,14 @@ export default definePlugin({
 
 struct Project {
     dir: TempDir,
+    cache: Option<PathBuf>,
 }
 
 impl Project {
     fn new(plugin: &str) -> Self {
         let project = Self {
             dir: tempfile::tempdir().unwrap(),
+            cache: None,
         };
         project.write(
             "plugin/rpp.json",
@@ -62,6 +66,7 @@ impl Project {
             JsPluginLimits::default(),
             RuntimeAccess::sandboxed(".".into()),
             &self.dir.path().join("src"),
+            self.cache.as_deref(),
         )
     }
 
@@ -202,4 +207,105 @@ fn confined_to_source_dir_while_plugin_keeps_its_own_imports() {
         "export { title } from \"../../../secret.ts\";\n",
     );
     assert!(project.load().is_err());
+}
+
+fn keys(project: &Project) -> (u64, u64) {
+    let factory = project.load().unwrap();
+    (factory.processor_key(), factory.cache_key())
+}
+
+#[test]
+fn definition_edit_changes_generator_key_only() {
+    let project = Project::new(PLUGIN);
+    project.write("src/shop/window/window.ts", &window("Main"));
+    let (processor, generator) = keys(&project);
+    assert_eq!(keys(&project), (processor, generator));
+
+    project.write("src/shop/window/window.ts", &window("Changed"));
+    let (new_processor, new_generator) = keys(&project);
+    assert_eq!(new_processor, processor);
+    assert_ne!(new_generator, generator);
+}
+
+#[test]
+fn adding_and_removing_entry_changes_generator_key_only() {
+    let project = Project::new(PLUGIN);
+    project.write("src/shop/window/window.ts", &window("Main"));
+    let (processor, generator) = keys(&project);
+
+    project.write("src/bank/window/window.ts", &window("Bank"));
+    let (added_processor, added_generator) = keys(&project);
+    assert_eq!(added_processor, processor);
+    assert_ne!(added_generator, generator);
+
+    std::fs::remove_file(project.dir.path().join("src/bank/window/window.ts")).unwrap();
+    assert_eq!(keys(&project), (processor, generator));
+}
+
+#[test]
+fn helper_edit_changes_generator_key_only() {
+    let project = Project::new(PLUGIN);
+    project.write(
+        "src/shop/window/window.ts",
+        "import { label } from \"../../lib/label.ts\";\nexport const title = label(\"Shop\");\n",
+    );
+    project.write(
+        "src/lib/label.ts",
+        "export const label = (t: string) => t;\n",
+    );
+    let (processor, generator) = keys(&project);
+
+    project.write(
+        "src/lib/label.ts",
+        "export const label = (t: string) => `[${t}]`;\n",
+    );
+    let (new_processor, new_generator) = keys(&project);
+    assert_eq!(new_processor, processor);
+    assert_ne!(new_generator, generator);
+}
+
+#[test]
+fn processor_cannot_read_discovered() {
+    let project = Project::new(
+        "import { definePlugin } from \"#rpp\";\n\
+         export default definePlugin({ processors: { p: { files: \"**/*\", \
+         run(ctx: any) { ctx.discovered(\"windows\"); } } } });\n",
+    );
+    let mut instance = project.load().unwrap().instantiate().unwrap();
+    let mut file = PackFile::new("a.txt", b"x".to_vec());
+    let result: rpp::Result<ProcessOutcome> = instance.process("p", &mut file);
+    let error = result.unwrap_err().to_string();
+    assert!(
+        error.contains("only available in generate/onStart/onFinish"),
+        "{error}"
+    );
+}
+
+#[test]
+fn second_load_reuses_cached_bundle() {
+    let mut project = Project::new(PLUGIN);
+    project.write("src/shop/window/window.ts", &window("Main"));
+    let cache = project.dir.path().join("cache");
+    project.cache = Some(cache.clone());
+    let first = keys(&project);
+
+    let entries = || std::fs::read_dir(cache.join("bundles")).unwrap().count();
+    assert_eq!(entries(), 1);
+    let stored = std::fs::read_dir(cache.join("bundles"))
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    let modified = std::fs::metadata(&stored).unwrap().modified().unwrap();
+
+    assert_eq!(keys(&project), first);
+    assert_eq!(
+        std::fs::metadata(&stored).unwrap().modified().unwrap(),
+        modified
+    );
+
+    project.write("src/shop/window/window.ts", &window("Changed"));
+    assert_ne!(keys(&project), first);
+    assert_eq!(entries(), 1);
 }

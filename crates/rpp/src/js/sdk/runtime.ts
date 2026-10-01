@@ -6,6 +6,7 @@ import type {
   DiscoveredModule,
   File,
   GeneratorContext,
+  HookContext,
   Pack,
   Plugin,
   Processor,
@@ -29,6 +30,7 @@ const toBytes = (data: Uint8Array | string): Uint8Array =>
 let discoveredModules: Record<string, readonly DiscoveredModule[]> = {};
 let registered: Plugin<unknown> | undefined;
 let context: Context<unknown> | undefined;
+let hookContext: HookContext<unknown> | undefined;
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null;
@@ -86,10 +88,15 @@ export function describe(): unknown {
 }
 
 export function init(args: { plugin: string; options: unknown; pack: Pack }): null {
+  const base = { plugin: args.plugin, options: args.options, pack: args.pack };
   context = {
-    plugin: args.plugin,
-    options: args.options,
-    pack: args.pack,
+    ...base,
+    discovered: () => {
+      throw new Error("ctx.discovered() is only available in generate/onStart/onFinish");
+    },
+  } as Context<unknown>;
+  hookContext = {
+    ...base,
     discovered: <M>(name: string) => {
       if (!Object.hasOwn(discoveredModules, name)) {
         throw new TypeError(`no \`discover\` pattern named \`${name}\``);
@@ -168,7 +175,7 @@ export async function generate(): Promise<null> {
   const handler = registered?.generate;
   if (handler === undefined) return null;
   const ctx: GeneratorContext<unknown> = {
-    ...context!,
+    ...hookContext!,
     files: (glob) => list("files", glob),
     sourceFiles: (glob) => list("source_files", glob),
     read: (path) => readFile("read", path),
@@ -190,11 +197,11 @@ export async function generate(): Promise<null> {
 }
 
 export async function onStart(): Promise<null> {
-  await registered?.onStart?.call(registered, context!);
+  await registered?.onStart?.call(registered, hookContext!);
   return null;
 }
 
 export async function onFinish(stats: BuildStats): Promise<null> {
-  await registered?.onFinish?.call(registered, context!, stats);
+  await registered?.onFinish?.call(registered, hookContext!, stats);
   return null;
 }

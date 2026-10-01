@@ -228,6 +228,26 @@ fn inputs_exclude_bundler_runtime_helpers() {
     );
 }
 
+#[test]
+fn inputs_include_tree_shaken_modules() {
+    let dir = TempDir::new().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    write(&root, "helper.ts", "export const value = \"inlined\";\n");
+    write(
+        &root,
+        "main.ts",
+        "import { value } from './helper.ts';\nexport const run = () => value;\n",
+    );
+
+    let bundle = bundle(&request(&root, "main.ts")).unwrap();
+
+    assert!(bundle.code.contains("inlined"));
+    assert_eq!(
+        bundle.inputs,
+        vec![root.join("helper.ts"), root.join("main.ts")]
+    );
+}
+
 fn package_request(root: &Path, pkg: &Path) -> BundleRequest {
     let mut req = request(root, "main.ts");
     req.packages.insert(

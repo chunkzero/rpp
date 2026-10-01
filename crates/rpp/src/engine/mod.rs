@@ -210,7 +210,7 @@ impl Engine {
         let manifest_path = self.cache_dir.join("manifest.bin");
         let store = ObjectStore::open(self.cache_dir.join("objects"))?;
 
-        let global_key = keys::global_key(&self.config, &self.factories);
+        let global_key = keys::global_key(&self.config);
         let prev = Manifest::load(&manifest_path);
         let global_match = prev
             .as_ref()

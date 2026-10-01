@@ -1,6 +1,6 @@
 //! Rolldown bundling into one ESM file.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -56,7 +56,8 @@ pub struct Bundle {
     /// Source map v3 JSON for `code`. Real files appear as paths relative to `root`
     /// with `/` separators; virtual modules appear under their specifier.
     pub source_map: String,
-    /// Every real file that was bundled, absolute, sorted and deduplicated.
+    /// Every real file the bundler loaded, including modules tree-shaken out of `code`;
+    /// absolute, sorted and deduplicated.
     pub inputs: Vec<PathBuf>,
 }
 
@@ -93,11 +94,13 @@ pub fn bundle(request: &BundleRequest) -> Result<Bundle> {
     }
     let packages = Arc::new(packages);
     let diagnostics = Arc::new(Mutex::new(Vec::new()));
+    let loaded = Arc::new(Mutex::new(BTreeSet::new()));
     let plugin = VirtualModules {
         root: root.clone(),
         packages: Arc::clone(&packages),
         modules: request.virtual_modules.clone(),
         diagnostics: Arc::clone(&diagnostics),
+        loaded: Arc::clone(&loaded),
     };
 
     let entry = if request.virtual_modules.contains_key(&request.entry) {
@@ -177,16 +180,13 @@ pub fn bundle(request: &BundleRequest) -> Result<Bundle> {
         .ok_or_else(|| Error::Bundle("bundling produced no source map".to_string()))?
         .to_json_string();
 
-    let mut inputs: Vec<PathBuf> = chunk
-        .module_ids
+    let inputs: Vec<PathBuf> = loaded
+        .lock()
+        .expect("loaded lock")
         .iter()
-        .map(|id| id.as_str())
-        .map(Path::new)
         .filter(|path| path.is_absolute() && path.is_file())
-        .map(Path::to_path_buf)
+        .cloned()
         .collect();
-    inputs.sort();
-    inputs.dedup();
 
     Ok(Bundle {
         code: chunk.code.clone(),
@@ -242,6 +242,7 @@ struct VirtualModules {
     packages: Arc<Vec<Package>>,
     modules: BTreeMap<String, String>,
     diagnostics: Arc<Mutex<Vec<String>>>,
+    loaded: Arc<Mutex<BTreeSet<PathBuf>>>,
 }
 
 impl VirtualModules {
@@ -364,6 +365,10 @@ impl Plugin for VirtualModules {
 
     async fn load(&self, _ctx: SharedLoadPluginContext, args: &HookLoadArgs<'_>) -> HookLoadReturn {
         let Some(specifier) = args.id.strip_prefix(VIRTUAL_PREFIX) else {
+            self.loaded
+                .lock()
+                .expect("loaded lock")
+                .insert(PathBuf::from(args.id));
             return Ok(None);
         };
         Ok(self.modules.get(specifier).map(|code| HookLoadOutput {
