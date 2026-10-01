@@ -14,7 +14,7 @@ name = "rpp"
 path = "src/main.rs"
 
 [dependencies]
-rpp = { workspace = true, features = ["wasm", "tracing"] }
+rpp = { workspace = true, features = ["js", "wasm", "tracing"] }
 rpp-fetch.workspace = true
 rpp-squash.workspace = true
 rpp-wasm.workspace = true

@@ -1,0 +1,67 @@
+//! TypeScript plugins on V8 through `rpp-js` (spec §4).
+//!
+//! A plugin whose `plugin.toml` `entry` ends in `.ts`, `.mts` or `.js` is bundled with
+//! three virtual modules:
+//!
+//! - `#rpp`: the SDK ([`SDK_FILES`]), whose public API is `sdk/index.ts`.
+//! - `rpp:runtime`: `sdk/runtime.ts`, the dispatcher below.
+//! - `rpp:entry`: `import plugin from "./<entry>"; import { register } from "rpp:runtime";
+//!   register(plugin); export * from "rpp:runtime";`
+//!
+//! The bundle exports these functions, called through [`rpp_js::Runtime::call`]:
+//!
+//! | export | args | bytes | returns |
+//! |---|---|---|---|
+//! | `describe` | `null` | – | `{ processors: [{ name, files: string[], priority }], generator, onStart, onFinish }` |
+//! | `init` | `{ plugin, options, pack: { name, description?, format? } }` | – | `null` |
+//! | `process` | `{ processor, path }` | contents | final contents (`Uint8Array`) |
+//! | `generate` | `null` | – | `null` |
+//! | `onStart` | `null` | – | `null` |
+//! | `onFinish` | `{ processed, cached, generated, dropped }` | – | `null` |
+//!
+//! `process` reports the final path and drop flag with the `file` host call before
+//! returning. Host calls (`__rpp.call(name, value, bytes?)`):
+//!
+//! | name | value | bytes | reply |
+//! |---|---|---|---|
+//! | `file` | `{ path, dropped }` | – | `null` |
+//! | `files` / `source_files` | `{ glob? }` | – | `string[]` |
+//! | `read` / `read_source` | `{ path }` | – | `{ found }` + bytes |
+//! | `emit` | `{ path }` | contents | `null` |
+//! | `remove` | `{ path }` | – | `null` |
+//! | `emit_output` | `{ root, path }` | contents | `null` |
+//! | `toml.parse` | `{ text }` | – | value |
+//! | `toml.stringify` | `{ value }` | – | string |
+//! | `hash` | `{ algorithm: "xxh3" \| "sha256" \| "md5" \| "crc32" }` | data | string, or number for crc32 |
+//! | `glob.match` | `{ pattern, path }` | – | boolean |
+//! | `process.run` | `{ program, args, cwd?, env, timeout_ms? }` | stdin | `{ status, stderr }` + stdout |
+//!
+//! Generator host calls fail outside `generate`; `process.run` follows the Lua phase
+//! and permission rules. Paths are validated as relative pack paths.
+//!
+//! Bundle evaluation and `init` always run on a fixed clock seeded by the plugin id;
+//! calls use real time and randomness only in `native` mode or when both
+//! `permissions.clocks` and `permissions.random` are granted, otherwise a fixed clock.
+//!
+//! Each worker thread owns one [`rpp_js::Engine`]. A [`PluginInstance`] keeps one
+//! runtime for processors (module state persists between files) and loads a fresh
+//! runtime for each `generate`, `onStart` and `onFinish` call.
+//!
+//! [`PluginInstance`]: crate::model::PluginInstance
+
+mod factory;
+mod host;
+mod instance;
+
+pub use factory::{JsPluginFactory, JsPluginLimits};
+
+/// The embedded SDK, as `(relative path, contents)`. `rpp codegen` writes these
+/// under `.rpp/sdk/`.
+pub const SDK_FILES: &[(&str, &str)] = &[("index.ts", include_str!("sdk/index.ts"))];
+
+/// Whether a `plugin.toml` entry selects the JavaScript runtime.
+pub fn is_js_entry(entry: &str) -> bool {
+    [".ts", ".mts", ".js", ".mjs"]
+        .iter()
+        .any(|ext| entry.ends_with(ext))
+}

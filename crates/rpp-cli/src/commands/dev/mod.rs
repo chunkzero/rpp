@@ -12,9 +12,9 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use tokio::sync::broadcast;
 
-use crate::luals;
 use crate::project::Project;
 use crate::ui;
+use crate::{codegen, luals};
 
 use rebuild::{rebuild_loop, DevSession};
 use server::serve_http;
@@ -42,6 +42,7 @@ async fn serve(project: Project) -> Result<()> {
     let plugin_dirs = local_plugin_dirs(&project);
 
     let _ = luals::write_if_stale(&project.root.join(".rpp").join("api"));
+    codegen::write_best_effort(&project.root);
 
     // Watch before the initial build so edits made during it are not lost;
     // they queue in the channel until the rebuild loop starts.

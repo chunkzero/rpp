@@ -11,6 +11,8 @@ pub mod host;
 pub mod manifest;
 pub mod model;
 
+#[cfg(feature = "js")]
+pub mod js;
 #[cfg(feature = "lua")]
 pub mod lua;
 

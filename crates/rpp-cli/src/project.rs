@@ -14,6 +14,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use rpp::config::{Config, PluginConfig};
 use rpp::engine::{Engine, EngineBuilder};
 use rpp::host::{PackInfo, RuntimeAccess};
+use rpp::js::{JsPluginFactory, JsPluginLimits};
 use rpp::lua::{LuaPluginFactory, LuaPluginLimits};
 use rpp::manifest::PluginManifest;
 use rpp::model::PluginFactory;
@@ -349,16 +350,28 @@ impl Project {
             description: self.config.pack.description.clone(),
             format: self.config.pack.pack_format,
         };
-        let factory: Arc<dyn PluginFactory> = Arc::new(
-            LuaPluginFactory::load(
-                &root,
-                plugin_cfg.options.clone(),
-                pack,
-                LuaPluginLimits::from(&self.config.build.lua),
-                access,
+        let factory: Arc<dyn PluginFactory> = if rpp::js::is_js_entry(&manifest.entry) {
+            let lua = &self.config.build.lua;
+            let limits = JsPluginLimits {
+                memory_limit: lua.memory_limit_mb as usize * 1024 * 1024,
+                execution_limit: std::time::Duration::from_secs(lua.execution_deadline_seconds),
+            };
+            Arc::new(
+                JsPluginFactory::load(&root, plugin_cfg.options.clone(), pack, limits, access)
+                    .with_context(|| format!("loading TypeScript plugin `{id}`"))?,
             )
-            .with_context(|| format!("loading Lua plugin `{}`", manifest.id))?,
-        );
+        } else {
+            Arc::new(
+                LuaPluginFactory::load(
+                    &root,
+                    plugin_cfg.options.clone(),
+                    pack,
+                    LuaPluginLimits::from(&self.config.build.lua),
+                    access,
+                )
+                .with_context(|| format!("loading Lua plugin `{id}`"))?,
+            )
+        };
 
         Ok(LoadedFactory { id, root, factory })
     }

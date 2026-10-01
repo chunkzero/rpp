@@ -11,8 +11,9 @@ const DATETIME_KEY: &str = "$__toml_private_datetime";
 #[derive(Clone, Copy)]
 pub(crate) enum Datetimes {
     /// As RFC 3339 strings.
-    #[allow(dead_code)]
+    #[cfg_attr(not(feature = "js"), allow(dead_code))]
     Strings,
+    #[cfg_attr(not(feature = "lua"), allow(dead_code))]
     /// As `{ "$__toml_private_datetime": "<RFC 3339>" }`, which [`json_to_toml`]
     /// turns back into a datetime.
     Tagged,
