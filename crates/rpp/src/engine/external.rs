@@ -118,7 +118,15 @@ pub(super) struct PublicationPlan {
     next: OwnershipManifest,
     recovery: OwnershipManifest,
     stale: Vec<PathBuf>,
-    writes: Vec<(PathBuf, tempfile::NamedTempFile)>,
+    writes: Vec<StagedWrite>,
+}
+
+struct StagedWrite {
+    path: PathBuf,
+    file: tempfile::NamedTempFile,
+    output: OwnedOutput,
+    /// The destination was neither owned nor present during preparation.
+    claim: bool,
 }
 
 impl PublicationPlan {
@@ -190,7 +198,12 @@ impl PublicationPlan {
                 .as_file()
                 .sync_all()
                 .map_err(|e| Error::io(&path, e))?;
-            writes.push((path, staged));
+            writes.push(StagedWrite {
+                claim: !previous_by_path.contains_key(&path),
+                path,
+                file: staged,
+                output: output.clone(),
+            });
         }
         Ok(Self {
             next,
@@ -205,17 +218,39 @@ impl PublicationPlan {
         self.recovery.save(project_root)
     }
 
-    pub(super) fn publish(self, project_root: &Path) -> Result<ExternalChangeReport> {
+    pub(super) fn publish(mut self, project_root: &Path) -> Result<ExternalChangeReport> {
         let mut changes = ExternalChangeReport::default();
         for path in self.stale {
             if remove_owned_file(&path)? {
                 changes.removed.push(path);
             }
         }
-        for (path, staged) in self.writes {
-            staged
-                .persist(&path)
-                .map_err(|e| Error::io(&path, e.error))?;
+        for write in self.writes {
+            let StagedWrite {
+                path,
+                file,
+                output,
+                claim,
+            } = write;
+            if claim {
+                if let Err(e) = file.persist_noclobber(&path) {
+                    if e.error.kind() != std::io::ErrorKind::AlreadyExists || path.is_dir() {
+                        return Err(Error::io(&path, e.error));
+                    }
+                    // The file is not ours: stop recovery cleanup from deleting it.
+                    self.recovery.outputs.retain(|o| {
+                        (&o.root, &o.path, &o.plugin)
+                            != (&output.root, &output.path, &output.plugin)
+                    });
+                    self.recovery.save(project_root)?;
+                    return Err(Error::Build(format!(
+                        "refusing to overwrite unowned file {}",
+                        path.display()
+                    )));
+                }
+            } else {
+                file.persist(&path).map_err(|e| Error::io(&path, e.error))?;
+            }
             changes.written.push(path);
         }
         self.next.save(project_root)?;
@@ -353,6 +388,32 @@ mod tests {
         assert_eq!(
             std::fs::read_dir(root.join("generated")).unwrap().count(),
             1
+        );
+    }
+
+    #[test]
+    fn external_publish_refuses_file_created_after_prepare() {
+        let (project, config, store) = fixture();
+        let root = project.path();
+        let manifest = build_manifest(&store, &["a.txt", "b.txt"]);
+        let plan = PublicationPlan::prepare(&config, root, &manifest, &store).unwrap();
+        plan.record_recovery(root).unwrap();
+        std::fs::write(root.join("generated/b.txt"), "manual").unwrap();
+        let error = plan.publish(root).unwrap_err().to_string();
+        assert!(
+            error.contains("refusing to overwrite unowned file"),
+            "{error}"
+        );
+        assert_eq!(
+            std::fs::read(root.join("generated/b.txt")).unwrap(),
+            b"manual"
+        );
+        assert_eq!(OwnershipManifest::load(root).unwrap().outputs.len(), 1);
+        clean(&config, root).unwrap();
+        assert!(!root.join("generated/a.txt").exists());
+        assert_eq!(
+            std::fs::read(root.join("generated/b.txt")).unwrap(),
+            b"manual"
         );
     }
 
