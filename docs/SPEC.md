@@ -643,6 +643,6 @@ example and Spigot caller integration.
   grayscale component over a real PNG.
 
 Plugin projects can depend on the `rpp-cli` library in integration tests:
-`rpp_cli::project::Project::discover_isolated` loads a project without user-level state,
+`rpp_cli::project::Project::discover` loads the project containing a directory,
 and `build_engine()` returns the engine whose `build()` reports structured
 results (counts plus written/removed paths, including external outputs).

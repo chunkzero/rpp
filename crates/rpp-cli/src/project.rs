@@ -292,6 +292,7 @@ pub(crate) fn resolve_ts_packages(root: &Path) -> Result<BTreeMap<String, TsPack
         &rpp_version()?,
         &Update::None,
     )
+    .map_err(guide_legacy_package)
     .context("resolving dependencies")?;
     if lock != before {
         lock.save(&lock_path)
@@ -335,6 +336,19 @@ fn load_ts(root: &Path) -> Result<(Config, TsProject)> {
             inputs: evaluated.inputs,
         },
     ))
+}
+
+/// Replace a missing-`rpp.json` error for a directory holding only a legacy `plugin.toml` with
+/// the guided rejection from [`PluginManifest::load`].
+pub(crate) fn guide_legacy_package(error: rpp_fetch::Error) -> anyhow::Error {
+    if let rpp_fetch::Error::MissingPackageManifest(dir) = &error {
+        if dir.join("plugin.toml").is_file() {
+            if let Err(guided) = PluginManifest::load(dir) {
+                return guided.into();
+            }
+        }
+    }
+    error.into()
 }
 
 /// The rejection for a project still configured by `rpp.toml`.

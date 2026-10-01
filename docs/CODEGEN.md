@@ -66,7 +66,7 @@ The `rpp-cli` crate is also a library. Plugin repositories can drive builds from
 their own tests without loading user-global plugins:
 
 ```rust
-let mut project = rpp_cli::project::Project::discover_isolated("example/pack")?;
+let mut project = rpp_cli::project::Project::discover(std::path::Path::new("example/pack"))?;
 project.config.build.workers = 1;
 let result = project.build_engine()?.build()?;
 assert_eq!(result.generated, 1);

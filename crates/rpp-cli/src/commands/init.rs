@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{bail, Context, Result};
 use rpp_fetch::registry::PACKAGE_MANIFEST;
 
-use crate::project::CONFIG_FILE;
+use crate::project::{legacy_config_error, CONFIG_FILE, LEGACY_CONFIG_FILE};
 use crate::ui;
 
 /// Arguments for `rpp init`.
@@ -32,6 +32,9 @@ pub fn run(args: InitArgs) -> Result<()> {
     let target = args.dir.clone().unwrap_or_else(|| PathBuf::from("."));
     std::fs::create_dir_all(&target).with_context(|| format!("creating {}", target.display()))?;
 
+    if target.join(LEGACY_CONFIG_FILE).is_file() {
+        return Err(legacy_config_error());
+    }
     let config_path = target.join(CONFIG_FILE);
     if config_path.exists() {
         bail!(

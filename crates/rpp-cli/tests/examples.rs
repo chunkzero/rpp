@@ -205,6 +205,19 @@ fn mcmeta_validate_fails_on_bad_animation() {
 }
 
 #[test]
+fn mcmeta_validate_accepts_array_description() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = copy_pack(tmp.path());
+    let mcmeta = root.join("src/pack.mcmeta");
+    let mut pack = read_json(&mcmeta);
+    pack["pack"]["description"] = serde_json::json!([{ "text": "My pack" }]);
+    std::fs::write(&mcmeta, pack.to_string()).unwrap();
+
+    let out = build(&root, &[]);
+    assert!(out.status.success(), "{}", stderr(&out));
+}
+
+#[test]
 fn hash_rename_uses_processed_bytes() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path();

@@ -2,12 +2,15 @@
 
 mod common;
 
+#[cfg(unix)]
 use std::collections::BTreeMap;
+#[cfg(unix)]
 use std::path::Path;
 use std::sync::Arc;
 
 use common::mock::{cache_key, MockFactory};
 use common::Project;
+#[cfg(unix)]
 use rpp::config::{PluginConfig, PluginPermissions, SecurityMode};
 use rpp::engine::Engine;
 use rpp::model::{GeneratorHost, PluginFactory, ProcessOutcome};

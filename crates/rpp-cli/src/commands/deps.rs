@@ -11,7 +11,9 @@ use rpp_fetch::registry::{
 use semver::{Version, VersionReq};
 
 use crate::ordered_json::{Json, Object};
-use crate::project::{legacy_config_error, CONFIG_FILE, LEGACY_CONFIG_FILE, LOCK_FILE};
+use crate::project::{
+    guide_legacy_package, legacy_config_error, CONFIG_FILE, LEGACY_CONFIG_FILE, LOCK_FILE,
+};
 use crate::{atomic, ui};
 
 /// A located `rpp.json` project and its parsed manifest.
@@ -139,7 +141,9 @@ fn parse_add_spec(dir: &Path, root: &Path, spec: &str) -> Result<(String, String
         let target = target
             .canonicalize()
             .with_context(|| format!("reading {}", target.display()))?;
-        let name = read_package_summary(&target)?.name;
+        let name = read_package_summary(&target)
+            .map_err(guide_legacy_package)?
+            .name;
         let root = root.canonicalize().context("resolving the project root")?;
         return Ok((name, format!("path:{}", stored_path(&root, &target))));
     }
