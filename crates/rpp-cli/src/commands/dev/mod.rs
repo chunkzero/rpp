@@ -12,9 +12,9 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use tokio::sync::broadcast;
 
+use crate::codegen;
 use crate::project::Project;
 use crate::ui;
-use crate::{codegen, luals};
 
 use rebuild::{rebuild_loop, DevSession};
 use server::serve_http;
@@ -41,7 +41,6 @@ async fn serve(project: Project) -> Result<()> {
     let open_browser = project.config.dev.open;
     let plugin_dirs = local_plugin_dirs(&project);
 
-    let _ = luals::write_if_stale(&project.root.join(".rpp").join("api"));
     codegen::write_best_effort(&project.root);
 
     // Watch before the initial build so edits made during it are not lost;
@@ -84,16 +83,16 @@ mod tests {
     #[test]
     fn classify_kinds() {
         let src = PathBuf::from("/proj/src");
-        let cfg = vec![PathBuf::from("/proj/rpp.toml")];
+        let cfg = vec![PathBuf::from("/proj/rpp.config.ts")];
         let plugins = vec![PathBuf::from("/proj/plugins/hello")];
 
         assert_eq!(
-            classify_path(&PathBuf::from("/proj/rpp.toml"), &src, &cfg, &plugins),
+            classify_path(&PathBuf::from("/proj/rpp.config.ts"), &src, &cfg, &plugins),
             Some(ChangeKind::Config)
         );
         assert_eq!(
             classify_path(
-                &PathBuf::from("/proj/plugins/hello/init.lua"),
+                &PathBuf::from("/proj/plugins/hello/src/plugin.ts"),
                 &src,
                 &cfg,
                 &plugins

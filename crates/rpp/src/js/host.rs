@@ -13,7 +13,7 @@ use crate::host::process::{self, ProcessRequest};
 use crate::host::{hash, Phase, RuntimeAccess};
 use crate::model::GeneratorHost;
 use crate::util::glob;
-use crate::util::json_toml::{json_to_toml, toml_to_json, Datetimes};
+use crate::util::json_toml::{json_to_toml, toml_to_json};
 use crate::util::path::validate_relative;
 
 /// The host for one JavaScript call.
@@ -134,7 +134,7 @@ impl<'a> JsHost<'a> {
         if !access.allows_process() {
             return Err("process execution requires trusted process permissions".into());
         }
-        if !access.is_native() && !matches!(access.phase.get(), Phase::Generator | Phase::Hook) {
+        if !matches!(access.phase.get(), Phase::Generator | Phase::Hook) {
             return Err("process execution is only available in generators and hooks".into());
         }
         let remaining = self.deadline.saturating_duration_since(Instant::now());
@@ -238,7 +238,7 @@ impl Host for JsHost<'_> {
                 let args: TomlParseArgs = parse(name, value)?;
                 let parsed: toml::Value =
                     toml::from_str(&args.text).map_err(|e| format!("toml parse error: {e}"))?;
-                Ok(reply(toml_to_json(&parsed, Datetimes::Strings)))
+                Ok(reply(toml_to_json(&parsed)))
             }
             "toml.stringify" => {
                 let args: TomlStringifyArgs = parse(name, value)?;

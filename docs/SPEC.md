@@ -5,14 +5,14 @@ Read it before architectural changes, and update the relevant contract when beha
 changes. Contributor tooling and code conventions live in `AGENTS.md`.
 
 RPP is a build tool for Minecraft resource packs: it takes a source directory, runs it
-through a plugin pipeline (Lua and WASM plugins), and produces an optimized output
+through a plugin pipeline (TypeScript and WASM plugins), and produces an optimized output
 directory and a distributable `.zip`.
 
 ## Goals
 
-1. A pleasant, well-designed **Lua plugin system** (package-based, sandboxed, Lua 5.4).
+1. A pleasant, well-designed **TypeScript plugin system** (package-based, sandboxed, running on V8).
 2. A **WASM (WASIp2 component) plugin system** via wasmtime for heavier plugins.
-3. **Plugin distribution & discovery via GitHub repos** with a lockfile.
+3. **Plugin distribution & discovery via a registry** (`chunkzero/rpp-registry`) with a lockfile.
 4. **Incremental compilation**: content-addressed output cache; rebuilds touch only
    changed files.
 5. **Pack squashing**: built-in lossless optimization (JSON minify, PNG optimization,
@@ -25,15 +25,15 @@ directory and a distributable `.zip`.
 
 ```
 crates/
-  rpp/          # core library: config, plugin model, lua runtime, build engine, cache
-  rpp-fetch/    # plugin source resolution: github fetch, cache, lockfile, search
+  rpp/          # core library: config, plugin model, TypeScript plugin runtime, build engine, cache
+  rpp-fetch/    # plugin resolution: registry client, path deps, cache, lockfile, search
   rpp-squash/   # pack optimization: json minify, png optimize, zip, packsquash-extern
   rpp-wasm/     # wasmtime WASIp2 component host + WIT definitions
   rpp-js/       # Rolldown bundling + sandboxed V8 runtime (deno_core) for TS plugins
   rpp-cli/      # the `rpp` binary
 examples/
-  pack/         # a real, complete example resource pack project (rpp.toml, src/, plugins/)
-  plugins/      # standalone example plugin packages (lua + wasm guest crate)
+  pack/         # a real, complete example resource pack project (rpp.config.ts, rpp.json, src/, plugins/)
+  plugins/      # standalone example plugin packages (TypeScript + wasm guest crate)
 docs/           # SPEC.md (this file), plugin authoring guides
 ```
 
@@ -47,151 +47,86 @@ logs, builder patterns, rustfmt). Every crate must pass `cargo test`,
 
 ---
 
-## 1. Project configuration: `rpp.toml`
+## 1. Project configuration: `rpp.config.ts` and `rpp.json`
 
-TOML is the **only** project config format (the jsonc config is removed).
+A project is configured by `rpp.config.ts`, whose default export is the config object, and
+`rpp.json`, which lists the plugin packages the project depends on (see §6). A project
+that has `rpp.toml` and no `rpp.config.ts` is rejected with a pointer to
+[`docs/MIGRATING.md`](MIGRATING.md); having both is an error. Directory discovery walks up
+to the nearest `rpp.config.ts` (stopping at `rpp.toml`). User-global plugins are not
+supported and `~/.rpp/plugins.toml` is ignored.
 
-```toml
-[pack]
-name = "my-pack"                 # used for zip filename; required
-description = "An example pack"  # exposed to plugins as ctx.pack.description
-pack_format = 34                 # optional; validated against src/pack.mcmeta if present
+```ts
+import { defineConfig, plugin } from "#rpp/config";
+import jsonMinify from "#plugins/json-minify";
 
-[build]
-source = "src"                   # pack source dir (contains pack.mcmeta, assets/)
-output = "dist"                  # output dir; zip goes to dist/<name>.zip
-workers = 0                      # 0 = available_parallelism
-
-[build.lua]
-memory_limit_mb = 256            # per Lua state
-execution_deadline_seconds = 30  # per Lua call
-
-[build.wasm]
-memory_limit_mb = 512            # per component instance
-execution_deadline_seconds = 60  # per component call
-
-[build.squash]
-enabled = true
-engine = "builtin"               # "builtin" | "packsquash"
-json = true                      # minify .json/.mcmeta in output
-png = "fast"                     # false | "fast" | "max" (oxipng levels)
-zip = true                       # produce dist/<name>.zip
-strip = ["**/.DS_Store", "**/Thumbs.db", "**/*.psd", "**/*.xcf"]
-packsquash_binary = "packsquash"        # used when engine = "packsquash"
-packsquash_options = "packsquash.toml"  # optional passthrough options file
-
-[dev]
-host = "127.0.0.1"
-port = 8080
-open = false
-
-# Ordered plugin list. Order = tie-break order for processor priority.
-[[plugin]]
-source = "path:plugins/json-minify"      # local plugin package dir
-[plugin.options]                          # arbitrary; passed to the plugin
-pretty = false
-
-[[plugin]]
-source = "github:example/rpp-plugins"    # remote repo
-ref = "v1.2.0"                            # optional tag/branch/sha; default: default branch
-subdir = "plugins/atlas"                  # optional path within the repo
-
-[[plugin]]
-source = "path:plugins/codegen"
-security = "trusted"                      # "sandboxed" (default) | "trusted" | "native"
-[plugin.permissions]                      # host capabilities (trusted/native only)
-process = ["kotlinc"]                     # programs `rpp.process.run` may launch
-environment = ["JAVA_HOME"]               # host variables visible to processes/components
-read = ["data"]                           # WASI read-only preopens (project-relative)
-write = ["generated"]                     # WASI writable preopens
-network = false                           # WASI sockets
-clocks = false                            # host clocks (Lua `os.clock/time/date`, WASI clocks; otherwise fixed)
-random = false                            # host randomness (Lua `math.random`, WASI random)
-stdio = false                             # inherit stdout/stderr in components
-lua = ["load"]                            # extra Lua libraries: io | os | load | debug | package
-[plugin.outputs]                          # named roots for generated non-pack files
-kotlin = "../server/src/main/kotlin/generated"
+export default defineConfig({
+  pack: {
+    name: "my-pack", // used for zip filename; required
+    description: "An example pack", // exposed to plugins as ctx.pack.description
+    packFormat: 34, // optional; validated against src/pack.mcmeta if present
+  },
+  build: {
+    source: "src", // pack source dir (contains pack.mcmeta, assets/)
+    output: "dist", // output dir; zip goes to dist/<name>.zip
+    workers: 0, // 0 = available_parallelism
+    limits: { memoryLimitMb: 256, executionDeadlineSeconds: 30 }, // per plugin runtime / call
+    wasm: { memoryLimitMb: 512, executionDeadlineSeconds: 60 }, // per component instance / call
+    squash: {
+      enabled: true,
+      engine: "builtin", // "builtin" | "packsquash"
+      json: true, // minify .json/.mcmeta in output
+      png: "fast", // false | "off" | "fast" | "max" (oxipng levels)
+      zip: true, // produce dist/<name>.zip
+      strip: ["**/.DS_Store", "**/Thumbs.db", "**/*.psd", "**/*.xcf"],
+      packsquashBinary: "packsquash", // used when engine = "packsquash"
+      packsquashOptions: "packsquash.toml", // optional passthrough options file
+    },
+  },
+  dev: { host: "127.0.0.1", port: 8080, open: false },
+  // Ordered plugin list. Order = tie-break order for processor priority.
+  plugins: [
+    jsonMinify({ pretty: false }), // a plugin's config factory (its `config` module)
+    plugin("my-local-tool", { level: 2 }), // a plugin without a config module; untyped options
+    plugin("codegen", undefined, {
+      security: "trusted", // "sandboxed" (default) | "trusted"
+      permissions: {
+        // host capabilities (trusted only)
+        process: ["kotlinc"], // programs `process.run` may launch
+        environment: ["JAVA_HOME"], // host variables visible to processes/components
+        read: ["data"], // WASI read-only preopens (project-relative)
+        write: ["generated"], // WASI writable preopens
+        network: false, // WASI sockets
+        clocks: false, // WASI clocks; otherwise fixed
+        random: false, // host randomness
+        stdio: false, // inherit stdout/stderr in components
+      },
+      outputs: { kotlin: "../server/src/main/kotlin/generated" }, // named roots for non-pack files
+    }),
+  ],
+});
 ```
+
+- Keys are camelCase. `plugins` is an array of `{ plugin, options?, security?, permissions?,
+outputs? }`; `plugin` names an `rpp.json` dependency (`^[a-z0-9][a-z0-9_-]*$`). `plugin(name,
+options?, access?)` builds an entry, and a plugin's config factory (a `definePluginConfig`
+  default export, imported as `#plugins/<name>`) validates and normalizes its options first.
+- `#rpp/config` provides `defineConfig`, `plugin`, `definePluginConfig` and the config types.
+- Keys inside `options` and `outputs` are kept verbatim; `null` values are invalid.
+- The Lua-era keys (`build.lua`, `permissions.lua`, `security: "native"`, `id`, `source`, `ref`,
+  `subdir`) are rejected with a pointer to the migration guide. Errors blame `rpp.config.ts`.
 
 Any granted capability other than `outputs` makes the plugin non-deterministic
 from RPP's point of view and disables cache replay for it.
 
-`source` grammar:
-
-- `path:<relative-or-absolute-dir>` — local plugin package directory.
-- `github:<owner>/<repo>` — GitHub repository (optionally with `ref` and `subdir` keys).
-
-The CLI also accepts a bare plugin package directory for `rpp plugin add` and
-normalizes it to a `path:` source.
-
-Project plugin entries may also reference an installed global plugin by id:
-
-```toml
-[[plugin]]
-id = "window"
-[plugin.options]
-namespace = "window"
-```
-
-In that form, the plugin package is resolved from the user-level plugin store,
-while options, permissions, security mode, and output roots come from the
-project entry.
-
-### User-level plugins
-
-`rpp plugin add` prompts whether to install into the current project or globally
-for the current user. `--project` and `--global` select the scope non-interactively.
-Global plugin entries live in `~/.rpp/plugins.toml`, with GitHub pins in
-`~/.rpp/plugins.lock`. Directory sources are copied into `~/.rpp/plugins/<id>` so
-they can be used from unrelated projects without retaining a relative source path.
-
-Package manifests are resolved before loading executable code. A project plugin with
-the same plugin id overrides the global plugin; only effective entries load Lua or
-components, with remaining globals ordered before project entries. Both scopes use
-the same identity and capability validation; global entries require a source.
-
 Source `pack.mcmeta` format validation runs on each build, rather than configuration
 loading, so configuration-only commands such as `clean` work with malformed sources.
 
-### `rpp.config.ts`
+## 2. Plugin manifest: `rpp.json`
 
-A TypeScript project may configure itself with `rpp.config.ts`, whose default export is
-the config object. Keys are the camelCase forms of the `rpp.toml` schema
-(`pack.packFormat`, `build.squash.packsquashBinary`). Differences:
-
-- `plugins` is an array of `{ plugin, options?, security?, permissions?, outputs? }`;
-  `plugin` names an `rpp.json` dependency (`^[a-z0-9][a-z0-9_-]*$`).
-- `build.limits` holds the plugin runtime limits (`memoryLimitMb`,
-  `executionDeadlineSeconds`); `build.lua` is rejected.
-- `id`, `source`, `ref`, `subdir`, `permissions.lua` and `security: "native"` are rejected.
-- Keys inside `options` and `outputs` are kept verbatim; `null` values are invalid.
-
-A `[[plugin]]` entry in `rpp.toml` sets exactly one of `id`, `source` or `package`.
-
-## 2. Plugin manifest: `plugin.toml`
-
-A **plugin is a directory** ("plugin package") containing `plugin.toml`:
-
-```toml
-[plugin]
-id = "json-minify"          # ^[a-z0-9][a-z0-9_-]*$ ; unique within a project
-version = "1.2.0"           # semver
-description = "Minifies JSON files"
-authors = ["someone"]
-entry = "init.lua"          # Lua entry script relative to plugin root (default "init.lua")
-
-[component.compiler]        # optional named WASIp2 components callable from Lua
-module = "compiler.wasm"
-```
-
-`overrides = ["assets/*/textures/**"]` (in `[plugin]`; a top-level key in `rpp.json`) lists
-pack-path globs the plugin's generator may emit over or remove even when another source or
-plugin owns them. Entries are validated like other pack paths and globs.
-
-### `rpp.json` plugin packages
-
-A package may declare itself with `rpp.json` instead of `plugin.toml`; `rpp.json` is
-preferred when both exist.
+A **plugin is a directory** ("plugin package") containing `rpp.json`. A directory with
+`plugin.toml` and no `rpp.json` is a Lua plugin and is rejected with a pointer to the
+migration guide, as is an `entry` ending in `.lua`.
 
 ```json
 {
@@ -202,14 +137,18 @@ preferred when both exist.
   "entry": "src/plugin.ts",
   "config": "src/config.ts",
   "components": { "compiler": "window.wasm" },
-  "discover": { "windows": "*/window/**/window.ts" }
+  "discover": { "windows": "*/window/**/window.ts" },
+  "overrides": ["assets/*/textures/**"]
 }
 ```
 
-- `name` follows the plugin id grammar; `version` is semver; `rpp` is a semver range
-  checked during dependency resolution.
+- `name` follows the plugin id grammar (`^[a-z0-9][a-z0-9_-]*$`); `version` is semver; `rpp`
+  is a semver range checked during dependency resolution.
 - `entry` defaults to `src/plugin.ts` and must be a `.ts`, `.mts`, `.js` or `.mjs` file;
   `entry`, `config` (the config-factory module) and component paths are relative.
+- `components` maps component names to WASIp2 binaries callable with `components.load` (§5).
+- `overrides` lists pack-path globs the plugin's generator may emit over or remove even when
+  another source or plugin owns them. Entries are validated like other pack paths and globs.
 - `discover` maps names (plugin id grammar) to one glob each, relative to the pack source
   directory (`build.source`). Matching files are bundled with the plugin, so adding one needs
   no configuration change, and `ctx.discovered(name)` returns `{ path, namespace?, module }`
@@ -244,7 +183,7 @@ pub trait PluginFactory: Send + Sync {
     fn processor_key(&self) -> u64 { self.cache_key() }
     fn processors(&self) -> &[ProcessorDef];
     fn has_generator(&self) -> bool;
-    /// Instantiate for one worker thread (Lua states are per-worker).
+    /// Instantiate for one worker thread (V8 runtimes are per-worker).
     fn instantiate(&self) -> Result<Box<dyn PluginInstance>, Error>;
 }
 
@@ -272,8 +211,8 @@ pub trait GeneratorHost {
 
 Notes:
 
-- Per-plugin **options** (from `rpp.toml [plugin.options]`) are provided to the factory
-  at construction (as `toml::Value`/JSON) and exposed through the runtime context.
+- Per-plugin **options** (from `plugins[].options` in `rpp.config.ts`) are provided to the factory
+  at construction (as JSON-compatible values) and exposed through the runtime context.
   `GeneratorHost` itself has no `options()` method. Options are part of `cache_key()`.
 - **Processors are pure**: input = (file path, contents, options). They get NO
   filesystem access. This is what makes per-file incremental caching sound.
@@ -285,147 +224,101 @@ Notes:
 - Generators enumerate processed output files with `list_files` and raw source files
   with `list_source_files`. Both list reads are recorded for invalidation.
 - Processor chain for a file: all matching processors across all plugins, sorted by
-  `priority` ascending, ties broken by plugin order in `rpp.toml`, then by declaration
+  `priority` ascending, ties broken by plugin order in `rpp.config.ts`, then by declaration
   order within a plugin. A `Dropped` outcome stops the chain and excludes the file.
 - Plugin errors abort the build with a message attributing plugin id + processor +
   file path.
 
-## 4. Lua plugin system v2 (the centerpiece)
+## 4. TypeScript plugin system
 
-Engine: `mlua` with **vendored Lua 5.4** (`features = ["lua54", "vendored", "serde", "send"]`)
-— replaces LuaJIT (5.4 gives working memory limits and a cleaner sandbox story).
+Plugins are TypeScript (or JavaScript) modules bundled by Rolldown and run in a sandboxed V8
+isolate (`crates/rpp-js`, wired into `rpp` by the `js` feature). The entry module default-exports
+a plugin built with the SDK, imported as `#rpp` (written to `.rpp/sdk/index.ts` by `rpp codegen`,
+so it always matches the running rpp):
 
-### Authoring API
+```ts
+import { definePlugin, hash, path } from "#rpp";
 
-`init.lua` receives a preloaded `rpp` module via `require("rpp")` and returns a plugin
-built with it:
-
-```lua
-local rpp = require("rpp")
-local plugin = rpp.plugin()
-
--- Processor: parallel, per matching file. Pure: (ctx, file) only.
-plugin:processor("minify", {
-    files = { "**/*.json", "**/*.mcmeta" },  -- required, glob list
-    priority = 50,                            -- optional, default 0, lower runs first
-}, function(ctx, file)
-    local data = rpp.json.decode(file.text)
-    file.text = rpp.json.encode(data)         -- mutation is what counts; no return needed
-end)
-
--- Generator: sequential, after processing, sees all files.
-plugin:generator("atlas", function(ctx)
-    for _, path in ipairs(ctx:files("assets/*/textures/**/*.png")) do
-        local bytes = ctx:read(path)
-        -- ...
-    end
-    ctx:emit("assets/minecraft/atlases/blocks.json", rpp.json.encode(t))
-end)
-
-plugin:on_start(function(ctx) end)
-plugin:on_finish(function(ctx, stats) end)
-
-return plugin
+export default definePlugin<{ pretty?: boolean }>({
+  // Processors: parallel, per matching file. Pure: (ctx, file) only.
+  processors: {
+    minify: {
+      files: ["**/*.json", "**/*.mcmeta"], // glob or glob list; required
+      priority: 50, // optional, default 0, lower runs first
+      run(ctx, file) {
+        file.text = JSON.stringify(JSON.parse(file.text)); // assignment marks the file modified
+      },
+    },
+  },
+  // Generator: sequential, after processing, sees all files.
+  generate(ctx) {
+    for (const file of ctx.files("assets/*/textures/**/*.png")) {
+      const bytes = ctx.read(file)!;
+      // ...
+    }
+    ctx.emit("assets/minecraft/atlases/blocks.json", JSON.stringify(atlas));
+  },
+  onStart(ctx) {},
+  onFinish(ctx, stats) {},
+});
 ```
 
 ### Semantics
 
-- **file** (userdata) in processors: `file.path` (get/set, relative forward-slash
-  string; setting it renames the output), `file.bytes` / `file.text` (get/set, both are
-  Lua strings; two names for readability), `file:drop()` (exclude from output, stops
-  the chain). The runtime tracks whether mutation occurred to report
-  Unchanged/Modified/Dropped.
-- **ctx** (processors): `ctx.options` (plugin options as Lua table), `ctx.pack`
-  (`{ name, description, format }`), `ctx.log` (`debug|info|warn|error` functions).
-- **ctx** (generators): everything above plus `ctx:files(glob?) -> {string}`,
-  `ctx:source_files(glob?) -> {string}`,
-  `ctx:read(path) -> string|nil` (processed output), `ctx:read_source(path) -> string|nil`,
-  `ctx:load_source(path) -> value` (evaluate a source Lua file in the plugin sandbox;
-  recorded like `read_source`), `ctx:emit(path, contents)` (add or overwrite),
-  `ctx:remove(path)`, `ctx:emit_output(root, path, contents)` (write into a declared
-  `[plugin.outputs]` root).
-- Raising a Lua `error()` fails the build with plugin/processor/file attribution.
+- **file** in processors: `file.path` (get/set, relative forward-slash string; setting it
+  renames the output), `file.bytes` (`Uint8Array`) and `file.text` (UTF-8 view of `bytes`), both
+  get/set, and `file.drop()` (exclude from output, stops the chain). The runtime tracks whether
+  mutation occurred to report Unchanged/Modified/Dropped.
+- **ctx** (all handlers): `ctx.plugin` (the plugin name), `ctx.options` (plugin options), and
+  `ctx.pack` (`{ name, description?, format? }`).
+- **ctx** (generator, `onStart`, `onFinish`): additionally `ctx.discovered(name)` (§2).
+  Processors do not get it.
+- **ctx** (generator): additionally `files(glob?)`, `sourceFiles(glob?)`, `read(path)` and
+  `readText(path)` (processed output), `readSource(path)` and `readSourceText(path)` (raw source),
+  `emit(path, contents)` (add or overwrite), `remove(path)`, and `emitOutput(root, path, contents)`
+  (write into a root declared in the plugin's `outputs`). Contents are `Uint8Array | string`.
+  Reads are tracked for incremental rebuilds.
+- Throwing fails the build with plugin/processor/file attribution. `onFinish` receives the
+  build counts (`processed`, `cached`, `generated`, `dropped`).
 
-### Builtin modules (preloaded, available via `require`)
+### SDK modules
 
-- `rpp` — root: `rpp.plugin()`, plus re-exports of the submodules below.
-- `rpp.json` — `decode(str) -> value`, `encode(value, opts?) -> str` where
-  `opts = { pretty = false }`; `null` is the JSON null sentinel. `object(table?)`
-  and `array(table?)` mark a supplied table in place or create a new empty one.
-- `rpp.toml` — `decode(str)`, `encode(value)`, `object(table?)`, `array(table?)`.
-
-JSON/TOML decoding marks container identity, so empty objects/tables and arrays
-retain their type even after their entries are removed. JSON null uses
-`rpp.json.null`, including inside arrays; Lua `nil` removes a table entry.
-Encoding honors marked identity and rejects invalid keys. Plain empty tables
-encode as objects; nonempty plain tables with exactly the keys `1..n` encode as
-arrays, and other plain tables require string keys. Object keys are never
-stringified. Use constructors whenever empty table identity matters. Constructors
-replace a table's metatable with a protected shape marker; encoding reads raw
-entries without invoking metamethods. TOML uses the same conversion contract and
-rejects null anywhere instead of dropping values. Non-finite numbers are unsupported. Conversion in either direction
-allows at most 64 levels below the root and 100,000 values (including the root);
-encoding rejects cycles but permits shared subtrees within that work budget.
-Parser recursion limits may reject deeply nested text before conversion.
-
-Other builtin modules:
-
-- `rpp.hash` — `xxh3(str) -> hex string`, `sha256(str) -> hex`, `md5(str) -> hex`,
-  `crc32(str) -> integer`.
-- `rpp.path` — `join(...)`, `dirname(p)`, `basename(p)`, `ext(p)`, `with_ext(p, e)`,
-  `match(glob, p) -> bool`.
-- `rpp.log` — same functions as `ctx.log` (for module-level logging).
-- `rpp.str` — `starts_with`, `ends_with`, `split(s, sep)`, `trim(s)`.
-- `rpp.component` — `load(name) -> component` for components declared in `plugin.toml`;
-  `component:call(export, ...)`. See §5.
-- `rpp.process` — `run{ program, args?, env?, stdin?, cwd?, timeout? } -> { status,
-stdout, stderr }`. Requires a `permissions.process` grant (or native mode) and is
-  only callable from generators and hooks. The shorter of `timeout` and the
-  remaining Lua deadline bounds stdin writing, process execution, and stdout/stderr
-  draining, including inherited descendant pipes. RPP closes its pipes and terminates
-  remaining members of the invocation's process group (Unix) or job object (Windows)
-  on completion or error. Descendants that deliberately leave that group or job are
-  outside this cleanup boundary. Each captured output stream is limited to 16 MiB;
-  excess bytes are drained and discarded.
+- `hash` — `xxh3(data) -> hex string`, `sha256(data) -> hex`, `md5(data) -> hex`,
+  `crc32(data) -> number`; `data` is a `Uint8Array` or string.
+- `path` — `join(...)`, `dirname(p)`, `basename(p)`, `ext(p)`, `withExt(p, e)`,
+  `match(glob, p) -> boolean`.
+- `toml` — `parse(text)`, `stringify(value)`.
+- `components` — `load(name)` for components declared in `rpp.json`; see §5.
+- `process` — `run({ program, args?, env?, stdin?, cwd?, timeoutMs? }) -> { status, stdout,
+stderr }`. Requires `security: "trusted"` with the program in `permissions.process` and is
+  only callable from the generator and hooks. The shorter of `timeoutMs` and the remaining
+  execution deadline bounds stdin writing, process execution, and stdout/stderr draining,
+  including inherited descendant pipes. RPP closes its pipes and terminates remaining members
+  of the invocation's process group (Unix) or job object (Windows) on completion or error.
+  Descendants that deliberately leave that group or job are outside this cleanup boundary. Each
+  captured output stream is limited to 16 MiB; excess bytes are drained and discarded.
+- JSON uses the language's own `JSON.parse` and `JSON.stringify`; object keys keep insertion order.
 
 ### Module resolution & sandbox
 
-- `require(name)`: builtin `rpp*` modules; otherwise resolved **within the plugin
-  package directory** (`name.lua` or `name/init.lua`, dots map to `/`). Nothing else.
-  No C modules, no `package.cpath`. Entry and module sources are captured once at
-  factory load; validation and all instances execute those same immutable bytes.
-  Reload the factory to pick up package edits. Confined file symlinks are captured
-  under their module paths, including targets with non-Lua extensions. Escaping
-  symlinks and directory symlinks are rejected during package capture.
-- Available stdlib: `string`, `table`, deterministic `math` (without
-  `random`/`randomseed`), `utf8`, `select`, `pairs`, `ipairs`,
-  `next`, `tonumber`, `tostring`, `type`, `pcall`, `xpcall`, `error`, `assert`,
-  `setmetatable`/`getmetatable`/`rawget`/`rawset`/`rawequal`/`rawlen`. **No** `io`,
-  no `os`, no host randomness, no
-  `load`/`loadstring`/`dofile`/`loadfile`, no `debug`, no `collectgarbage` (stub ok),
-  no global `print` (map it to `rpp.log.info`). Trusted clock/random grants expose
-  the restricted `os.clock`/`os.time`/`os.date` and `math.random` APIs respectively
-  and disable cache replay for that plugin.
-- Trusted plugins may be granted extra libraries via `permissions.lua`. `load`,
-  `loadfile`, and `dofile` are bound to the plugin's `_ENV`, and `package` exposes only
-  search paths, so a grant never reaches the real global table or native loading.
-- Each plugin gets its own environment table (`_ENV`); plugins cannot see each other's
-  globals. Memory and per-call time limits per Lua state come from `[build.lua]`.
+- Imports resolve within the plugin package, to `#rpp`, `#rpp/config`, `#plugins/<name>` for
+  packages with a config module, and to npm dependencies inlined from `node_modules`. `node:`
+  imports are rejected. There is no filesystem, network, clock or randomness access: the
+  isolate gets deterministic host calls only, and trusted clock/random grants disable cache
+  replay for that plugin.
+- Each plugin gets its own isolate; plugins cannot see each other's globals. Memory and per-call
+  time limits per runtime come from `build.limits`.
 
 ### Execution model
 
-- One Lua state **per plugin, per worker thread**. This keeps memory limits,
-  module caches, globals, and component handles isolated between plugins while
-  still giving every worker an independent instance.
-- Loading = parse `plugin.toml`, run `entry` in the sandbox, collect the returned
-  plugin builder's processors/generators/hooks. Processor defs (patterns/priority) are
-  extracted at load time on the main thread (a validation load), then re-instantiated
-  per worker via `PluginFactory::instantiate`.
+- One runtime **per plugin, per worker thread**. This keeps memory limits, module state and
+  component handles isolated between plugins while still giving every worker an independent
+  instance.
+- Loading = read `rpp.json`, bundle `entry` (and discovered modules), run it in the sandbox,
+  and collect the default export's processors/generator/hooks. Processor defs (patterns/priority)
+  are extracted at load time on the main thread (a validation load), then re-instantiated per
+  worker via `PluginFactory::instantiate`.
 - Generators and lifecycle hooks run on a single dedicated instance (main thread).
-- `cache_key` for a Lua plugin: xxh3 over the captured `*.lua` module sources (sorted
-  by package path), the captured entry regardless of its extension, `plugin.toml`,
-  every declared component binary, canonicalized options, and host-access/output-root
-  policy. Package capture assumes files are not concurrently replaced while loading.
 - A TypeScript plugin has two keys. `processor_key` (chains, `compile_processors`) is xxh3 over
   the rpp version, manifest, component binaries, canonical options, host-access policy and the
   content of every bundled file outside the source directory (the plugin package).
@@ -443,8 +336,8 @@ stdout, stderr }`. Requires a `permissions.process` grant (or native mode) and i
 ## 5. WASM component system (`crates/rpp-wasm`)
 
 Host for **WASIp2 components** using `wasmtime` (component model +
-`wasmtime-wasi`). rpp plugins remain Lua packages; Lua loads named components
-declared in `plugin.toml`.
+`wasmtime-wasi`). rpp plugins remain TypeScript packages; they load named components
+declared in `rpp.json`.
 
 ### Host crate API (normative shape)
 
@@ -460,15 +353,15 @@ impl WasmInstance {
 }
 ```
 
-- WASM is available as named WASIp2 components loaded by Lua with
-  `rpp.component.load(name)`. Components export ordinary WIT functions; rpp
+- WASM is available as named WASIp2 components loaded by plugins with
+  `components.load(name)`. Components export ordinary WIT functions; rpp
   validates imports against plugin capabilities and provides WASI without
   filesystem preopens, network, passed env, or process execution by default.
-- `rpp component bindgen <wasm> --name <component> --out <file>` generates a Lua
-  wrapper from a component's export schema.
+- `rpp codegen` generates `.rpp/generated/<name>.d.ts` from a built component's export schema,
+  typing `components.load(name)`.
 - Component compilation uses an in-memory content-digest map and a persistent
   project-local Wasmtime cache. Replacing a component binary invalidates the plugin
-  cache key even when its path and Lua wrapper are unchanged.
+  cache key even when its path and TypeScript are unchanged.
 - Permissionless WASI random imports receive deterministic streams. Granting
   `permissions.random = true` enables host randomness and disables build replay for
   that plugin.
@@ -477,82 +370,29 @@ impl WasmInstance {
   Generator and hook calls may reuse an instance for a sequential component workflow.
 - Resource limits: memory cap via `StoreLimits` and epoch interruption.
 
-### Lua component value representation
+### TypeScript component value representation
 
-WIT `option<T>` always uses `{ tag = "none" }` or
-`{ tag = "some", value = payload }`, including top-level arguments and returns.
-`nil` and unwrapped payloads are not option values. Nested options keep every tag.
-Results use exactly one branch, `{ ok = payload }` or `{ err = payload }`;
-a branch with no WIT payload uses `true`. Check branch presence with `~= nil`,
-since a boolean payload may be `false`. Lists and tuples use dense 1-based tables
-(exact integer keys `1..n`); tagged options preserve every position, so no separate
-length field is needed. `list<u8>` also accepts strings and returns strings.
-Records use named fields and variants use `{ tag = case, value = payload }`
-(with no `value` for a payloadless case). Bindgen emits these same shapes.
+Values are converted from the component type signature (the full table is in
+[`WASM_PLUGINS.md`](WASM_PLUGINS.md)). `list<u8>` is a `Uint8Array`, `s64`/`u64` are `bigint`,
+records use camelCase fields, variants are `{ tag, val }`, and an `option<T>` is `T` or
+`undefined`, except that an option nested in an option uses `{ tag: "some" | "none", val }`.
+A `result` return unwraps to its `ok` payload and throws `ComponentError` carrying the `err`
+payload. Traps and exceeded deadlines throw `ComponentTrapError` and `ComponentTimeoutError`
+and make the handle unusable.
 
-## 6. Plugin fetch & discovery (`crates/rpp-fetch`)
+## 6. Plugin resolution & discovery (`crates/rpp-fetch`)
 
-Standalone, blocking (`ureq`), no async.
-
-### Resolution
-
-```rust
-pub enum PluginSource { Path { dir: PathBuf }, GitHub { owner: String, repo: String, ref_: Option<String>, subdir: Option<String> } }
-impl PluginSource { pub fn parse(s: &str, ref_: Option<&str>, subdir: Option<&str>) -> Result<Self>; }
-
-pub struct Resolver { /* cache_root, http agent, optional token (GITHUB_TOKEN env) */ }
-impl Resolver {
-    /// Resolve to a local directory containing plugin.toml.
-    /// GitHub: resolve ref -> commit sha (REST API), download codeload tarball,
-    /// extract into <cache_root>/github/<owner>/<repo>/<sha>/, return dir (+ subdir).
-    pub fn resolve(&self, source: &PluginSource, locked: Option<&LockedPlugin>) -> Result<ResolvedPlugin>;
-}
-
-pub struct ResolvedPlugin { pub root: PathBuf, pub pinned: Option<Pin> }  // Pin { ref_, commit }
-```
-
-- Cache root default: `~/.cache/rpp/plugins` (use `dirs` or honor `RPP_CACHE_DIR`).
-- If a lockfile pin exists and is already in cache → **no network at all**.
-- `ureq` with JSON; send `User-Agent: rpp`; use `GITHUB_TOKEN` if set.
-
-### Lockfile `rpp.lock` (TOML, lives next to rpp.toml; managed by CLI)
-
-```toml
-version = 2
-[[plugin]]
-source = "github:example/rpp-plugins"
-ref = "v1.2.0"          # resolved ref (or default branch name)
-requested_ref = "v1.2.0" # omitted when the default branch was requested
-commit = "<full sha>"
-subdir = "plugins/atlas"
-```
-
-`rpp-fetch` owns source parsing and normalization; core config retains source fields
-without interpreting their grammar. Plugin identity is the normalized source,
-requested ref, and subdirectory. Multiple plugins may use different subdirectories
-or refs of one repository. Commands retain the selected entry; ambiguous source
-selectors require a plugin id.
-
-`rpp-fetch` provides `Lockfile::load/save` and lookup/update by that full identity.
-Default-branch requests are distinct from explicit requests for the branch name,
-even when they resolve to the same commit. Version 1 locks load as explicit-ref
-pins because they did not record default-request provenance; default-branch
-requests must resolve once to obtain a version 2 pin. Path sources are never locked.
-
-### Discovery / search
-
-`rpp plugin search <query>` → GitHub repository search restricted to topic
-**`rpp-plugin`** (`https://api.github.com/search/repositories?q=topic:rpp-plugin+<query>`),
-returning name/full_name/description/stars. Provide
-`pub fn search(query: &str) -> Result<Vec<RepoHit>>` with the HTTP layer factored so
-tests can run against a local mock (trait or base-URL injection). **Tests must not hit
-the network** — use local fixtures.
+Standalone, blocking (`ureq`), no async. Plugins come from the registry or from local
+directories; GitHub sources (`github:`), the GitHub codeload fetcher and `rpp.lock` versions 1
+and 2 were removed (a `github:` dependency or an old lockfile is rejected with a pointer to
+[`docs/MIGRATING.md`](MIGRATING.md)). Its public API is `Error`, `Incompatibility`, `Result`,
+`HttpConfig`, `DEFAULT_REGISTRY_BASE`, `USER_AGENT`, the `registry` module and the `MAX_*`
+download and archive limits. Tests must not hit the network; the HTTP layer takes a base URL so
+tests run against a local mock.
 
 ### Registry dependencies (`rpp.json`)
 
-Projects that use TypeScript plugins declare them in `rpp.json` instead of `[[plugin]]`
-sources. The legacy `path:`/`github:` sources and `rpp.lock` version 2 remain for
-`rpp.toml` projects until Lua support is removed.
+Projects declare the plugins they use in `rpp.json` and configure them in `rpp.config.ts`.
 
 ```json
 {
@@ -583,6 +423,8 @@ sources. The legacy `path:`/`github:` sources and `rpp.lock` version 2 remain fo
   `version`, `rpp` range, `url` and `sha256`. A pin is reused while its `requested`
   spec is unchanged; reused pins with a cached archive make no network requests.
   Yanked versions still install when pinned. `path:` dependencies are never locked.
+- `rpp.lock` lives next to `rpp.json` and is managed by the CLI; a version 1 or 2 lock is
+  rejected with the instruction to delete it and rebuild.
 - `rpp add <name>[@range] | path:<dir>` adds a dependency (a bare name records
   `^<selected version>`), `rpp remove <name>` removes one, `rpp update [name...]`
   re-selects pinned versions within their ranges, and `rpp search <query>` searches
@@ -595,7 +437,7 @@ output contents).
 
 Manifest:
 
-- `global_key`: xxh3 of (rpp version, canonicalized full `rpp.toml` build-relevant
+- `global_key`: xxh3 of (rpp version, canonicalized full `rpp.config.ts` build-relevant
   sections). Plugin keys are not part of it: a plugin change invalidates only the chains
   containing its processors (`processor_key`) and its own generator (`cache_key`).
 - Per source file: `{ fingerprint: {mtime_ns, size, xxh3}, chain_key: u64, outputs: Vec<{ path, object: u64 }> }`
@@ -684,25 +526,25 @@ pub fn run_packsquash(binary: &str, pack_dir: &Path, zip_path: &Path, options_fi
 
 ## 9. CLI (`crates/rpp-cli`, binary name `rpp`)
 
-- `rpp init [dir]` — interactive scaffold: rpp.toml, src/pack.mcmeta, sample plugin,
-  `.rpp/` gitignore, LuaLS definition files (`.rpp/api/*.lua`) for editor completion.
+- `rpp init [dir]` — scaffold a TypeScript project: `rpp.config.ts`, `rpp.json`,
+  `plugins/hello/{rpp.json,src/plugin.ts}`, `pack.mcmeta` and `.gitignore`.
 - `rpp build [--no-cache] [--no-squash] [--jobs N]` — full pipeline:
   resolve plugins (lockfile-aware) → build (incremental) → squash → zip.
   Console output: per-phase timing, cache hit counts, squash savings.
 - `rpp dev` — watch + incremental rebuild + static file server + SSE (`/events`)
   live-reload events listing changed paths. Plugin file changes reload that plugin and
-  invalidate accordingly; rpp.toml changes do a full reload.
+  invalidate accordingly; `rpp.config.ts` and `rpp.json` changes do a full reload.
 - `rpp clean` — remove output + cache.
 - `rpp codegen` — write the TypeScript SDK (`.rpp/sdk/`) and `.rpp/tsconfig.json`, and a
-  root `tsconfig.json` if missing, in the nearest directory with `rpp.toml` or `plugin.toml`.
+  root `tsconfig.json` if missing, in the nearest directory with `rpp.config.ts` or `rpp.json`, and a
+  `.rpp/generated/<name>.d.ts` for each built component a plugin manifest declares.
   `build` and `dev` do this best-effort.
 - `rpp check` — `codegen`, then run `tsc -p tsconfig.json --noEmit`. The compiler is
   `RPP_TSC`, else `toolchain/typescript/7.0.2/tsc` beside the `rpp` executable (bundled in
   release archives), else `tsc` on PATH (TypeScript 7+). A non-zero exit fails the command.
-- `rpp plugin add <source> [--ref r] [--subdir d] [--project|--global]` /
-  `remove <id> [--global]` / `list [--global]` /
-  `update [id] [--global]` / `search <query>` — manages `[[plugin]]` entries
-  (toml_edit, preserve formatting) and the corresponding lockfile.
+- `rpp add <name>[@range] | path:<dir>`, `rpp remove <name>`, `rpp update [name...]` and
+  `rpp search <query>` manage the `rpp.json` dependencies and `rpp.lock` (§6). The Lua-era
+  `rpp plugin add|remove|list|update|search` and `rpp component` commands are gone.
 
 - `rpp plugin pack [dir] [--out <dir>] [--json]` — bundles a plugin with `rpp.json` into
   `<name>-<version>.rpp.tgz` plus `<file>.sha256` (`<hex>  <file>`), written to `--out`
@@ -722,10 +564,9 @@ sha256}` on stdout. `rpp.json` must set `rpp`. The archive holds the manifest wi
   as an installing rpp does.
 
 Prompts and command status use cliclack on stderr. Redirected stderr and `TERM=dumb`
-receive plain status lines; command results such as plugin listings and search hits
-stay on stdout. Prompts require both stdin and stderr to be terminals. Otherwise,
-`init` accepts defaults and plugin installation defaults to project scope; `--yes`,
-`--project`, and `--global` bypass their respective prompts. Cancelling a prompt
+receive plain status lines; command results such as search hits stay on stdout. Prompts
+require both stdin and stderr to be terminals. Otherwise, `init` accepts defaults; `--yes`
+bypasses its prompts. Cancelling a prompt
 exits with status 130. `NO_COLOR` disables color.
 
 Diagnostics and ongoing dev-server activity use tracing on stderr, controlled by
@@ -786,19 +627,22 @@ example and Spigot caller integration.
 
 ## 10. Examples (must actually work)
 
-- `examples/pack/` — a complete project: `rpp.toml` (uses local example plugins +
-  squash enabled), `src/pack.mcmeta`, real `assets/minecraft/...` content (a few
+- `examples/pack/` — a complete project: `rpp.config.ts` and `rpp.json` (local example plugins
+  as `path:` dependencies + squash enabled), a pack-local `catalog` plugin that uses `discover`
+  for item definitions, `src/pack.mcmeta`, real `assets/minecraft/...` content (a few
   models, blockstates, lang files, textures — small hand-made PNGs are fine, generated
   by a checked-in script or tiny valid PNGs committed directly).
 - `examples/plugins/json-minify/` (processor), `examples/plugins/mcmeta-validate/`
   (generator that validates pack.mcmeta + all `*.mcmeta` against pack_format),
   `examples/plugins/hash-rename/` (generator renaming processed output via content
   hash), `examples/plugins/grayscale-wasm/` (processor backed by a
-  WASIp2 component built from a Rust guest crate; `just example-wasm`).
-- Integration tests in the workspace build `examples/pack` end-to-end and assert real
-  outputs (minified JSON, zip contents, incremental no-op second build).
+  WASIp2 component built from a Rust guest crate; `just example-wasm`). Each is an `rpp.json`
+  package with `src/plugin.ts`.
+- `crates/rpp-cli/tests/examples.rs` builds `examples/pack` through the CLI and asserts real
+  outputs (minified JSON, zip contents, incremental no-op second build), and runs the
+  grayscale component over a real PNG.
 
 Plugin projects can depend on the `rpp-cli` library in integration tests:
-`rpp_cli::project::Project::discover_isolated` loads a project without user-global
-plugins, and `build_engine()` returns the engine whose `build()` reports structured
+`rpp_cli::project::Project::discover_isolated` loads a project without user-level state,
+and `build_engine()` returns the engine whose `build()` reports structured
 results (counts plus written/removed paths, including external outputs).

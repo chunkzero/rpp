@@ -62,7 +62,7 @@ class DevClientTest {
                                                 + reload(A)
                                                 + "data:"
                                                 + " {\"type\":\"build_error\",\"message\":\"bad"
-                                                + " Lua\"}\n\n"
+                                                + " plugin\"}\n\n"
                                                 + "data:"
                                                 + " {\"type\":\"reload\",\"changed\":[\"x\"]}\n\n"
                                                 + reload(B)

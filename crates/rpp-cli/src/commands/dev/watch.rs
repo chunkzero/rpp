@@ -228,52 +228,15 @@ pub fn classify_path(
     None
 }
 
-/// The set of local (`path:`) plugin directories to watch.
+/// The package directories to watch.
 pub fn local_plugin_dirs(project: &Project) -> Vec<PathBuf> {
-    let mut dirs = Vec::new();
-    collect_local_plugin_dirs(
-        &mut dirs,
-        &project.user_plugins.plugins,
-        &project.user_plugins.root,
-    );
-    collect_local_plugin_dirs(&mut dirs, &project.config.plugins, &project.root);
-    if let Some(ts) = &project.ts {
-        dirs.extend(
-            project
-                .config
-                .plugins
-                .iter()
-                .filter_map(|plugin| ts.packages.get(plugin.package.as_deref()?))
-                .map(|package| package.dir.clone()),
-        );
-    }
-    dirs
-}
-
-fn collect_local_plugin_dirs(
-    dirs: &mut Vec<PathBuf>,
-    plugins: &[rpp::config::PluginConfig],
-    root: &Path,
-) {
-    for plugin in plugins {
-        if let Some(rest) = plugin
-            .source
-            .as_deref()
-            .and_then(|source| source.strip_prefix("path:"))
-        {
-            let rest = rest.trim();
-            if rest.is_empty() {
-                continue;
-            }
-            let dir = PathBuf::from(rest);
-            let abs = if dir.is_absolute() {
-                dir
-            } else {
-                root.join(dir)
-            };
-            dirs.push(abs);
-        }
-    }
+    project
+        .config
+        .plugins
+        .iter()
+        .filter_map(|plugin| project.ts.packages.get(plugin.label()))
+        .map(|package| package.dir.clone())
+        .collect()
 }
 
 #[cfg(test)]
@@ -293,7 +256,7 @@ mod tests {
         let mut watcher = spawn_watcher(
             root.path(),
             &source,
-            &root.path().join("rpp.toml"),
+            &root.path().join("rpp.config.ts"),
             vec![original.clone()],
             tx,
         )

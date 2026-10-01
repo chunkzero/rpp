@@ -26,8 +26,9 @@ class RppIntegrationTest {
         try (var socket = new ServerSocket(0)) {
             port = socket.getLocalPort();
         }
-        var config = project.resolve("rpp.toml");
-        String validConfig = "[pack]\nname = 'jvm-test'\n[dev]\nport = " + port + "\n";
+        var config = project.resolve("rpp.config.ts");
+        String validConfig =
+                "export default { pack: { name: 'jvm-test' }, dev: { port: " + port + " } };\n";
         Files.writeString(config, validConfig);
         Files.createDirectory(project.resolve("src"));
         Path source = project.resolve("src/pack.mcmeta");
@@ -71,7 +72,7 @@ class RppIntegrationTest {
             Files.writeString(source, "{\"changed\":true}");
             assertNull(updates.poll(1, TimeUnit.SECONDS));
 
-            Files.writeString(config, "not valid TOML");
+            Files.writeString(config, "export default {");
             assertNotNull(buildFailures.poll(10, TimeUnit.SECONDS));
             assertTrue(updates.isEmpty());
             verifyDownload(second);

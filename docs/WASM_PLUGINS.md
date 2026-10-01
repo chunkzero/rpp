@@ -1,38 +1,38 @@
 # WASM Components In Plugins
 
-rpp plugins are Lua packages. A plugin may also ship named WASIp2 components
-and call them from Lua with `rpp.component`.
+A TypeScript plugin may ship named WASIp2 components and call them with
+`components.load` from the plugin SDK. Declare each component in the plugin's
+`rpp.json`:
 
-```toml
-[plugin]
-id = "my-plugin"
-version = "1.0.0"
-entry = "init.lua"
-
-[component.compiler]
-module = "compiler.wasm"
+```json
+{
+  "name": "my-plugin",
+  "version": "1.0.0",
+  "entry": "src/plugin.ts",
+  "components": { "compiler": "compiler.wasm" }
+}
 ```
 
-```lua
-local component = require("rpp.component").load("compiler")
+```ts
+import { components, definePlugin } from "#rpp";
 
-local result = component:call("compile", "assets/example/input.json")
-if result.err ~= nil then
-    error(result.err)
-end
+export default definePlugin({
+  generate(ctx) {
+    const { exports } = components.load("compiler");
+    const files = exports.compile("assets/example/input.json");
+    for (const file of files) ctx.emit(file.path, file.contents);
+  },
+});
 ```
 
-Use `rpp component bindgen` to generate a small Lua wrapper from a component
-binary:
+`components.load` is only usable inside handlers (processors, `generate`, `onStart`,
+`onFinish`). Each call creates an independent instance that is released when the handler
+finishes.
 
-```bash
-rpp component bindgen compiler.wasm --name compiler --out compiler.lua
-```
-
-The generated wrapper calls `rpp.component.load("<name>")`, exposes stable Lua
-functions for each exported component function, and includes structural
-LuaCATS annotations derived recursively from records, lists, options, variants,
-and results.
+`rpp codegen` (also run best-effort by `build` and `dev`) writes
+`.rpp/generated/<name>.d.ts` for every built component, which augments `ComponentMap` so
+`components.load("compiler")` is fully typed. Components that are not built yet are
+skipped with a warning. `rpp check` type-checks the project against those declarations.
 
 ## Component Shape
 
@@ -51,21 +51,24 @@ world compiler {
 }
 ```
 
-Lua values are converted from the component type signature. `list<u8>` accepts
-and returns Lua strings; records are Lua tables; `result<T, E>` is represented
-as `{ ok = value }` or `{ err = value }`. Type/range errors identify the
-component export and parameter that failed conversion.
+Exports are functions on `exports` by camelCase name; exports of a named interface are
+grouped under the interface's camelCase name. Values are converted from the component type
+signature:
 
-Options always use `{ tag = "none" }` or `{ tag = "some", value = payload }`.
-For example, `some(none)` is `{ tag = "some", value = { tag = "none" } }`,
-and `ok(none)` is `{ ok = { tag = "none" } }`. Use these tags for arguments
-as well as returned values; migrate previous `nil`/bare option arguments to these
-tables and regenerate wrappers. `some(false)` keeps `value = false`.
-A result branch without a WIT payload uses `true`, such as `{ ok = true }`.
-Check result branches with `~= nil`, because `{ ok = false }` is valid.
-Lists and tuples are dense 1-based tables with exactly the keys `1..n`; holes and
-extra keys are rejected. Options occupy real entries, including trailing `none`,
-so a separate length field is unnecessary.
+| WIT            | TypeScript                                                              |
+| -------------- | ----------------------------------------------------------------------- |
+| `list<u8>`     | `Uint8Array`                                                            |
+| `s64`, `u64`   | `bigint`                                                                |
+| `record`       | object with camelCase fields                                            |
+| `variant`      | `{ tag, val }` (no `val` for a payloadless case)                        |
+| `enum`         | the case name as a string                                               |
+| `flags`        | object of camelCase booleans                                            |
+| `option<T>`    | `T` or `undefined`; nested options use `{ tag: "some" \| "none", val }` |
+| `result<T, E>` | `T` on `ok`; throws `ComponentError` with the `err` payload             |
+
+Type and range errors identify the component export and parameter that failed conversion.
+A trap or exceeded deadline throws `ComponentTrapError` or `ComponentTimeoutError`, and the
+handle is unusable afterwards.
 
 ## WASI And Trust
 
@@ -74,7 +77,7 @@ environment variables, or process execution. Standard Rust WASI imports such as
 closed stdio, environment access with no variables, terminal probing, exit, and
 random seed are linkable so ordinary Rust components instantiate. Without a
 random grant, random interfaces receive deterministic streams so cached and cold
-builds agree; `permissions.random = true` opts into host randomness and disables
+builds agree; `permissions.random: true` opts into host randomness and disables
 replay for that plugin.
 
 Calls from processor callbacks instantiate a fresh guest for each file. This
@@ -82,28 +85,27 @@ prevents guest globals or deterministic random-stream position from depending on
 worker scheduling. Calls from a sequential generator or hook reuse the handle's
 instance, which permits multi-call compiler workflows without cross-file state.
 
-Component binaries participate in the Lua plugin cache key. RPP also caches
+Component binaries participate in the plugin's cache key. RPP also caches
 Wasmtime compilation by component content in memory and in `.rpp/cache/wasmtime`.
-Per-instance memory and per-call time limits come from `[build.wasm]
-memory_limit_mb` and `execution_deadline_seconds` in `rpp.toml`.
+Per-instance memory and per-call time limits come from `build.wasm`
+(`memoryLimitMb`, `executionDeadlineSeconds`) in `rpp.config.ts`.
 
 [`examples/plugins/grayscale-wasm`](../examples/plugins/grayscale-wasm) is a
 complete processor plugin with a Rust guest crate.
 
-Project config may grant broader access only outside sandboxed mode:
+Project config may grant broader access only with `security: "trusted"`:
 
-```toml
-[[plugin]]
-source = "path:plugins/my-plugin"
-security = "trusted"
-
-[plugin.permissions]
-read = ["data"]
-write = ["generated"]
-environment = ["MY_ENV_VAR"]
-process = ["my-tool"]
+```ts
+plugin("my-plugin", undefined, {
+  security: "trusted",
+  permissions: {
+    read: ["data"],
+    write: ["generated"],
+    environment: ["MY_ENV_VAR"],
+    process: ["my-tool"],
+  },
+});
 ```
 
-`security = "native"` is the unsafe mode: Lua gains native standard-library
-access and `rpp.process.run` may launch any program. Use it only for trusted
-local tooling.
+`process` lets the plugin's generator and hooks start the listed programs with
+`process.run` from the SDK.

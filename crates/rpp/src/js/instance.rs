@@ -99,9 +99,7 @@ impl JsPluginInstance {
     }
 
     fn clock(&self, parts: &[&str]) -> Clock {
-        if self.access.is_native()
-            || (self.access.permissions.clocks && self.access.permissions.random)
-        {
+        if self.access.permissions.clocks && self.access.permissions.random {
             return Clock::Real;
         }
         let mut writer = HashWriter::new();

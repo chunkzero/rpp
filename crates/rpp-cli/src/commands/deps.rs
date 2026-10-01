@@ -11,7 +11,7 @@ use rpp_fetch::registry::{
 use semver::{Version, VersionReq};
 
 use crate::ordered_json::{Json, Object};
-use crate::project::{CONFIG_FILE, LOCK_FILE, TS_CONFIG_FILE};
+use crate::project::{legacy_config_error, CONFIG_FILE, LEGACY_CONFIG_FILE, LOCK_FILE};
 use crate::{atomic, ui};
 
 /// A located `rpp.json` project and its parsed manifest.
@@ -23,10 +23,10 @@ struct Manifest {
 impl Manifest {
     /// Find the nearest ancestor of `dir` holding a project file. A missing `rpp.json`
     /// is an empty manifest when `create` is set (rooted at `dir`), else an error.
-    fn discover(dir: &Path, command: &str, create: bool) -> Result<Self> {
+    fn discover(dir: &Path, create: bool) -> Result<Self> {
         let start = std::path::absolute(dir).context("reading current directory")?;
         let found = start.ancestors().find(|d| {
-            [PACKAGE_MANIFEST, CONFIG_FILE, TS_CONFIG_FILE]
+            [PACKAGE_MANIFEST, CONFIG_FILE, LEGACY_CONFIG_FILE]
                 .iter()
                 .any(|name| d.join(name).is_file())
         });
@@ -39,8 +39,8 @@ impl Manifest {
             ),
         };
         let path = root.join(PACKAGE_MANIFEST);
-        if !path.is_file() && root.join(CONFIG_FILE).is_file() {
-            bail!("this project is configured by {CONFIG_FILE}; use `rpp plugin {command}` there");
+        if root.join(LEGACY_CONFIG_FILE).is_file() && !root.join(CONFIG_FILE).is_file() {
+            return Err(legacy_config_error());
         }
         let doc = if path.is_file() {
             let text = std::fs::read_to_string(&path)
@@ -110,7 +110,7 @@ fn resolve_all(manifest: &Manifest, lock: &mut PackageLock, update: &Update) -> 
 /// Run `rpp add`.
 pub fn add(dir: &Path, specs: &[String]) -> Result<()> {
     ui::intro("Add dependencies");
-    let mut manifest = Manifest::discover(dir, "add", true)?;
+    let mut manifest = Manifest::discover(dir, true)?;
     let mut added = Vec::new();
     for spec in specs {
         let (name, value) = parse_add_spec(dir, &manifest.root, spec)?;
@@ -183,7 +183,7 @@ fn stored_path(root: &Path, target: &Path) -> String {
 /// Run `rpp remove`.
 pub fn remove(dir: &Path, names: &[String]) -> Result<()> {
     ui::intro("Remove dependencies");
-    let mut manifest = Manifest::discover(dir, "remove", false)?;
+    let mut manifest = Manifest::discover(dir, false)?;
     for name in names {
         if manifest.dependencies_mut()?.remove(name).is_none() {
             bail!("`{name}` is not a dependency in {PACKAGE_MANIFEST}");
@@ -209,7 +209,7 @@ pub fn remove(dir: &Path, names: &[String]) -> Result<()> {
 /// Run `rpp update`.
 pub fn update(dir: &Path, names: &[String]) -> Result<()> {
     ui::intro("Update dependencies");
-    let manifest = Manifest::discover(dir, "update", false)?;
+    let manifest = Manifest::discover(dir, false)?;
     let registry_names: Vec<String> = manifest
         .dependencies()?
         .into_iter()

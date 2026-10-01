@@ -87,7 +87,7 @@ previous packs. Stop both commands with Ctrl-C when finished. The sample format
 88.0 matches [Minecraft 26.2](https://feedback.minecraft.net/hc/en-us/articles/46690753273997-Minecraft-Java-Edition-26-2).
 The offer and response APIs follow [Minestom's resource-pack guide](https://minestom.net/docs/adventure/resource-packs).
 
-To exercise failures, make `rpp.toml` invalid after the server starts: RPP reports a
+To exercise failures, make `rpp.config.ts` invalid after the server starts: RPP reports a
 build error and players keep the previous pack. Restore it without changing pack
 content: no duplicate offer. Stop and restart RPP: the integration logs a
 connection failure, retries every two seconds, and resumes automatically.

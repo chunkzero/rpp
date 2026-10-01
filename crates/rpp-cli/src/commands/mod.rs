@@ -4,7 +4,6 @@ pub mod build;
 pub mod check;
 pub mod clean;
 pub mod codegen;
-pub mod component;
 pub mod deps;
 pub mod dev;
 pub mod init;

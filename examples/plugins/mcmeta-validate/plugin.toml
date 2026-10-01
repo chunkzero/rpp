@@ -1,6 +1,0 @@
-[plugin]
-id = "mcmeta-validate"
-version = "1.0.0"
-description = "Validates pack.mcmeta and texture animation .mcmeta files."
-authors = ["rpp examples"]
-entry = "init.lua"

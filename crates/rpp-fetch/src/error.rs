@@ -7,27 +7,14 @@ use thiserror::Error;
 /// Result type alias used throughout this crate.
 pub type Result<T> = std::result::Result<T, Error>;
 
-/// Errors produced by plugin source resolution, caching, lockfile, and discovery.
+/// Errors produced by registry resolution, caching, and the lockfile.
 #[derive(Debug, Error)]
 pub enum Error {
-    /// A plugin source string could not be parsed.
-    #[error("invalid plugin source `{source_str}`: {reason}")]
-    InvalidSource {
-        /// The offending source string.
-        source_str: String,
-        /// A human-readable explanation of why parsing failed.
-        reason: String,
-    },
-
     /// A path source pointed at a directory that does not exist.
     #[error("plugin path `{0}` does not exist or is not a directory")]
     PathNotFound(PathBuf),
 
-    /// A resolved plugin directory is missing its `plugin.toml` manifest.
-    #[error("plugin directory `{0}` does not contain a plugin.toml")]
-    MissingManifest(PathBuf),
-
-    /// A `plugin.toml` or `rpp.json` manifest could not be parsed.
+    /// An `rpp.json` manifest could not be parsed.
     #[error("failed to parse `{path}`: {reason}")]
     InvalidManifest {
         /// Path to the manifest that failed to parse.
@@ -51,15 +38,6 @@ pub enum Error {
         /// Path to the lockfile.
         path: PathBuf,
         /// Parse failure detail.
-        reason: String,
-    },
-
-    /// A GitHub API request failed or returned an unexpected status.
-    #[error("github request to `{url}` failed: {reason}")]
-    GitHub {
-        /// The URL that was requested.
-        url: String,
-        /// Failure detail (status code or transport error).
         reason: String,
     },
 

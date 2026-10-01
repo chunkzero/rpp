@@ -175,13 +175,7 @@ mod tests {
         std::fs::write(source.join("b.txt"), "b").unwrap();
         let sources = super::super::discovery::discover(&source).unwrap();
         std::fs::remove_file(source.join("b.txt")).unwrap();
-        let config = crate::config::Config::parse(
-            r#"[pack]
-name = "test"
-"#,
-            "rpp.toml",
-        )
-        .unwrap();
+        let config = crate::config::Config::new("test");
         let engine = Engine::builder(config)
             .project_root(dir.path())
             .build_engine()

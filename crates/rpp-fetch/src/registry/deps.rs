@@ -43,6 +43,13 @@ impl DependencySpec {
             }
             return Ok(Self::Path(PathBuf::from(dir)));
         }
+        if spec.starts_with("github:") {
+            return Err(invalid(
+                name,
+                spec,
+                "`github:` sources are no longer supported; publish the plugin to the registry or use `path:`; see https://github.com/chunkzero/rpp/blob/main/docs/MIGRATING.md",
+            ));
+        }
         let trimmed = spec.trim();
         if trimmed.is_empty() || trimmed == "*" {
             return Err(invalid(name, spec, "a version range must be explicit"));
@@ -193,6 +200,16 @@ mod tests {
             DependencySpec::Path(PathBuf::from("../local"))
         );
         assert!(DependencySpec::parse("a", "path:").is_err());
+    }
+
+    #[test]
+    fn github_spec_is_rejected_with_guide() {
+        let err = DependencySpec::parse("a", "github:owner/repo").unwrap_err();
+        assert!(
+            err.to_string()
+                .ends_with("; see https://github.com/chunkzero/rpp/blob/main/docs/MIGRATING.md"),
+            "{err}"
+        );
     }
 
     #[test]

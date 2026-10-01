@@ -15,8 +15,8 @@ use tempfile::TempDir;
 fn write_plugin(source: &str) -> TempDir {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(
-        dir.path().join("plugin.toml"),
-        "[plugin]\nid = \"ts-test\"\nversion = \"1.0.0\"\nentry = \"src/plugin.ts\"\n",
+        dir.path().join("rpp.json"),
+        r#"{ "name": "ts-test", "version": "1.0.0", "entry": "src/plugin.ts" }"#,
     )
     .unwrap();
     write_file(dir.path(), "src/plugin.ts", source);
@@ -506,28 +506,4 @@ export default definePlugin({
         .unwrap();
     let error = instance.generate(&mut Recorder::default()).unwrap_err();
     assert!(error.to_string().contains("must not contain"), "{error}");
-}
-
-#[test]
-fn loads_plugin_with_only_rpp_json() {
-    let dir = tempfile::tempdir().unwrap();
-    write_file(
-        dir.path(),
-        "rpp.json",
-        r#"{ "name": "json-only", "version": "1.0.0" }"#,
-    );
-    write_file(
-        dir.path(),
-        "src/plugin.ts",
-        r##"
-import { definePlugin } from "#rpp";
-export default definePlugin({
-  processors: { set: { files: "**/*", run(ctx, file) { file.text = "ok"; } } },
-});
-"##,
-    );
-    let factory = load(dir.path(), "");
-    let mut instance = factory.instantiate().unwrap();
-    let (file, _) = process(instance.as_mut(), "set", "a.txt", "x");
-    assert_eq!(text(&file), "ok");
 }

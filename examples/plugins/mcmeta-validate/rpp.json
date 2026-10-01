@@ -1,0 +1,6 @@
+{
+  "name": "mcmeta-validate",
+  "version": "1.0.0",
+  "description": "Validates pack.mcmeta and texture animation .mcmeta files.",
+  "entry": "src/plugin.ts"
+}

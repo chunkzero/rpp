@@ -1,12 +1,12 @@
 # rpp
 
 `rpp` is a Rust toolchain for building Minecraft resource packs with
-incremental Lua and WASIp2 component plugins.
+incremental TypeScript and WASIp2 component plugins.
 
-The project is currently `0.1.0-alpha.0`. It provides sandboxed Lua 5.4
-plugins, Wasmtime-hosted component plugins, content-addressed incremental
-builds, GitHub plugin locking, deterministic release archives, and a watch
-server with live-reload events.
+The project is currently `0.1.0-alpha.0`. It provides sandboxed TypeScript
+plugins running on V8, Wasmtime-hosted component plugins, a plugin registry with
+a lockfile, content-addressed incremental builds, deterministic release archives,
+and a watch server with live-reload events.
 
 ## Install
 
@@ -46,26 +46,29 @@ engine's unsquashed output; optimization is applied to the release zip only.
 
 ## Configuration
 
-```toml
-[pack]
-name = "my-pack"
-description = "My resource pack"
-pack_format = 34
+A project is configured by `rpp.config.ts`, and lists the plugins it uses in `rpp.json`:
 
-[build]
-source = "src"
-output = "dist"
+```ts
+import { defineConfig } from "#rpp/config";
+import jsonMinify from "#plugins/json-minify";
 
-[build.squash]
-enabled = true
-engine = "builtin"
-json = true
-png = "fast"
-zip = true
-
-[[plugin]]
-source = "path:plugins/example"
+export default defineConfig({
+  pack: { name: "my-pack", description: "My resource pack", packFormat: 34 },
+  build: {
+    source: "src",
+    output: "dist",
+    squash: { enabled: true, engine: "builtin", json: true, png: "fast", zip: true },
+  },
+  plugins: [jsonMinify({ pretty: false })],
+});
 ```
+
+```json
+{ "dependencies": { "json-minify": "^1.0.0", "my-plugin": "path:plugins/my-plugin" } }
+```
+
+Dependencies are registry version ranges or `path:` directories. Projects that used
+`rpp.toml` and Lua plugins follow [docs/MIGRATING.md](docs/MIGRATING.md).
 
 Build paths must be separate, project-relative directories. Plugin-produced
 paths are normalized relative pack paths and cannot escape the source or output
@@ -80,17 +83,18 @@ rpp init [dir]
 rpp build [--no-cache] [--no-squash] [--jobs N]
 rpp dev
 rpp clean
-rpp plugin add|remove|list|update|search
-
-# Add from GitHub or a plugin package directory; choose project or global scope
-rpp plugin add ../window
-rpp plugin add github:owner/repo --global
+rpp add <name>[@range] | path:<dir>
+rpp remove <name>
+rpp update [name...]
+rpp search <query>
+rpp codegen
+rpp check
+rpp plugin pack [dir]
 ```
 
-Prompts and build status go to stderr; plugin list and search results go to stdout.
+Prompts and build status go to stderr; search results go to stdout.
 Redirected status output is plain text. Prompts use defaults when stdin or stderr
-is redirected; use `init --yes` or `plugin add --project` / `--global` to skip them
-in a terminal. Set `NO_COLOR=1` to disable color, and use `-v` / `-vv` or `RUST_LOG`
+is redirected; use `init --yes` to skip them in a terminal. Set `NO_COLOR=1` to disable color, and use `-v` / `-vv` or `RUST_LOG`
 to control diagnostic and dev-server logs.
 
 `rpp dev` serves loose output. Builtin squash and PackSquash are release archive
@@ -98,7 +102,8 @@ operations and do not run in dev mode.
 
 ## Plugin Authoring
 
-- [Lua plugin guide](docs/LUA_PLUGINS.md)
+- [Publishing a plugin](docs/publishing.md)
+- [Migrating from Lua](docs/MIGRATING.md)
 - [WASM plugin guide](docs/WASM_PLUGINS.md)
 - [Authoritative specification](docs/SPEC.md)
 
@@ -109,8 +114,8 @@ WASIp2 component plugin (`just example-wasm` builds its guest crate).
 
 Install [mise](https://mise.jdx.dev/getting-started.html) and a C compiler and native
 linker (for example, `build-essential` on Ubuntu or Xcode Command Line Tools on
-macOS). RPP's `mlua` dependency builds bundled Lua 5.4 from C source, and the final
-Rust executable needs a native linker.
+macOS). The final Rust executable
+needs a native linker.
 
 From the repository root:
 
@@ -131,14 +136,13 @@ you can run `just` and `cargo` directly.
 Use `just check-crate <crate>`, `just lint-crate <crate>`, and
 `just test-crate <crate> <test-filter>` while iterating. Check and lint recipes accept
 Cargo feature flags. `just check-features` checks the core library independently in
-its core-only, default Lua, and Lua + WASM + tracing configurations.
+its core-only, `js`, and `js` + WASM + tracing configurations.
 
 `just fmt` formats Rust (including standalone WASM guests), Java, Gradle Kotlin
-scripts, Lua, configuration, documentation, and the justfile. `just fmt-check`
-checks the same files. Scoped recipes are `fmt-rust`, `fmt-jvm`, `fmt-lua`, and
-`fmt-config`; use `fmt-rust --check` or the other recipes' `-check` variants to
+scripts, configuration, documentation, and the justfile. `just fmt-check`
+checks the same files. Scoped recipes are `fmt-rust`, `fmt-jvm`, and `fmt-config`; use `fmt-rust --check` or the other recipes' `-check` variants to
 check without writing. Generated files, lockfiles, and pack data used by examples
-are excluded from configuration formatting. Lua formatting uses Lua 5.4 syntax.
+are excluded from configuration formatting.
 
 Shared VS Code and Zed settings select these formatters. For VS Code, install the
 recommended extensions and launch it with `mise exec -- code .` so its formatter

@@ -2,8 +2,6 @@
   "editor.detectIndentation": false,
   "editor.rulers": [100],
   "rust-analyzer.rustfmt.overrideCommand": ["mise", "exec", "--", "rustfmt", "--emit", "stdout"],
-  "stylua.searchBinaryInPATH": true,
-  "stylua.disableVersionCheck": true,
   "oxc.enable.oxlint": false,
   "customLocalFormatters.formatters": [
     {
@@ -27,11 +25,7 @@
     "editor.defaultFormatter": "jkillian.custom-local-formatters",
     "editor.formatOnSave": true
   },
-  "[lua]": {
-    "editor.defaultFormatter": "JohnnyMorganz.stylua",
-    "editor.formatOnSave": true
-  },
-  "[json][jsonc][yaml][toml][markdown]": {
+  "[json][jsonc][yaml][toml][markdown][typescript]": {
     "editor.defaultFormatter": "oxc.oxc-vscode",
     "editor.formatOnSave": true
   }

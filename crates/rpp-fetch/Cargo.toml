@@ -1,6 +1,6 @@
 [package]
 name = "rpp-fetch"
-description = "Plugin source resolution, caching, lockfile, and GitHub discovery for rpp"
+description = "Plugin registry resolution, caching, and lockfile for rpp"
 
 version.workspace = true
 edition.workspace = true

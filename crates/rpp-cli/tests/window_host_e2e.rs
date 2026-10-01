@@ -1,4 +1,4 @@
-//! Window-shaped end-to-end host contract: Lua authoring sources call a typed
+//! Window-shaped end-to-end host contract: TypeScript authoring sources call a typed
 //! WASIp2 component and emit binary pack files plus declared external sources.
 
 use std::path::{Path, PathBuf};
@@ -9,18 +9,15 @@ use rpp_cli::project::Project;
 
 const INPUT_BYTES: &[u8] = &[0x89, b'P', b'N', b'G', 0, 0xff, 0x1a, b'\n'];
 
-/// Build the project at `root` with one worker and no user-global plugins.
+/// Build the project at `root` with one worker.
 fn build(root: &Path) -> anyhow::Result<BuildResult> {
-    let mut project = Project::discover_isolated(root)?;
+    let mut project = Project::discover(root)?;
     project.config.build.workers = 1;
     Ok(project.build_engine()?.build()?)
 }
 
 fn clean(root: &Path) {
-    Project::discover_isolated(root)
-        .unwrap()
-        .clean_artifacts()
-        .unwrap();
+    Project::discover(root).unwrap().clean_artifacts().unwrap();
 }
 
 /// Sorted `(relative path, bytes)` snapshot of a directory tree.
@@ -84,113 +81,107 @@ fn build_component(target_dir: &Path, v2: bool) -> PathBuf {
     target_dir.join("wasm32-wasip2/debug/window_host_component.wasm")
 }
 
+fn write(root: &Path, rel: &str, contents: impl AsRef<[u8]>) {
+    let path = root.join(rel);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(path, contents).unwrap();
+}
+
+fn config(hud_shaders: bool) -> String {
+    format!(
+        r##"import {{ defineConfig, plugin }} from "#rpp/config";
+
+export default defineConfig({{
+  pack: {{ name: "window-host-fixture", packFormat: 84 }},
+  build: {{ source: "src", output: "dist", workers: 1 }},
+  plugins: [
+    plugin(
+      "window-host",
+      {{ namespace: "window", kotlinPackage: "dev.example.generated", hudShaders: {hud_shaders} }},
+      {{ outputs: {{ kotlin: "server/generated" }} }},
+    ),
+  ],
+}});
+"##
+    )
+}
+
 fn scaffold(root: &Path, component: &Path) {
-    std::fs::write(
-        root.join("rpp.toml"),
-        r#"[pack]
-name = "window-host-fixture"
-pack_format = 84
-
-[build]
-source = "src"
-output = "dist"
-workers = 1
-
-[[plugin]]
-source = "path:plugin"
-[plugin.options]
-namespace = "window"
-kotlin_package = "dev.example.generated"
-hud_shaders = true
-[plugin.outputs]
-kotlin = "server/generated"
-"#,
-    )
-    .unwrap();
-
-    let sources = root.join("src/window");
-    std::fs::create_dir_all(&sources).unwrap();
-    std::fs::write(
-        root.join("src/pack.mcmeta"),
+    write(root, "rpp.config.ts", config(true));
+    write(
+        root,
+        "rpp.json",
+        r#"{ "dependencies": { "window-host": "path:plugin" } }"#,
+    );
+    write(
+        root,
+        "src/pack.mcmeta",
         r#"{"pack":{"pack_format":84,"description":"fixture"}}"#,
-    )
-    .unwrap();
-    std::fs::write(
-        sources.join("ui.lua"),
-        r#"return { windows = { { name = "fixture" } } }"#,
-    )
-    .unwrap();
-    std::fs::write(sources.join("input.bin"), INPUT_BYTES).unwrap();
+    );
+    write(
+        root,
+        "src/window/ui.json",
+        r#"{ "windows": [{ "name": "fixture" }] }"#,
+    );
+    write(root, "src/window/input.bin", INPUT_BYTES);
 
-    let plugin = root.join("plugin");
-    std::fs::create_dir_all(&plugin).unwrap();
-    std::fs::copy(component, plugin.join("compiler.wasm")).unwrap();
-    std::fs::write(
-        plugin.join("plugin.toml"),
-        r#"[plugin]
-id = "window-host"
-version = "0.1.0"
-entry = "init.lua"
-overrides = ["window/**"]
+    write(
+        root,
+        "plugin/rpp.json",
+        r#"{
+  "name": "window-host",
+  "version": "0.1.0",
+  "entry": "src/plugin.ts",
+  "overrides": ["window/**"],
+  "components": { "compiler": "compiler.wasm" }
+}"#,
+    );
+    std::fs::copy(component, root.join("plugin/compiler.wasm")).unwrap();
+    write(
+        root,
+        "plugin/src/plugin.ts",
+        r##"import { components, definePlugin } from "#rpp";
 
-[component.compiler]
-module = "compiler.wasm"
-"#,
-    )
-    .unwrap();
-    std::fs::write(
-        plugin.join("init.lua"),
-        r#"local rpp = require("rpp")
-local json = require("rpp.json")
-local compiler = require("rpp.component").load("compiler")
-local plugin = rpp.plugin()
+interface Options {
+  namespace: string;
+  kotlinPackage: string;
+  hudShaders?: boolean;
+}
 
-plugin:generator("window", function(ctx)
-    local project = {
-        themes = {},
-        windows = {},
-        huds = {},
-        options = { hud_shaders = ctx.options.hud_shaders == true },
-        target = { pack_format = ctx.pack.format },
+export default definePlugin<Options>({
+  generate(ctx) {
+    const compiler = components.load("compiler");
+    const project = {
+      themes: [],
+      windows: [] as unknown[],
+      huds: [],
+      options: { hud_shaders: ctx.options.hudShaders === true },
+      target: { pack_format: ctx.pack.format },
+    };
+    const files: { path: string; contents: Uint8Array }[] = [];
+    for (const path of ctx.sourceFiles("window/**")) {
+      if (path.endsWith(".json")) {
+        const document = JSON.parse(ctx.readSourceText(path)!);
+        project.windows.push(...(document.windows ?? []));
+      } else {
+        files.push({ path, contents: ctx.readSource(path)! });
+      }
+      ctx.remove(path);
     }
-    local files = {}
-    for _, path in ipairs(ctx:source_files("window/**")) do
-        if string.sub(path, -4) == ".lua" then
-            local document = ctx:load_source(path)
-            for _, window in ipairs(document.windows or {}) do
-                project.windows[#project.windows + 1] = window
-            end
-        else
-            files[#files + 1] = { path = path, contents = ctx:read_source(path) }
-        end
-        ctx:remove(path)
-    end
 
-    local result = compiler:call(
-        "compile",
-        ctx.options.namespace,
-        json.encode(project),
-        files,
-        { tag = "some", value = ctx.options.kotlin_package }
-    )
-    if result.err ~= nil then
-        error(result.err)
-    end
-    for _, file in ipairs(result.ok.files) do
-        ctx:emit(file.path, file.contents)
-    end
-    for _, file in ipairs(result.ok["kotlin-files"]) do
-        ctx:emit_output("kotlin", file.path, file.contents)
-    end
-    for _, warning in ipairs(result.ok.warnings) do
-        ctx.log.warn(warning)
-    end
-end)
-
-return plugin
-"#,
-    )
-    .unwrap();
+    const result = compiler.exports.compile(
+      ctx.options.namespace,
+      JSON.stringify(project),
+      files,
+      ctx.options.kotlinPackage,
+    );
+    for (const file of result.files) ctx.emit(file.path, file.contents);
+    for (const file of result.kotlinFiles) ctx.emitOutput("kotlin", file.path, file.contents);
+    for (const warning of result.warnings) console.warn(warning);
+  },
+});
+"##,
+    );
 }
 
 #[test]
@@ -226,7 +217,7 @@ fn window_shaped_component_build_replays_and_invalidates() {
         std::fs::read(root.join("dist/assets/window/generated.bin")).unwrap(),
         expected_v1
     );
-    assert!(!root.join("dist/window/ui.lua").exists());
+    assert!(!root.join("dist/window/ui.json").exists());
     assert!(!root.join("dist/window/input.bin").exists());
     assert_eq!(
         std::fs::read(root.join("server/generated/WindowPack.kt")).unwrap(),
@@ -289,11 +280,7 @@ fn window_component_diagnostic_keeps_stable_plugin_context() {
     let component = build_component(&component_target, false);
     scaffold(&root, &component);
 
-    let config_path = root.join("rpp.toml");
-    let config = std::fs::read_to_string(&config_path)
-        .unwrap()
-        .replace("hud_shaders = true", "hud_shaders = false");
-    std::fs::write(&config_path, config).unwrap();
+    write(&root, "rpp.config.ts", config(false));
 
     let error = format!("{:#}", build(&root).unwrap_err());
     assert!(
@@ -321,42 +308,46 @@ fn component_options_round_trip_without_losing_positions_or_branches() {
         .join("option-guest");
     let component = build_component(&target, false);
     scaffold(&root, &component);
-    std::fs::write(
-        root.join("plugin/init.lua"),
-        r#"
-local rpp = require("rpp")
-local component = rpp.component.load("compiler")
-local plugin = rpp.plugin()
-local function none() return { tag = "none" } end
-local function some(value) return { tag = "some", value = value } end
-plugin:generator("round-trip", function(ctx)
-    local values = {
-        items = { none(), some(false), none() },
-        pair = { some(false), none() },
-        nested = { none(), some(none()), some(some(false)) },
-        success = { ok = none() },
-        failure = { err = none() },
-        boolean = { ok = false },
-        empty = { ok = true },
+    write(
+        &root,
+        "plugin/src/plugin.ts",
+        r##"import { components, definePlugin } from "#rpp";
+
+const check = (condition: boolean, message: string): void => {
+  if (!condition) throw new Error(message);
+};
+
+export default definePlugin({
+  generate(ctx) {
+    const compiler = components.load("compiler");
+    let values: any = {
+      items: [undefined, false, undefined],
+      pair: [false, undefined],
+      nested: [{ tag: "none" }, { tag: "some", val: undefined }, { tag: "some", val: false }],
+      success: { tag: "ok", val: undefined },
+      failure: { tag: "err", val: undefined },
+      boolean: { tag: "ok", val: false },
+      empty: { tag: "ok" },
+    };
+    for (let round = 0; round < 2; round++) {
+      values = compiler.exports.roundTripOptions(values);
+      check(values.items.length === 3 && values.items[0] === undefined, "items");
+      check(values.items[1] === false && values.items[2] === undefined, "items");
+      check(values.pair.length === 2 && values.pair[0] === false, "pair");
+      check(values.pair[1] === undefined, "pair");
+      check(values.nested[0].tag === "none", "nested none");
+      check(values.nested[1].tag === "some" && values.nested[1].val === undefined, "nested some");
+      check(values.nested[2].val === false, "nested value");
+      check(values.success.tag === "ok" && values.success.val === undefined, "success");
+      check(values.failure.tag === "err" && values.failure.val === undefined, "failure");
+      check(values.boolean.tag === "ok" && values.boolean.val === false, "boolean");
+      check(values.empty.tag === "ok", "empty");
     }
-    for _ = 1, 2 do
-        values = component:call("round-trip-options", values)
-        assert(#values.items == 3 and values.items[1].tag == "none")
-        assert(values.items[2].value == false and values.items[3].tag == "none")
-        assert(#values.pair == 2 and values.pair[2].tag == "none")
-        assert(values.nested[1].tag == "none")
-        assert(values.nested[2].tag == "some" and values.nested[2].value.tag == "none")
-        assert(values.nested[3].value.value == false)
-        assert(values.success.ok.tag == "none" and values.success.err == nil)
-        assert(values.failure.err.tag == "none" and values.failure.ok == nil)
-        assert(values.boolean.ok == false and values.empty.ok == true)
-    end
-    ctx:emit("round-trip.txt", "passed")
-end)
-return plugin
-"#,
-    )
-    .unwrap();
+    ctx.emit("round-trip.txt", "passed");
+  },
+});
+"##,
+    );
     assert_eq!(build(&root).unwrap().generated, 1);
     assert_eq!(
         std::fs::read(root.join("dist/round-trip.txt")).unwrap(),

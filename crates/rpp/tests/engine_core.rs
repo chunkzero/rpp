@@ -1,142 +1,13 @@
-//! Engine behavior tests using mock plugins (no Lua runtime).
+//! Engine behavior tests using mock plugins.
 
 mod common;
 
 use std::sync::Arc;
 
+use common::mock::{cache_key, MockFactory};
 use common::Project;
 use rpp::engine::Engine;
-use rpp::model::{
-    BuildStats, GeneratorHost, PackFile, PluginFactory, PluginInstance, ProcessOutcome,
-    ProcessorDef,
-};
-
-type ProcessFn = dyn Fn(&str, &mut PackFile) -> ProcessOutcome + Send + Sync;
-type GenerateFn = dyn Fn(&mut dyn GeneratorHost) -> rpp::Result<()> + Send + Sync;
-
-struct MockFactory {
-    id: String,
-    key: u64,
-    processor_key: Option<u64>,
-    processors: Vec<ProcessorDef>,
-    has_generator: bool,
-    behavior: Arc<ProcessFn>,
-    generator: Option<Arc<GenerateFn>>,
-    overrides: Vec<String>,
-}
-
-impl MockFactory {
-    fn new(
-        id: &str,
-        key: u64,
-        behavior: impl Fn(&str, &mut PackFile) -> ProcessOutcome + Send + Sync + 'static,
-    ) -> Self {
-        Self {
-            id: id.into(),
-            key,
-            processor_key: None,
-            processors: vec![ProcessorDef {
-                name: "p".into(),
-                patterns: vec!["**/*".into()],
-                priority: 0,
-            }],
-            has_generator: false,
-            behavior: Arc::new(behavior),
-            generator: None,
-            overrides: Vec::new(),
-        }
-    }
-
-    fn with_overrides(mut self, globs: &[&str]) -> Self {
-        self.overrides = globs.iter().map(|glob| glob.to_string()).collect();
-        self
-    }
-
-    fn with_processor_key(mut self, key: u64) -> Self {
-        self.processor_key = Some(key);
-        self
-    }
-
-    fn with_key(mut self, key: u64) -> Self {
-        self.key = key;
-        self
-    }
-
-    fn with_generator(
-        mut self,
-        generator: impl Fn(&mut dyn GeneratorHost) -> rpp::Result<()> + Send + Sync + 'static,
-    ) -> Self {
-        self.has_generator = true;
-        self.generator = Some(Arc::new(generator));
-        self
-    }
-}
-
-impl PluginFactory for MockFactory {
-    fn id(&self) -> &str {
-        &self.id
-    }
-
-    fn cache_key(&self) -> u64 {
-        self.key
-    }
-
-    fn processor_key(&self) -> u64 {
-        self.processor_key.unwrap_or(self.key)
-    }
-
-    fn processors(&self) -> &[ProcessorDef] {
-        &self.processors
-    }
-
-    fn has_generator(&self) -> bool {
-        self.has_generator
-    }
-
-    fn overrides(&self) -> &[String] {
-        &self.overrides
-    }
-
-    fn instantiate(&self) -> rpp::Result<Box<dyn PluginInstance>> {
-        Ok(Box::new(MockInstance {
-            id: self.id.clone(),
-            behavior: Arc::clone(&self.behavior),
-            generator: self.generator.clone(),
-        }))
-    }
-}
-
-struct MockInstance {
-    id: String,
-    behavior: Arc<ProcessFn>,
-    generator: Option<Arc<GenerateFn>>,
-}
-
-impl PluginInstance for MockInstance {
-    fn process(&mut self, _processor: &str, file: &mut PackFile) -> rpp::Result<ProcessOutcome> {
-        Ok((self.behavior)(&self.id, file))
-    }
-
-    fn generate(&mut self, host: &mut dyn GeneratorHost) -> rpp::Result<()> {
-        if let Some(generator) = &self.generator {
-            generator(host)
-        } else {
-            Ok(())
-        }
-    }
-
-    fn on_build_start(&mut self) -> rpp::Result<()> {
-        Ok(())
-    }
-
-    fn on_build_finish(&mut self, _stats: &BuildStats) -> rpp::Result<()> {
-        Ok(())
-    }
-}
-
-fn cache_key(label: &str) -> u64 {
-    label.len() as u64 + label.bytes().map(u64::from).sum::<u64>()
-}
+use rpp::model::{GeneratorHost, PluginFactory, ProcessOutcome};
 
 fn build(project: &Project, plugins: Vec<Arc<dyn PluginFactory>>) -> rpp::engine::BuildResult {
     let engine = Engine::builder(project.config())
@@ -330,8 +201,8 @@ fn generator_cache_replay_does_not_increment_generated() {
 #[test]
 fn raw_source_list_is_sorted_and_invalidates_generator_cache() {
     let project = Project::new();
-    project.write_src("window/z.lua", "z");
-    project.write_src("window/a.lua", "a");
+    project.write_src("window/z.txt", "z");
+    project.write_src("window/a.txt", "a");
 
     let plugin = Arc::new(
         MockFactory::new("sources", cache_key("sources"), |_, _file| {
@@ -348,19 +219,19 @@ fn raw_source_list_is_sorted_and_invalidates_generator_cache() {
     assert_eq!(first.generated, 1);
     assert_eq!(
         project.read_out("sources.txt").as_deref(),
-        Some("window/a.lua\nwindow/z.lua")
+        Some("window/a.txt\nwindow/z.txt")
     );
-    assert!(!project.out_exists("window/a.lua"));
+    assert!(!project.out_exists("window/a.txt"));
 
     let unchanged = build(&project, vec![plugin.clone()]);
     assert_eq!(unchanged.generated, 0);
 
-    project.write_src("window/m.lua", "m");
+    project.write_src("window/m.txt", "m");
     let added = build(&project, vec![plugin]);
     assert_eq!(added.generated, 1);
     assert_eq!(
         project.read_out("sources.txt").as_deref(),
-        Some("window/a.lua\nwindow/m.lua\nwindow/z.lua")
+        Some("window/a.txt\nwindow/m.txt\nwindow/z.txt")
     );
 }
 

@@ -23,13 +23,18 @@ pub(super) fn from_json(value: &Value, path: PathBuf) -> Result<Config> {
         .try_into()
         .map_err(|e| fail(to_camel_names(&e.to_string())))?;
     config.validate(&path).map_err(|e| match e {
-        Error::Config { path, message } if message.starts_with("`build.lua.") => Error::Config {
+        Error::Config { path, message } => Error::Config {
             path,
-            message: to_camel_names(&message.replace("build.lua.", "build.limits.")),
+            message: to_camel_names(&message),
         },
         other => other,
     })?;
     Ok(config)
+}
+
+/// Appends the migration guide to a rejection of a key from the removed TOML schema.
+fn guided(message: &str) -> String {
+    format!("{message}; see {}", crate::MIGRATION_GUIDE)
 }
 
 fn reject_nulls(value: &Value, at: &str) -> std::result::Result<(), String> {
@@ -79,8 +84,7 @@ fn convert_build(value: &Value) -> std::result::Result<Value, String> {
     let mut out = Map::new();
     for (key, item) in map {
         match key.as_str() {
-            "lua" => return Err("`build.lua` is not supported; use `build.limits`".into()),
-            "limits" => out.insert("lua".into(), item),
+            "lua" => return Err(guided("`build.lua` is not supported; use `build.limits`")),
             _ => out.insert(key, item),
         };
     }
@@ -102,16 +106,18 @@ fn convert_plugin(value: &Value, index: usize) -> std::result::Result<Value, Str
                 out.insert(key.clone(), item.clone());
             }
             "security" if item.as_str() == Some("native") => {
-                return Err(format!("`{at}.security` must not be \"native\""));
+                return Err(guided(&format!("`{at}.security` must not be \"native\"")));
             }
             "permissions" => {
                 if item.get("lua").is_some() {
-                    return Err(format!("`{at}.permissions.lua` is not supported"));
+                    return Err(guided(&format!("`{at}.permissions.lua` is not supported")));
                 }
                 out.insert(key.clone(), convert_keys(item)?);
             }
             key if REJECTED_PLUGIN_KEYS.contains(&key) => {
-                return Err(format!("`{at}.{key}` is not supported; use `plugin`"));
+                return Err(guided(&format!(
+                    "`{at}.{key}` is not supported; use `plugin`"
+                )));
             }
             _ => {
                 out.insert(snake_key(key)?, convert_keys(item)?);
@@ -228,13 +234,13 @@ mod tests {
         .unwrap();
         assert_eq!(config.pack.pack_format, Some(34));
         assert_eq!(config.build.workers, 2);
-        assert_eq!(config.build.lua.memory_limit_mb, 64);
-        assert_eq!(config.build.lua.execution_deadline_seconds, 5);
+        assert_eq!(config.build.limits.memory_limit_mb, 64);
+        assert_eq!(config.build.limits.execution_deadline_seconds, 5);
         assert_eq!(config.build.wasm.memory_limit_mb, 128);
         assert_eq!(config.build.squash.png, PngSetting::Max);
         assert_eq!(config.build.squash.packsquash_binary, "ps");
         assert_eq!(config.dev.port, 9000);
-        assert_eq!(config.plugins[0].package.as_deref(), Some("window"));
+        assert_eq!(config.plugins[0].package, "window");
         assert_eq!(config.plugins[0].label(), "window");
         assert_eq!(
             config.plugins[0].options["someKey"]["innerKey"].as_integer(),
@@ -247,13 +253,25 @@ mod tests {
     }
 
     #[test]
+    fn rejects_build_lua_with_guide() {
+        let message = message(json!({ "pack": { "name": "demo" }, "build": { "lua": {} } }));
+        assert!(message.contains("`build.lua`"), "{message}");
+        assert!(message.ends_with(crate::MIGRATION_GUIDE), "{message}");
+    }
+
+    #[test]
+    fn rejects_native_security_with_guide() {
+        let message = message(json!({
+            "pack": { "name": "demo" },
+            "plugins": [{ "plugin": "a", "security": "native" }]
+        }));
+        assert!(message.contains("native"), "{message}");
+        assert!(message.ends_with(crate::MIGRATION_GUIDE), "{message}");
+    }
+
+    #[test]
     fn rejects_unsupported_values() {
         let pack = json!({ "name": "demo" });
-        assert!(message(json!({ "pack": pack, "build": { "lua": {} } })).contains("`build.lua`"));
-        assert!(message(
-            json!({ "pack": pack, "plugins": [{ "plugin": "a", "security": "native" }] })
-        )
-        .contains("native"));
         assert!(message(
             json!({ "pack": pack, "plugins": [{ "plugin": "a", "options": { "k": null } }] })
         )
@@ -262,6 +280,10 @@ mod tests {
             message(json!({ "pack": pack, "plugins": [{ "options": {} }] }))
                 .contains("must set `plugin`")
         );
+        assert!(message(
+            json!({ "pack": pack, "plugins": [{ "plugin": "a", "source": "path:x" }] })
+        )
+        .contains("`plugins[0].source`"));
         assert!(message(
             json!({ "pack": pack, "plugin": [{ "package": "a", "security": "native" }] })
         )

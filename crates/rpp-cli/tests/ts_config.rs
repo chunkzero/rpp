@@ -89,26 +89,6 @@ fn ts_project_builds_with_path_dependency() {
 }
 
 #[test]
-fn rejects_both_config_files() {
-    let dir = tempfile::tempdir().unwrap();
-    let root = dir.path();
-    write(root, "rpp.toml", "[pack]\nname = \"p\"\n");
-    write(
-        root,
-        "rpp.config.ts",
-        "export default { pack: { name: \"p\" } };\n",
-    );
-
-    let out = run(root, &["build", "--no-squash"]);
-    assert!(!out.status.success());
-    let message = stderr(&out);
-    assert!(
-        message.contains("rpp.toml") && message.contains("rpp.config.ts"),
-        "{message}"
-    );
-}
-
-#[test]
 fn unknown_plugin_package_errors() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();

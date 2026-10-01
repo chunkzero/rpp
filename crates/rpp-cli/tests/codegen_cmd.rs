@@ -9,7 +9,11 @@ fn run(root: &Path, args: &[&str]) -> std::process::Output {
 }
 
 fn project(root: &Path) {
-    std::fs::write(root.join("rpp.toml"), "[pack]\nname = \"p\"\n").unwrap();
+    std::fs::write(
+        root.join("rpp.config.ts"),
+        "export default { pack: { name: \"p\" } };\n",
+    )
+    .unwrap();
 }
 
 #[test]
@@ -51,27 +55,6 @@ fn codegen_keeps_existing_tsconfig() {
         std::fs::read_to_string(root.join("tsconfig.json")).unwrap(),
         "{ \"custom\": true }"
     );
-}
-
-#[test]
-fn codegen_works_in_plugin_dir() {
-    let dir = tempfile::tempdir().unwrap();
-    let plugin = dir.path().join("plugin");
-    std::fs::create_dir_all(plugin.join("src")).unwrap();
-    std::fs::write(
-        plugin.join("plugin.toml"),
-        "[plugin]\nid = \"p\"\nversion = \"0.1.0\"\nentry = \"src/plugin.ts\"\n",
-    )
-    .unwrap();
-
-    let out = run(&plugin.join("src"), &["codegen"]);
-    assert!(
-        out.status.success(),
-        "{}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    assert!(plugin.join(".rpp/sdk/index.ts").is_file());
-    assert!(plugin.join("tsconfig.json").is_file());
 }
 
 #[test]
@@ -138,8 +121,8 @@ fn codegen_writes_generated_component_dts() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
     std::fs::write(
-        root.join("plugin.toml"),
-        "[plugin]\nid = \"p\"\nversion = \"0.1.0\"\nentry = \"src/plugin.ts\"\n\n[component.calc]\nmodule = \"calc.wasm\"\n",
+        root.join("rpp.json"),
+        r#"{ "name": "p", "version": "0.1.0", "entry": "src/plugin.ts", "components": { "calc": "calc.wasm" } }"#,
     )
     .unwrap();
 
@@ -282,8 +265,14 @@ fn build_runs_typescript_plugin() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
     std::fs::write(
-        root.join("rpp.toml"),
-        "[pack]\nname = \"p\"\n\n[[plugin]]\nsource = \"path:plugins/upper\"\n",
+        root.join("rpp.config.ts"),
+        "import { defineConfig, plugin } from \"#rpp/config\";\n\
+         export default defineConfig({ pack: { name: \"p\" }, plugins: [plugin(\"upper\")] });\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("rpp.json"),
+        r#"{ "dependencies": { "upper": "path:plugins/upper" } }"#,
     )
     .unwrap();
     std::fs::create_dir_all(root.join("src")).unwrap();
@@ -291,8 +280,8 @@ fn build_runs_typescript_plugin() {
     let plugin = root.join("plugins/upper");
     std::fs::create_dir_all(plugin.join("src")).unwrap();
     std::fs::write(
-        plugin.join("plugin.toml"),
-        "[plugin]\nid = \"upper\"\nversion = \"0.1.0\"\nentry = \"src/plugin.ts\"\n",
+        plugin.join("rpp.json"),
+        r#"{ "name": "upper", "version": "0.1.0", "entry": "src/plugin.ts" }"#,
     )
     .unwrap();
     std::fs::write(

@@ -1,4 +1,4 @@
-//! Dynamic WASIp2 component host used by Lua plugins.
+//! Dynamic WASIp2 component host used by TypeScript plugins.
 
 #![deny(missing_docs)]
 

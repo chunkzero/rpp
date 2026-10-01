@@ -1,15 +1,15 @@
 # hash-rename
 
-An example **rpp** Lua plugin that fingerprints asset files by content hash —
-"cache busting" — and records the renames in a map.
+An **rpp** TypeScript plugin that fingerprints asset files by content hash
+("cache busting") and records the renames in a map.
 
 ## What it demonstrates
 
-- A **generator** that renames files (`gem.png` → `gem.1a2b3c4d.png`) and emits
-  `rename_map.json`, using `rpp.hash.xxh3` and `rpp.path.*`.
-- **Plugin-local `require`**: `naming.lua` holds the one true naming function,
-  shared by the generator and any tooling that needs the naming convention.
-- Honouring a `files` option (a list of globs) to scope which files are renamed.
+- A **generator** that renames files (`gem.png` to `gem.1a2b3c4d.png`) and emits
+  `rename_map.json`, using the SDK's `hash.xxh3` and `path.*`.
+- `overrides` in `rpp.json`: the generator may replace or remove files owned by
+  sources and other plugins.
+- A config module whose `normalize` fills in the default `files` option.
 
 ## Why renaming happens in the generator
 
@@ -29,11 +29,13 @@ The default deliberately targets an author-owned `custom/` texture subtree:
 renaming a vanilla texture would break the fixed name a model or blockstate
 points at, but `custom/` assets are referenced only through the rename map.
 
-```toml
-[[plugin]]
-source = "path:../plugins/hash-rename"
-[plugin.options]
-files = ["assets/*/textures/custom/**/*.png"]
+```ts
+import hashRename from "#plugins/hash-rename";
+
+export default defineConfig({
+  pack: { name: "my-pack" },
+  plugins: [hashRename({ files: ["assets/*/textures/custom/**/*.png"] })],
+});
 ```
 
 ## Output

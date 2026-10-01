@@ -1,0 +1,7 @@
+{
+  "name": "json-minify",
+  "version": "1.0.0",
+  "description": "Minifies JSON and .mcmeta files by re-encoding them compactly.",
+  "entry": "src/plugin.ts",
+  "config": "src/config.ts"
+}

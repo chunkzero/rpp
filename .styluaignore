@@ -1,6 +1,0 @@
-**/target/**
-**/build/**
-**/.rpp/**
-**/dist/**
-**/generated/**
-**/tests/fixtures/**

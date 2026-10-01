@@ -1,0 +1,8 @@
+{
+  "dependencies": {
+    "json-minify": "path:../plugins/json-minify",
+    "mcmeta-validate": "path:../plugins/mcmeta-validate",
+    "hash-rename": "path:../plugins/hash-rename",
+    "example-catalog": "path:plugins/catalog"
+  }
+}

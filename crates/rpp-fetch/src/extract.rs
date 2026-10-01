@@ -1,7 +1,6 @@
-//! Safe extraction of GitHub tarballs into the plugin cache.
+//! Safe extraction of plugin archives into the plugin cache.
 //!
-//! GitHub `tar.gz` archives wrap all content in a single top-level directory
-//! (`<repo>-<sha>/`). We strip that prefix, reject any entry that would escape
+//! We optionally strip a single top-level wrapper directory, reject any entry that would escape
 //! the destination (path traversal / absolute paths / symlinks pointing out),
 //! and extract atomically: contents land in a sibling temp directory that is
 //! renamed into place only once extraction fully succeeds.
@@ -22,23 +21,10 @@ pub const MAX_FILE_BYTES: u64 = 64 * 1024 * 1024;
 /// The most bytes an installed archive may unpack to.
 pub const MAX_TOTAL_BYTES: u64 = 512 * 1024 * 1024;
 
-/// Extract a gzipped tarball (`bytes`) into `dest`, stripping the single
-/// top-level directory GitHub adds.
-///
-/// Extraction is atomic: if `dest` already exists nothing is done. Otherwise the
-/// archive is unpacked into a temp directory alongside `dest`, then renamed into
-/// place, so a killed process never leaves a half-populated cache entry.
-///
-/// # Errors
-///
-/// Returns [`Error::UnsafeTarEntry`] if any entry would escape `dest`, or an
-/// I/O / decompression error otherwise.
-pub(crate) fn extract_tarball(bytes: &[u8], dest: &Path) -> Result<()> {
-    extract_archive(bytes, dest, true, |_| Ok(()))
-}
-
-/// Like [`extract_tarball`], optionally keeping entries at the archive root
-/// (`strip_wrapper = false`). `validate` runs on the unpacked temp directory before
+/// Extract a gzipped tarball (`bytes`) into `dest`, stripping the single top-level
+/// directory when `strip_wrapper` is set. Extraction is atomic: if `dest` already
+/// exists nothing is done, otherwise the archive is unpacked into a sibling temp
+/// directory and renamed into place. `validate` runs on the unpacked temp directory before
 /// it is renamed into place; if it fails nothing is published.
 pub(crate) fn extract_archive(
     bytes: &[u8],
@@ -174,7 +160,7 @@ fn unpack_into(bytes: &[u8], root: &Path, strip_wrapper: bool) -> Result<()> {
     Ok(())
 }
 
-/// Strip the first path component (GitHub's `<repo>-<sha>/` wrapper). Returns
+/// Strip the first path component (the wrapper directory). Returns
 /// `None` for the top-level directory entry itself or empty paths.
 fn strip_top_level(path: &Path) -> Option<PathBuf> {
     let mut comps = path.components();
@@ -252,8 +238,8 @@ mod tests {
     #[test]
     fn strips_wrapper_directory() {
         assert_eq!(
-            strip_top_level(Path::new("repo-sha/plugin.toml")),
-            Some(PathBuf::from("plugin.toml"))
+            strip_top_level(Path::new("repo-sha/rpp.json")),
+            Some(PathBuf::from("rpp.json"))
         );
         assert_eq!(strip_top_level(Path::new("repo-sha/")), None);
         assert_eq!(strip_top_level(Path::new("repo-sha")), None);

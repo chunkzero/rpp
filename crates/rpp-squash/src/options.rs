@@ -1,6 +1,6 @@
 //! Configuration types for squash operations.
 //!
-//! These mirror the `[build.squash]` table in `rpp.toml` (see `docs/SPEC.md`
+//! These mirror the `build.squash` object in `rpp.config.ts` (see `docs/SPEC.md`
 //! section 1); the CLI maps its parsed config onto them.
 
 /// PNG optimization aggressiveness.

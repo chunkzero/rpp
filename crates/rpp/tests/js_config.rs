@@ -91,7 +91,7 @@ export default defineConfig({
     let evaluated = evaluate(dir.path(), &packages).unwrap();
     let plugins = &evaluated.config.plugins;
     assert_eq!(plugins.len(), 2);
-    assert_eq!(plugins[0].package.as_deref(), Some("demo"));
+    assert_eq!(plugins[0].package, "demo");
     assert_eq!(
         plugins[0].options.get("level").unwrap().as_integer(),
         Some(1)

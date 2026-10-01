@@ -10,7 +10,7 @@ Palette
 - RPP bricks: staggered red-brick rows with light mortar.
 - Ember: a 4-frame animated flame (see ember.png.mcmeta).
 
-Build pipeline (see ../../rpp.toml)
+Build pipeline (see ../../rpp.config.ts)
 -----------------------------------
 1. json-minify     — compact every .json / .mcmeta.
 2. mcmeta-validate — gate the build on valid pack.mcmeta + animations.
