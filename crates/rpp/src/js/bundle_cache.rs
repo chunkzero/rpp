@@ -31,17 +31,30 @@ pub(crate) fn cached_bundle(
     let Some(dir) = dir else {
         return build();
     };
-    let path = dir
-        .join("bundles")
-        .join(format!("{}.bin", u64_hex(xxh3(id.as_bytes()))));
+    let bundles = dir.join("bundles");
+    let path = bundles.join(format!("{}.bin", u64_hex(xxh3(id.as_bytes()))));
     let request_key = request_key(request);
 
-    if let Some(bundle) = load(&path, request_key) {
-        return Ok(bundle);
+    if real_dirs(dir, &bundles) {
+        if let Some(bundle) = load(&path, request_key) {
+            return Ok(bundle);
+        }
     }
     let bundle = build()?;
     store(&path, request_key, &bundle);
     Ok(bundle)
+}
+
+/// Whether `.rpp` (the parent of `dir`), `dir` and `bundles` are all real directories, so
+/// a symlink cannot redirect cache reads or writes.
+fn real_dirs(dir: &Path, bundles: &Path) -> bool {
+    [dir.parent(), Some(dir), Some(bundles)]
+        .into_iter()
+        .flatten()
+        .filter(|path| !path.as_os_str().is_empty())
+        .all(|path| {
+            std::fs::symlink_metadata(path).is_ok_and(|metadata| metadata.file_type().is_dir())
+        })
 }
 
 fn load(path: &Path, request_key: u64) -> Option<Bundle> {
@@ -64,16 +77,21 @@ fn load(path: &Path, request_key: u64) -> Option<Bundle> {
             .iter()
             .map(|(input, _)| PathBuf::from(input))
             .collect(),
+        input_hashes: entry
+            .inputs
+            .into_iter()
+            .map(|(input, hash)| (PathBuf::from(input), hash))
+            .collect(),
     })
 }
 
 fn store(path: &Path, request_key: u64, bundle: &Bundle) {
-    let mut inputs = Vec::with_capacity(bundle.inputs.len());
-    for input in &bundle.inputs {
-        let (Some(name), Ok(bytes)) = (input.to_str(), std::fs::read(input)) else {
+    let mut inputs = Vec::with_capacity(bundle.input_hashes.len());
+    for (input, hash) in &bundle.input_hashes {
+        let Some(name) = input.to_str() else {
             return;
         };
-        inputs.push((name.to_string(), xxh3(&bytes)));
+        inputs.push((name.to_string(), *hash));
     }
     let entry = BundleCacheEntry {
         version: VERSION,
@@ -85,10 +103,14 @@ fn store(path: &Path, request_key: u64, bundle: &Bundle) {
     let Ok(bytes) = bincode::serde::encode_to_vec(&entry, bincode::config::standard()) else {
         return;
     };
-    if let Some(parent) = path.parent() {
-        if std::fs::create_dir_all(parent).is_err() {
-            return;
-        }
+    let Some(bundles) = path.parent() else {
+        return;
+    };
+    let Some(dir) = bundles.parent() else {
+        return;
+    };
+    if std::fs::create_dir_all(bundles).is_err() || !real_dirs(dir, bundles) {
+        return;
     }
     let _ = crate::util::atomic::write(path, &bytes);
 }
@@ -151,6 +173,10 @@ mod tests {
                     code: std::fs::read_to_string(&self.input).unwrap(),
                     source_map: String::new(),
                     inputs: vec![self.input.clone()],
+                    input_hashes: vec![(
+                        self.input.clone(),
+                        xxh3(std::fs::read(&self.input).unwrap().as_slice()),
+                    )],
                 })
             })
             .unwrap()
@@ -206,6 +232,20 @@ mod tests {
         assert_eq!(f.builds.get(), 2);
         f.get(Some(&f.cache), &f.request);
         assert_eq!(f.builds.get(), 2);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_bundles_dir_is_skipped() {
+        let f = Fixture::new();
+        let target = f._tmp.path().join("elsewhere");
+        std::fs::create_dir_all(&target).unwrap();
+        std::fs::create_dir_all(&f.cache).unwrap();
+        std::os::unix::fs::symlink(&target, f.cache.join("bundles")).unwrap();
+        f.get(Some(&f.cache), &f.request);
+        f.get(Some(&f.cache), &f.request);
+        assert_eq!(f.builds.get(), 2);
+        assert_eq!(std::fs::read_dir(&target).unwrap().count(), 0);
     }
 
     #[test]

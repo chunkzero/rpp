@@ -160,6 +160,37 @@ fn helpers_bundled_through_imports_and_marked_authoring() {
 }
 
 #[test]
+fn plugin_inside_source_dir_is_rejected() {
+    let project = Project::new(PLUGIN);
+    project.write(
+        "src/plugins/p/rpp.json",
+        r#"{"name":"inner","version":"1.0.0","config":"src/config.ts","discover":{"w":"*.ts"}}"#,
+    );
+    project.write("src/plugins/p/src/plugin.ts", PLUGIN);
+    project.write("src/plugins/p/src/config.ts", "export const x = 1;\n");
+    let error = JsPluginFactory::load(
+        project.dir.path().join("src/plugins/p"),
+        toml::Value::Table(Default::default()),
+        PackInfo {
+            name: "test-pack".into(),
+            description: None,
+            format: Some(34),
+        },
+        JsPluginLimits::default(),
+        RuntimeAccess::sandboxed(".".into()),
+        &project.dir.path().join("src"),
+        None,
+    )
+    .err()
+    .expect("load fails")
+    .to_string();
+    assert!(
+        error.contains("inside the pack source directory"),
+        "{error}"
+    );
+}
+
+#[test]
 fn typescript_sources_are_authoring_when_discovering() {
     let project = Project::new(PLUGIN);
     let factory = project.load().unwrap();

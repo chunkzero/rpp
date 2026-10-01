@@ -232,20 +232,45 @@ fn inputs_exclude_bundler_runtime_helpers() {
 fn inputs_include_tree_shaken_modules() {
     let dir = TempDir::new().unwrap();
     let root = dir.path().canonicalize().unwrap();
-    write(&root, "helper.ts", "export const value = \"inlined\";\n");
+    write(
+        &root,
+        "unused.ts",
+        "export const marker = \"shaken-away\";\n",
+    );
     write(
         &root,
         "main.ts",
-        "import { value } from './helper.ts';\nexport const run = () => value;\n",
+        "import './unused';\nexport const run = () => 1;\n",
     );
 
     let bundle = bundle(&request(&root, "main.ts")).unwrap();
 
-    assert!(bundle.code.contains("inlined"));
+    assert!(!bundle.code.contains("shaken-away"), "{}", bundle.code);
     assert_eq!(
         bundle.inputs,
-        vec![root.join("helper.ts"), root.join("main.ts")]
+        vec![root.join("main.ts"), root.join("unused.ts")]
     );
+}
+
+#[test]
+fn package_json_mapping_edits_change_inputs() {
+    let dir = TempDir::new().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    write(&root, "a.ts", "export const v = 'a';\n");
+    write(&root, "b.ts", "export const v = 'b';\n");
+    write(
+        &root,
+        "main.ts",
+        "import { v } from '#dep';\nexport const out = v;\n",
+    );
+    write(&root, "package.json", r##"{"imports":{"#dep":"./a.ts"}}"##);
+    let first = bundle(&request(&root, "main.ts")).unwrap();
+    assert!(first.inputs.contains(&root.join("package.json")));
+
+    write(&root, "package.json", r##"{"imports":{"#dep":"./b.ts"}}"##);
+    let second = bundle(&request(&root, "main.ts")).unwrap();
+
+    assert_ne!(first.input_hashes, second.input_hashes);
 }
 
 fn package_request(root: &Path, pkg: &Path) -> BundleRequest {

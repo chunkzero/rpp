@@ -1,6 +1,7 @@
 //! Rolldown bundling into one ESM file.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -14,6 +15,7 @@ use rolldown::{
     SourceMapPathTransform, SourceMapType,
 };
 use rolldown_common::{Output, ResolvedExternal};
+use twox_hash::XxHash3_64;
 
 use crate::error::{Error, Result};
 
@@ -59,6 +61,10 @@ pub struct Bundle {
     /// Every real file the bundler loaded, including modules tree-shaken out of `code`;
     /// absolute, sorted and deduplicated.
     pub inputs: Vec<PathBuf>,
+    /// The xxh3-64 hash of the bytes the bundler consumed for each of `inputs`, in the
+    /// same order. `package.json` files that import resolution consulted (the nearest
+    /// one above each loaded file, up to its root or package directory) are inputs too.
+    pub input_hashes: Vec<(PathBuf, u64)>,
 }
 
 /// Bundle `request.entry` and its static and dynamic imports into one ESM chunk.
@@ -94,7 +100,7 @@ pub fn bundle(request: &BundleRequest) -> Result<Bundle> {
     }
     let packages = Arc::new(packages);
     let diagnostics = Arc::new(Mutex::new(Vec::new()));
-    let loaded = Arc::new(Mutex::new(BTreeSet::new()));
+    let loaded = Arc::new(Mutex::new(BTreeMap::new()));
     let plugin = VirtualModules {
         root: root.clone(),
         packages: Arc::clone(&packages),
@@ -121,6 +127,7 @@ pub fn bundle(request: &BundleRequest) -> Result<Bundle> {
         code_splitting: Some(CodeSplittingMode::Bool(false)),
         sourcemap_path_transform: Some(SourceMapPathTransform::new(Arc::new({
             let root = root.clone();
+            let packages = Arc::clone(&packages);
             move |sources, _| {
                 let root = root.clone();
                 let packages = Arc::clone(&packages);
@@ -180,18 +187,35 @@ pub fn bundle(request: &BundleRequest) -> Result<Bundle> {
         .ok_or_else(|| Error::Bundle("bundling produced no source map".to_string()))?
         .to_json_string();
 
-    let inputs: Vec<PathBuf> = loaded
-        .lock()
-        .expect("loaded lock")
-        .iter()
-        .filter(|path| path.is_absolute() && path.is_file())
-        .cloned()
-        .collect();
+    let mut hashes = loaded.lock().expect("loaded lock").clone();
+    hashes.retain(|path, _| path.is_absolute() && path.is_file());
+    let mut manifests = BTreeSet::new();
+    for path in hashes.keys() {
+        let boundary = std::iter::once(&root)
+            .chain(packages.iter().map(|p| &p.dir))
+            .find(|boundary| path.starts_with(boundary));
+        let Some(boundary) = boundary else { continue };
+        manifests.extend(
+            path.ancestors()
+                .skip(1)
+                .take_while(|dir| dir.starts_with(boundary))
+                .map(|dir| dir.join("package.json")),
+        );
+    }
+    manifests.insert(root.join("package.json"));
+    for manifest in manifests {
+        if let Ok(bytes) = fs::read(&manifest) {
+            hashes.insert(manifest, XxHash3_64::oneshot(&bytes));
+        }
+    }
+    let input_hashes: Vec<(PathBuf, u64)> = hashes.into_iter().collect();
+    let inputs = input_hashes.iter().map(|(path, _)| path.clone()).collect();
 
     Ok(Bundle {
         code: chunk.code.clone(),
         source_map,
         inputs,
+        input_hashes,
     })
 }
 
@@ -242,7 +266,7 @@ struct VirtualModules {
     packages: Arc<Vec<Package>>,
     modules: BTreeMap<String, String>,
     diagnostics: Arc<Mutex<Vec<String>>>,
-    loaded: Arc<Mutex<BTreeSet<PathBuf>>>,
+    loaded: Arc<Mutex<BTreeMap<PathBuf, u64>>>,
 }
 
 impl VirtualModules {
@@ -365,11 +389,21 @@ impl Plugin for VirtualModules {
 
     async fn load(&self, _ctx: SharedLoadPluginContext, args: &HookLoadArgs<'_>) -> HookLoadReturn {
         let Some(specifier) = args.id.strip_prefix(VIRTUAL_PREFIX) else {
+            // Returning the bytes read here keeps the recorded hash in step with the build.
+            let Ok(bytes) = fs::read(args.id) else {
+                return Ok(None);
+            };
+            let Ok(code) = String::from_utf8(bytes) else {
+                return Ok(None);
+            };
             self.loaded
                 .lock()
                 .expect("loaded lock")
-                .insert(PathBuf::from(args.id));
-            return Ok(None);
+                .insert(PathBuf::from(args.id), XxHash3_64::oneshot(code.as_bytes()));
+            return Ok(Some(HookLoadOutput {
+                code: code.into(),
+                ..Default::default()
+            }));
         };
         Ok(self.modules.get(specifier).map(|code| HookLoadOutput {
             code: code.as_str().into(),

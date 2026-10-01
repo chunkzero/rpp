@@ -162,6 +162,14 @@ impl JsPluginFactory {
             (bundle, BTreeSet::new(), None)
         } else {
             let source = source.canonicalize().map_err(|e| Error::io(source, e))?;
+            if root.starts_with(&source) {
+                return Err(load_error(format!(
+                    "plugin directory {} is inside the pack source directory {}; plugins that \
+                     declare `discover` must live outside `build.source`",
+                    root.display(),
+                    source.display()
+                )));
+            }
             let (bundle, authoring) =
                 bundle_discovered(&manifest, &root, &source, &discovery, cache_dir)
                     .map_err(&load_error)?;
@@ -405,13 +413,13 @@ fn compute_processor_key(
     writer.write_str("rpp.js.processor.v1");
     writer.write_str(env!("CARGO_PKG_VERSION"));
     writer.write_str("inputs");
-    for input in bundle
-        .inputs
+    for (input, hash) in bundle
+        .input_hashes
         .iter()
-        .filter(|input| source.is_none_or(|source| !input.starts_with(source)))
+        .filter(|(input, _)| source.is_none_or(|source| !input.starts_with(source)))
     {
-        let bytes = std::fs::read(input).map_err(|e| Error::io(input, e))?;
-        writer.write(&bytes);
+        writer.write_str(&input.to_string_lossy());
+        writer.write_u64(*hash);
     }
     writer.write_str("manifest");
     writer.write(manifest_source.as_bytes());
