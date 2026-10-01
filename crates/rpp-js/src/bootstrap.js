@@ -32,7 +32,9 @@
         return item;
       });
     } catch (error) {
-      throw error?.name === "RppInvalidResult" ? error : invalid(`Result is not JSON: ${error?.message}`);
+      throw error?.name === "RppInvalidResult"
+        ? error
+        : invalid(`Result is not JSON: ${error?.message}`);
     }
   };
   const readPending = () => {
@@ -53,7 +55,8 @@
     const text = utcString(date);
     return text === "Invalid Date" ? undefined : text.split(" ");
   };
-  const datePart = ([weekday, day, month, year]) => `${weekday.slice(0, 3)} ${month} ${day} ${year}`;
+  const datePart = ([weekday, day, month, year]) =>
+    `${weekday.slice(0, 3)} ${month} ${day} ${year}`;
   const timePart = (parts) => `${parts[4]} GMT+0000 (UTC)`;
   const dateString = (date) => {
     const parts = utcParts(date);
@@ -93,7 +96,11 @@
     apply: () => dateString(new NativeDate(now())),
     construct: (target, args, newTarget) => {
       const input =
-        args.length >= 2 ? [NativeDate.UTC(...args)] : args.length === 1 ? [utcInput(args[0])] : [now()];
+        args.length >= 2
+          ? [NativeDate.UTC(...args)]
+          : args.length === 1
+            ? [utcInput(args[0])]
+            : [now()];
       return construct(target, input, newTarget);
     },
   });
@@ -107,7 +114,8 @@
   Object.defineProperty(Math, "random", { value: random, writable: false, configurable: false });
   const boundedBuffer = new Proxy(ArrayBuffer, {
     construct: (target, args, newTarget) => {
-      if (args[1]?.maxByteLength !== undefined) throw new Error("Resizable buffers are unavailable");
+      if (args[1]?.maxByteLength !== undefined)
+        throw new Error("Resizable buffers are unavailable");
       return construct(target, args.length ? [args[0]] : [], newTarget);
     },
   });
@@ -120,7 +128,13 @@
   const unavailable = () => {
     throw new Error("Locale-sensitive APIs are unavailable");
   };
-  for (const prototype of [String.prototype, Number.prototype, BigInt.prototype, Array.prototype, Date.prototype]) {
+  for (const prototype of [
+    String.prototype,
+    Number.prototype,
+    BigInt.prototype,
+    Array.prototype,
+    Date.prototype,
+  ]) {
     for (const name of [
       "localeCompare",
       "toLocaleString",
@@ -130,14 +144,24 @@
       "toLocaleTimeString",
     ]) {
       if (name in prototype)
-        Object.defineProperty(prototype, name, { value: unavailable, writable: false, configurable: false });
+        Object.defineProperty(prototype, name, {
+          value: unavailable,
+          writable: false,
+          configurable: false,
+        });
     }
   }
   Object.defineProperty(globalThis, "__rpp", {
     value: freeze({
       call(name, value, bytes) {
-        if (bytes !== undefined && !ArrayBuffer.isView(bytes)) throw new TypeError("Expected a Uint8Array");
-        const json = hostCall(String(name), stringify(value === undefined ? null : value), bytes !== undefined, bytes ?? noBytes);
+        if (bytes !== undefined && !ArrayBuffer.isView(bytes))
+          throw new TypeError("Expected a Uint8Array");
+        const json = hostCall(
+          String(name),
+          stringify(value === undefined ? null : value),
+          bytes !== undefined,
+          bytes ?? noBytes,
+        );
         return { value: parse(json), bytes: readPending() };
       },
     }),
