@@ -118,17 +118,21 @@ runs:
         git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
         git add plugins index.json
         git commit -m "feat: add $name $version"
-        # Personal tokens push to the owner's fork. GitHub App installation tokens have no user and push the branch to
-        # the registry itself; that push never replaces an existing branch.
-        if login=$(gh api user --jq .login 2>/dev/null); then
-          gh repo fork chunkzero/rpp-registry --clone=false
-          git remote add fork "https://github.com/$login/rpp-registry"
-          git push --force fork "$branch"
-          head="$login:$branch"
-        else
-          git push origin "$branch"
-          head="$branch"
-        fi
+        # GitHub App installation tokens (ghs_) push the branch to the registry and never replace an existing one.
+        # Other tokens push to their owner's fork.
+        case "$GH_TOKEN" in
+          ghs_*)
+            git push --force-with-lease="refs/heads/$branch:" origin "$branch"
+            head="$branch"
+            ;;
+          *)
+            login=$(gh api user --jq .login)
+            gh repo fork chunkzero/rpp-registry --clone=false
+            git remote add fork "https://github.com/$login/rpp-registry"
+            git push --force fork "$branch"
+            head="$login:$branch"
+            ;;
+        esac
         gh pr create --repo chunkzero/rpp-registry --head "$head" \
           --title "feat: add $name $version" \
           --body "Publishes $name $version from https://github.com/$GITHUB_REPOSITORY/releases/tag/$GITHUB_REF_NAME."
