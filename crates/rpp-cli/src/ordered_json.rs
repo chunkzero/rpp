@@ -7,6 +7,8 @@ use serde::de::{Deserialize, Deserializer, MapAccess, SeqAccess, Visitor};
 use serde::ser::{Serialize, SerializeMap, Serializer};
 use serde_json::Number;
 
+const NUMBER_TOKEN: &str = "$serde_json::private::Number";
+
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum Json {
     Null,
@@ -130,7 +132,16 @@ impl<'de> Deserialize<'de> for Json {
 
             fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Json, A::Error> {
                 let mut object = Object::default();
-                while let Some((key, value)) = map.next_entry::<String, Json>()? {
+                while let Some(key) = map.next_key::<String>()? {
+                    // With `serde_json/arbitrary_precision`, numbers arrive as this one-entry map.
+                    if key == NUMBER_TOKEN && object.0.is_empty() {
+                        let text: String = map.next_value()?;
+                        return text
+                            .parse()
+                            .map(Json::Number)
+                            .map_err(serde::de::Error::custom);
+                    }
+                    let value = map.next_value()?;
                     object.insert(key, value);
                 }
                 Ok(Json::Object(object))

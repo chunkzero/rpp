@@ -3,6 +3,7 @@ members = [
   "crates/rpp",
   "crates/rpp-cli",
   "crates/rpp-fetch",
+  "crates/rpp-js",
   "crates/rpp-squash",
   "crates/rpp-wasm",
 ]
@@ -20,6 +21,7 @@ description = "Tools and libraries for processing Minecraft resource packs"
 [workspace.dependencies]
 rpp = { path = "crates/rpp" }
 rpp-fetch = { path = "crates/rpp-fetch" }
+rpp-js = { path = "crates/rpp-js" }
 rpp-squash = { path = "crates/rpp-squash" }
 rpp-wasm = { path = "crates/rpp-wasm" }
 

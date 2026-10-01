@@ -8,7 +8,7 @@ Rust tooling for building Minecraft resource packs with incremental Lua and WASI
 - Read `docs/SPEC.md` before architectural changes; it defines the project contracts.
 - Keep solutions simple and public APIs narrow. Avoid speculative abstractions.
 - Preserve unrelated changes and ask before destructive actions outside the requested scope.
-- `rpp-fetch`, `rpp-squash`, and `rpp-wasm` are standalone and do not depend on `rpp`.
+- `rpp-fetch`, `rpp-squash`, `rpp-wasm`, and `rpp-js` are standalone and do not depend on `rpp`.
   `rpp` optionally depends on `rpp-wasm`; `rpp-cli` composes the workspace crates.
 
 ## Tooling

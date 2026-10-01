@@ -4,4 +4,6 @@ pub(crate) mod atomic;
 pub(crate) mod canonical;
 pub(crate) mod glob;
 pub(crate) mod hash;
+#[cfg(feature = "lua")]
+pub(crate) mod json_toml;
 pub(crate) mod path;
