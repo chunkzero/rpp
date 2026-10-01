@@ -124,7 +124,7 @@ fn run_pack(dir: &Path, plugin: Option<&Path>, out: Option<&Path>, json: bool) -
             "Packed {} {} into {} (sha256 {})",
             packed.name,
             packed.version,
-            packed.file.display(),
+            packed.path.display(),
             packed.sha256
         ));
     }

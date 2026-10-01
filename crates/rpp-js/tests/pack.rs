@@ -256,3 +256,60 @@ fn pack_requires_a_plugin_entry() {
     });
     assert!(matches!(result, Err(Error::Bundle(_))));
 }
+
+#[test]
+fn pack_declares_type_only_dependencies_transitively() {
+    let dir = TempDir::new().unwrap();
+    let root = dir.path();
+    write(root, "src/plugin.ts", "export const run = () => 1;\n");
+    write(
+        root,
+        "src/config.ts",
+        "import type { Options } from './types.js';\nexport default function config(options: Options): number { return options.size; }\n",
+    );
+    write(
+        root,
+        "src/types.ts",
+        "export type { Size } from './nested/size';\nexport interface Options { size: number }\n",
+    );
+    write(root, "src/nested/size.ts", "export type Size = number;\n");
+
+    let output = packed(
+        root,
+        &[("plugin", "src/plugin.ts"), ("config", "src/config.ts")],
+    );
+
+    let keys: Vec<_> = output.declarations.keys().map(String::as_str).collect();
+    assert_eq!(
+        keys,
+        [
+            "types/src/config.d.ts",
+            "types/src/nested/size.d.ts",
+            "types/src/types.d.ts"
+        ]
+    );
+}
+
+#[test]
+fn pack_stub_reexports_default_declared_by_specifier() {
+    let dir = TempDir::new().unwrap();
+    let root = dir.path();
+    write(root, "src/plugin.ts", "export const run = () => 1;\n");
+    write(
+        root,
+        "src/config.mts",
+        "const config: () => number = () => 1;\nexport { config as default };\n",
+    );
+
+    let output = packed(
+        root,
+        &[("plugin", "src/plugin.ts"), ("config", "src/config.mts")],
+    );
+
+    assert!(output.declarations.contains_key("types/src/config.d.mts"));
+    let stub = &output.files["dist/config.d.ts"];
+    assert!(
+        stub.contains("export { default } from \"../types/src/config.mjs\";"),
+        "{stub}"
+    );
+}

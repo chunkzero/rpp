@@ -38,7 +38,7 @@ def update_entry(registry: Path, repository: str, tag: str, packed: dict) -> Pat
     entry["versions"].append(
         {
             "version": version,
-            "url": f"{repository}/releases/download/{tag}/{packed['file']}",
+            "url": f"{repository}/releases/download/{tag}/{Path(packed['file']).name}",
             "sha256": packed["sha256"],
             "rpp": packed["rpp"],
         }

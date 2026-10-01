@@ -43,6 +43,7 @@ mod search;
 mod source;
 
 pub use error::{Error, Incompatibility, Result};
+pub use extract::{MAX_ENTRIES, MAX_FILE_BYTES, MAX_TOTAL_BYTES};
 pub use http::{
     HttpConfig, DEFAULT_API_BASE, DEFAULT_CODELOAD_BASE, DEFAULT_REGISTRY_BASE, USER_AGENT,
 };

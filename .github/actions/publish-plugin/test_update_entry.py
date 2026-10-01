@@ -47,6 +47,15 @@ class UpdateEntryTest(unittest.TestCase):
             },
         )
 
+    def test_url_uses_archive_basename(self) -> None:
+        entry = packed("1.0.0")
+        entry["file"] = "/tmp/out/fancy-1.0.0.rpp.tgz"
+        update_entry(self.registry, REPO, "v1.0.0", entry)
+        self.assertEqual(
+            self.read()["versions"][0]["url"],
+            f"{REPO}/releases/download/v1.0.0/fancy-1.0.0.rpp.tgz",
+        )
+
     def test_appends_version_sorted(self) -> None:
         for v in ("1.0.0", "1.10.0", "1.2.0", "1.2.0-rc.1"):
             update_entry(self.registry, REPO, f"v{v}", packed(v))

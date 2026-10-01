@@ -46,10 +46,13 @@ to publish. The first publish of a new plugin name registers it; later publishes
 ## What it does
 
 1. Installs dependencies and rpp.
-2. Runs `rpp plugin pack --json`, and fails unless the tag is `v<version>`.
-3. Uploads `<name>-<version>.rpp.tgz` and its `.sha256` to the tag's release, creating the release if needed.
-4. Forks the registry, adds the version to `plugins/<name>.json`, regenerates `index.json`, runs
-   `registry.py check --base origin/main`, and opens a pull request from the branch `<name>-<version>`.
+2. Runs `rpp plugin pack --json`, and fails unless the tag is `v<version>`. The JSON has `file` (the archive's file
+   name) and `path` (where it was written under `--out`).
+3. Forks the registry, adds the version to `plugins/<name>.json`, regenerates `index.json`, and runs
+   `registry.py check --base origin/main`. A version already in the registry fails the run before anything is uploaded.
+4. Uploads `<name>-<version>.rpp.tgz` and its `.sha256` to the tag's release, creating the release if needed. If the
+   release already has that asset, the run fails when its bytes differ and skips the upload when they match.
+5. Opens a registry pull request from the branch `<name>-<version>`.
 
 A plugin's public types must not reference types from its npm dependencies, because declarations from `node_modules`
 are not packed.

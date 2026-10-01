@@ -144,7 +144,8 @@ fn pack_writes_deterministic_archive_and_sha() {
     assert_eq!(first["version"], "1.2.3");
     assert_eq!(first["rpp"], ">=0.1");
     assert_eq!(first["description"], "A packed plugin");
-    assert!(first["file"]
+    assert_eq!(first["file"], "packed-1.2.3.rpp.tgz");
+    assert!(first["path"]
         .as_str()
         .unwrap()
         .ends_with("out-a/packed-1.2.3.rpp.tgz"));
@@ -207,6 +208,27 @@ fn pack_rewrites_manifest_entry_and_config() {
             "config": "dist/config.js",
             "components": { "tool": "tool.wasm" },
         })
+    );
+}
+
+#[test]
+fn pack_rejects_config_importing_the_plugin_sdk() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    plugin(root);
+    write(
+        root,
+        "src/config.ts",
+        "import { definePlugin } from \"#rpp\";\nexport const config: typeof definePlugin = definePlugin;\n",
+    );
+
+    let out = run(root, &["plugin", "pack", "--out", "out"]);
+
+    assert!(!out.status.success());
+    assert!(
+        stderr(&out).contains("packed `dist/config.js` is not self-contained"),
+        "{}",
+        stderr(&out)
     );
 }
 

@@ -1,9 +1,10 @@
 //! Self-contained plugin bundles for publishing.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use oxc::allocator::Allocator;
+use oxc::ast::ast::ModuleDeclaration;
 use oxc::codegen::Codegen;
 use oxc::isolated_declarations::{IsolatedDeclarations, IsolatedDeclarationsOptions};
 use oxc::parser::Parser;
@@ -107,11 +108,14 @@ pub fn pack(request: &PackRequest) -> Result<PackOutput> {
             import: config.clone(),
         }];
         let Built { inputs, .. } = build(&bundle_request, &settings, inputs)?;
-        declarations = declare(&request.root, &inputs)?;
-        let stub = config_stub(config, &declarations);
-        if let Some(stub) = stub {
+        let declared = declare(&request.root, &inputs)?;
+        if let Some(stub) = config_stub(config, &declared) {
             files.insert("dist/config.d.ts".to_string(), stub);
         }
+        declarations = declared
+            .into_iter()
+            .map(|(path, declaration)| (path, declaration.text))
+            .collect();
     }
     Ok(PackOutput {
         files,
@@ -120,22 +124,34 @@ pub fn pack(request: &PackRequest) -> Result<PackOutput> {
 }
 
 fn is_typescript(path: &str) -> bool {
-    path.ends_with(".ts") && !path.ends_with(".d.ts")
+    (path.ends_with(".ts") && !path.ends_with(".d.ts"))
+        || (path.ends_with(".mts") && !path.ends_with(".d.mts"))
 }
 
+/// `types/<path>.d.ts` for a `.ts` file, `.d.mts` for a `.mts` file.
 fn declaration_path(relative: &str) -> String {
-    format!("types/{}.d.ts", relative.trim_end_matches(".ts"))
+    match relative.strip_suffix(".mts") {
+        Some(stem) => format!("types/{stem}.d.mts"),
+        None => format!(
+            "types/{}.d.ts",
+            relative.strip_suffix(".ts").unwrap_or(relative)
+        ),
+    }
 }
 
 /// `dist/config.d.ts`, re-exporting the config's generated declaration.
-fn config_stub(config: &str, declarations: &BTreeMap<String, String>) -> Option<String> {
-    let declaration = declarations.get(&declaration_path(config.trim_start_matches("./")))?;
-    let target = format!(
-        "../types/{}.js",
-        config.trim_start_matches("./").trim_end_matches(".ts")
-    );
+fn config_stub(config: &str, declarations: &BTreeMap<String, Declaration>) -> Option<String> {
+    let config = config.trim_start_matches("./");
+    let declaration = declarations.get(&declaration_path(config))?;
+    let target = match config.strip_suffix(".mts") {
+        Some(stem) => format!("../types/{stem}.mjs"),
+        None => format!(
+            "../types/{}.js",
+            config.strip_suffix(".ts").unwrap_or(config)
+        ),
+    };
     let mut stub = format!("export * from \"{target}\";\n");
-    if declaration.contains("export default") {
+    if declaration.has_default {
         stub.push_str(&format!("export {{ default }} from \"{target}\";\n"));
     }
     Some(stub)
@@ -156,26 +172,45 @@ fn relative_to_dist(source_map: &str) -> Result<String> {
     Ok(map.to_string())
 }
 
-/// Isolated declarations for every `.ts` file in `inputs` under `root`, outside
-/// `node_modules`.
-fn declare(root: &Path, inputs: &[PathBuf]) -> Result<BTreeMap<String, String>> {
+/// A generated declaration file.
+struct Declaration {
+    text: String,
+    /// Relative module specifiers the declaration imports or re-exports.
+    specifiers: Vec<String>,
+    has_default: bool,
+}
+
+/// Isolated declarations for every `.ts`/`.mts` file in `inputs` under `root` outside
+/// `node_modules`, and for the relative modules those declarations refer to, which
+/// bundling never loads when they are only used as types.
+fn declare(root: &Path, inputs: &[PathBuf]) -> Result<BTreeMap<String, Declaration>> {
     let root = root.canonicalize()?;
+    let mut pending: Vec<PathBuf> = inputs.to_vec();
+    let mut seen = BTreeSet::new();
     let mut declarations = BTreeMap::new();
     let mut errors = Vec::new();
-    for path in inputs {
+    while let Some(path) = pending.pop() {
         let Ok(relative) = path.strip_prefix(&root) else {
             continue;
         };
         let relative_text = relative.to_string_lossy().replace('\\', "/");
         if !is_typescript(&relative_text)
             || relative.components().any(|c| c.as_os_str() == NODE_MODULES)
+            || !seen.insert(path.clone())
         {
             continue;
         }
-        let source = std::fs::read_to_string(path)?;
-        match declaration(&source) {
-            Ok(text) => {
-                declarations.insert(declaration_path(&relative_text), text);
+        let source = std::fs::read_to_string(&path)?;
+        match declaration(&path, &source) {
+            Ok(generated) => {
+                let dir = path.parent().unwrap_or(&root);
+                pending.extend(
+                    generated
+                        .specifiers
+                        .iter()
+                        .filter_map(|specifier| resolve_relative(dir, specifier)),
+                );
+                declarations.insert(declaration_path(&relative_text), generated);
             }
             Err(messages) => {
                 errors.extend(
@@ -189,6 +224,7 @@ fn declare(root: &Path, inputs: &[PathBuf]) -> Result<BTreeMap<String, String>> 
     if errors.is_empty() {
         Ok(declarations)
     } else {
+        errors.sort();
         Err(Error::Bundle(format!(
             "cannot generate declarations (isolated declarations require explicit types on exports):\n{}",
             errors.join("\n")
@@ -196,9 +232,34 @@ fn declare(root: &Path, inputs: &[PathBuf]) -> Result<BTreeMap<String, String>> 
     }
 }
 
-fn declaration(source: &str) -> std::result::Result<String, Vec<String>> {
+/// The TypeScript file a relative specifier names, as `tsc` resolves it.
+fn resolve_relative(dir: &Path, specifier: &str) -> Option<PathBuf> {
+    if !specifier.starts_with("./") && !specifier.starts_with("../") {
+        return None;
+    }
+    let base = dir.join(specifier);
+    let text = base.to_string_lossy();
+    let mut candidates = vec![base.clone()];
+    if let Some(stem) = text.strip_suffix(".js") {
+        candidates.push(format!("{stem}.ts").into());
+    }
+    if let Some(stem) = text.strip_suffix(".mjs") {
+        candidates.push(format!("{stem}.mts").into());
+    }
+    for extension in ["ts", "mts"] {
+        candidates.push(format!("{text}.{extension}").into());
+        candidates.push(base.join(format!("index.{extension}")));
+    }
+    candidates
+        .into_iter()
+        .filter(|c| matches!(c.extension().and_then(|e| e.to_str()), Some("ts" | "mts")))
+        .find_map(|c| c.canonicalize().ok().filter(|c| c.is_file()))
+}
+
+fn declaration(path: &Path, source: &str) -> std::result::Result<Declaration, Vec<String>> {
     let allocator = Allocator::default();
-    let parsed = Parser::new(&allocator, source, SourceType::ts()).parse();
+    let source_type = SourceType::from_path(path).unwrap_or_else(|_| SourceType::ts());
+    let parsed = Parser::new(&allocator, source, source_type).parse();
     if parsed.diagnostics.has_errors() {
         return Err(parsed.diagnostics.errors().map(describe).collect());
     }
@@ -207,7 +268,35 @@ fn declaration(source: &str) -> std::result::Result<String, Vec<String>> {
     if generated.diagnostics.has_errors() {
         return Err(generated.diagnostics.errors().map(describe).collect());
     }
-    Ok(Codegen::new().build(&generated.program).code)
+    let mut specifiers = Vec::new();
+    let mut has_default = false;
+    for declaration in generated
+        .program
+        .body
+        .iter()
+        .filter_map(|statement| statement.as_module_declaration())
+    {
+        match declaration {
+            ModuleDeclaration::ImportDeclaration(d) => specifiers.push(d.source.value.to_string()),
+            ModuleDeclaration::ExportAllDeclaration(d) => {
+                specifiers.push(d.source.value.to_string());
+            }
+            ModuleDeclaration::ExportNamedDeclaration(d) => {
+                has_default |= d.specifiers.iter().any(|s| s.exported.name() == "default");
+            }
+            ModuleDeclaration::ExportFromDeclaration(d) => {
+                specifiers.push(d.source.value.to_string());
+                has_default |= d.specifiers.iter().any(|s| s.exported.name() == "default");
+            }
+            ModuleDeclaration::ExportDefaultDeclaration(_) => has_default = true,
+            _ => {}
+        }
+    }
+    Ok(Declaration {
+        text: Codegen::new().build(&generated.program).code,
+        specifiers,
+        has_default,
+    })
 }
 
 fn describe(diagnostic: &oxc::diagnostics::OxcDiagnostic) -> String {

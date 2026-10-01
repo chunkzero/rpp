@@ -9,6 +9,7 @@ use flate2::write::GzEncoder;
 use flate2::{read::GzDecoder, Compression};
 use rpp::js::SDK_FILES;
 use rpp::manifest::PluginManifest;
+use rpp_fetch::{MAX_ENTRIES, MAX_FILE_BYTES, MAX_TOTAL_BYTES};
 use rpp_js::{BundleRequest, PackRequest};
 use serde::Serialize;
 use serde_json::Value;
@@ -25,8 +26,10 @@ pub struct Packed {
     pub rpp: String,
     /// The manifest description.
     pub description: Option<String>,
-    /// The archive path.
-    pub file: PathBuf,
+    /// The archive's file name.
+    pub file: String,
+    /// The archive's path, inside the `--out` directory.
+    pub path: PathBuf,
     /// Lowercase hex SHA-256 of the archive.
     pub sha256: String,
 }
@@ -78,14 +81,22 @@ pub fn pack(dir: &Path, out: &Path) -> Result<Packed> {
         files.insert(component.module.trim_start_matches("./").to_string(), bytes);
     }
 
+    check_limits(
+        &files,
+        &Limits {
+            entries: MAX_ENTRIES,
+            file_bytes: MAX_FILE_BYTES,
+            total_bytes: MAX_TOTAL_BYTES,
+        },
+    )?;
     let archive = archive(&files)?;
     self_check(&archive)?;
 
     let sha256 = format!("{:x}", Sha256::digest(&archive));
     let name = format!("{}-{}.rpp.tgz", manifest.id, manifest.version);
     fs::create_dir_all(out).with_context(|| format!("creating {}", out.display()))?;
-    let file = out.join(&name);
-    fs::write(&file, &archive).with_context(|| format!("writing {}", file.display()))?;
+    let path = out.join(&name);
+    fs::write(&path, &archive).with_context(|| format!("writing {}", path.display()))?;
     let checksum = out.join(format!("{name}.sha256"));
     fs::write(&checksum, format!("{sha256}  {name}\n"))
         .with_context(|| format!("writing {}", checksum.display()))?;
@@ -95,9 +106,45 @@ pub fn pack(dir: &Path, out: &Path) -> Result<Packed> {
         version: manifest.version.to_string(),
         rpp: range.to_string(),
         description: manifest.description,
-        file,
+        file: name,
+        path,
         sha256,
     })
+}
+
+/// What `rpp plugin add` accepts when it unpacks an archive.
+struct Limits {
+    entries: usize,
+    file_bytes: u64,
+    total_bytes: u64,
+}
+
+fn check_limits(files: &BTreeMap<String, Vec<u8>>, limits: &Limits) -> Result<()> {
+    if files.len() > limits.entries {
+        bail!(
+            "the archive has {} files; installs accept at most {}",
+            files.len(),
+            limits.entries
+        );
+    }
+    let mut total = 0u64;
+    for (path, contents) in files {
+        let size = contents.len() as u64;
+        if size > limits.file_bytes {
+            bail!(
+                "`{path}` is {size} bytes; installs accept files of at most {} bytes",
+                limits.file_bytes
+            );
+        }
+        total += size;
+    }
+    if total > limits.total_bytes {
+        bail!(
+            "the archive unpacks to {total} bytes; installs accept at most {} bytes",
+            limits.total_bytes
+        );
+    }
+    Ok(())
 }
 
 /// A gzipped tar with sorted entries at the archive root and no timestamps or owners.
@@ -118,33 +165,58 @@ fn archive(files: &BTreeMap<String, Vec<u8>>) -> Result<Vec<u8>> {
     Ok(encoder.finish()?)
 }
 
-/// Unpacks the archive and bundles its entries the way an installing rpp does.
+/// Unpacks the archive and bundles each entry with only the SDK modules its loader
+/// provides: `#rpp` for the plugin, `#rpp/config` for the config.
 fn self_check(archive: &[u8]) -> Result<()> {
     let dir = tempfile::tempdir()?;
     tar::Archive::new(GzDecoder::new(archive))
         .unpack(dir.path())
         .context("unpacking the archive")?;
     let manifest = PluginManifest::load(dir.path()).context("checking the packed manifest")?;
-    let mut entries = vec![manifest.entry];
-    entries.extend(manifest.config);
-    for entry in entries {
+    let sdk = |name: &str| {
+        SDK_FILES
+            .iter()
+            .find(|(file, _)| *file == name)
+            .map(|(_, source)| (*source).to_string())
+            .expect("embedded SDK file")
+    };
+    let mut entries = vec![(manifest.entry, "#rpp", sdk("index.ts"))];
+    if let Some(config) = manifest.config {
+        entries.push((config, "#rpp/config", sdk("config.ts")));
+    }
+    for (entry, specifier, source) in entries {
         let request = BundleRequest {
             root: dir.path().to_path_buf(),
             entry: entry.clone(),
-            virtual_modules: SDK_FILES
-                .iter()
-                .map(|(name, source)| {
-                    let specifier = match *name {
-                        "index.ts" => "#rpp".to_string(),
-                        other => format!("#rpp/{}", other.trim_end_matches(".ts")),
-                    };
-                    (specifier, (*source).to_string())
-                })
-                .collect(),
+            virtual_modules: BTreeMap::from([(specifier.to_string(), source)]),
             ..Default::default()
         };
         rpp_js::bundle(&request)
             .with_context(|| format!("the packed `{entry}` is not self-contained"))?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn limits_reject_oversized_files_and_totals() {
+        let files = BTreeMap::from([
+            ("a.js".to_string(), vec![0u8; 6]),
+            ("b.js".to_string(), vec![0u8; 6]),
+        ]);
+        let limits = |file_bytes, total_bytes| Limits {
+            entries: 10,
+            file_bytes,
+            total_bytes,
+        };
+
+        assert!(check_limits(&files, &limits(6, 12)).is_ok());
+        let per_file = check_limits(&files, &limits(5, 100)).unwrap_err();
+        assert!(per_file.to_string().contains("`a.js` is 6 bytes"));
+        let total = check_limits(&files, &limits(6, 11)).unwrap_err();
+        assert!(total.to_string().contains("unpacks to 12 bytes"));
+    }
 }

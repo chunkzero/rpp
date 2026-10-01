@@ -56,6 +56,29 @@ runs:
         fi
         echo "out=$out" >> "$GITHUB_OUTPUT"
         echo "file=$(jq -r .file "$out/packed.json")" >> "$GITHUB_OUTPUT"
+        echo "sha256=$(jq -r .sha256 "$out/packed.json")" >> "$GITHUB_OUTPUT"
+
+    - name: Prepare registry update
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.registry-token }}
+        OUT: ${{ steps.pack.outputs.out }}
+        UPDATE_ENTRY: ${{ github.action_path }}/update_entry.py
+      run: |
+        registry=chunkzero/rpp-registry
+        name=$(jq -r .name "$OUT/packed.json")
+        version=$(jq -r .version "$OUT/packed.json")
+
+        gh repo fork "$registry" --clone=false
+        gh auth setup-git
+        git clone "https://github.com/$registry" "$RUNNER_TEMP/registry"
+        cd "$RUNNER_TEMP/registry"
+        git checkout -b "$name-$version"
+
+        python3 "$UPDATE_ENTRY" --registry . --repository "https://github.com/$GITHUB_REPOSITORY" \
+          --tag "$GITHUB_REF_NAME" --packed "$OUT/packed.json"
+        python3 scripts/registry.py index
+        python3 scripts/registry.py check --base origin/main
 
     - name: Upload release asset
       shell: bash
@@ -63,42 +86,42 @@ runs:
         GH_TOKEN: ${{ github.token }}
         OUT: ${{ steps.pack.outputs.out }}
         FILE: ${{ steps.pack.outputs.file }}
+        SHA256: ${{ steps.pack.outputs.sha256 }}
       run: |
         gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 \
           || gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes
-        gh release upload "$GITHUB_REF_NAME" "$OUT/$FILE" "$OUT/$FILE.sha256" --clobber
+        published=$(gh release view "$GITHUB_REF_NAME" --json assets --jq ".assets[].name | select(. == \"$FILE\")")
+        if [ -n "$published" ]; then
+          existing="$RUNNER_TEMP/published"
+          mkdir -p "$existing"
+          gh release download "$GITHUB_REF_NAME" --pattern "$FILE" --dir "$existing" --clobber
+          if [ "$(sha256sum "$existing/$FILE" | cut -d' ' -f1)" != "$SHA256" ]; then
+            echo "::error::$FILE is already published for $GITHUB_REF_NAME with different bytes; bump the version"
+            exit 1
+          fi
+          echo "$FILE is already published with identical bytes; skipping upload"
+        else
+          gh release upload "$GITHUB_REF_NAME" "$OUT/$FILE" "$OUT/$FILE.sha256"
+        fi
 
     - name: Open registry pull request
       shell: bash
       env:
         GH_TOKEN: ${{ inputs.registry-token }}
         OUT: ${{ steps.pack.outputs.out }}
-        FILE: ${{ steps.pack.outputs.file }}
-        UPDATE_ENTRY: ${{ github.action_path }}/update_entry.py
       run: |
-        registry=chunkzero/rpp-registry
         name=$(jq -r .name "$OUT/packed.json")
         version=$(jq -r .version "$OUT/packed.json")
         branch="$name-$version"
         login=$(gh api user --jq .login)
 
-        gh repo fork "$registry" --clone=false
-        gh auth setup-git
-        git clone "https://github.com/$registry" "$RUNNER_TEMP/registry"
         cd "$RUNNER_TEMP/registry"
         git remote add fork "https://github.com/$login/rpp-registry"
-        git checkout -b "$branch"
-
-        python3 "$UPDATE_ENTRY" --registry . --repository "https://github.com/$GITHUB_REPOSITORY" \
-          --tag "$GITHUB_REF_NAME" --packed "$OUT/packed.json"
-        python3 scripts/registry.py index
-        python3 scripts/registry.py check --base origin/main
-
         git config user.name "github-actions[bot]"
         git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
         git add plugins index.json
         git commit -m "feat: add $name $version"
         git push --force fork "$branch"
-        gh pr create --repo "$registry" --head "$login:$branch" \
+        gh pr create --repo chunkzero/rpp-registry --head "$login:$branch" \
           --title "feat: add $name $version" \
           --body "Publishes $name $version from https://github.com/$GITHUB_REPOSITORY/releases/tag/$GITHUB_REF_NAME."
