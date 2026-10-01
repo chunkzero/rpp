@@ -87,7 +87,7 @@ impl Manifest {
     }
 }
 
-fn rpp_version() -> Result<Version> {
+pub(crate) fn rpp_version() -> Result<Version> {
     Version::parse(env!("CARGO_PKG_VERSION")).context("parsing the rpp version")
 }
 

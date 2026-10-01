@@ -68,7 +68,8 @@ impl DevSession {
             return Ok(());
         };
         let reloaded = if config {
-            let reloaded = (self.discover)(&self.project.root).context("reloading rpp.toml")?;
+            let reloaded =
+                (self.discover)(&self.project.root).context("reloading the project config")?;
             // The served directory, watched source tree, and listening address
             // are fixed for the session; everything else reloads in place.
             let fixed_changed = self.project.source_dir() != reloaded.source_dir()
@@ -85,6 +86,9 @@ impl DevSession {
             self.watcher
                 .set_plugin_dirs(local_plugin_dirs(&reloaded))
                 .context("updating watched plugin directories")?;
+            self.watcher
+                .set_config_files(reloaded.config_files())
+                .context("updating watched config files")?;
             if self.project.config.build.wasm.memory_limit_mb
                 != reloaded.config.build.wasm.memory_limit_mb
                 || self.project.config.build.wasm.execution_deadline_seconds

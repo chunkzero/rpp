@@ -18,14 +18,14 @@ pub enum ChangeKind {
     Source,
     /// A plugin file (rebuild the engine with reloaded factories).
     Plugin,
-    /// `rpp.toml` itself (full project reload).
+    /// A project config file (full project reload).
     Config,
 }
 
 /// A classified, deduplicated batch of changed paths.
 #[derive(Debug, Default, Clone)]
 pub struct ChangeBatch {
-    /// Whether `rpp.toml` changed.
+    /// Whether a project config file changed.
     pub kind_config: bool,
     /// Whether a plugin directory changed.
     pub kind_plugin: bool,
@@ -47,15 +47,34 @@ impl ChangeBatch {
     }
 }
 
-/// The live filesystem watcher. Plugin directories are re-targeted when
-/// `rpp.toml` changes; the source directory and config path are fixed for the
-/// life of the session.
+/// The live filesystem watcher. Plugin directories and config files are re-targeted
+/// when the project config changes; the source directory is fixed for the life of
+/// the session.
 pub struct DevWatcher {
     debouncer: Debouncer<RecommendedWatcher, FileIdMap>,
     plugin_dirs: Arc<RwLock<Vec<PathBuf>>>,
+    config_files: Arc<RwLock<Vec<PathBuf>>>,
+    source_dir: PathBuf,
+    watched_dirs: Vec<PathBuf>,
 }
 
 impl DevWatcher {
+    /// Treat `files` as project config files, watching their directories.
+    pub fn set_config_files(&mut self, files: Vec<PathBuf>) -> Result<()> {
+        for dir in files.iter().filter_map(|file| file.parent()) {
+            if self.watched_dirs.iter().any(|d| d == dir) || dir.starts_with(&self.source_dir) {
+                continue;
+            }
+            self.debouncer
+                .watcher()
+                .watch(dir, RecursiveMode::NonRecursive)
+                .with_context(|| format!("watching {}", dir.display()))?;
+            self.watched_dirs.push(dir.to_path_buf());
+        }
+        *self.config_files.write().unwrap_or_else(|e| e.into_inner()) = files;
+        Ok(())
+    }
+
     /// Watch `dirs` instead of the current plugin directories.
     pub fn set_plugin_dirs(&mut self, dirs: Vec<PathBuf>) -> Result<()> {
         let current = self
@@ -95,12 +114,12 @@ pub fn spawn_watcher(
     tx: mpsc::UnboundedSender<ChangeBatch>,
 ) -> Result<DevWatcher> {
     let source_dir = source_dir.to_path_buf();
-    let config_path = config_path.to_path_buf();
+    let config_files = Arc::new(RwLock::new(vec![config_path.to_path_buf()]));
     let ignore_dir = root.join(".rpp");
     let plugin_dirs = Arc::new(RwLock::new(Vec::new()));
 
     let cls_source = source_dir.clone();
-    let cls_config = config_path.clone();
+    let cls_config = Arc::clone(&config_files);
     let cls_plugins = Arc::clone(&plugin_dirs);
 
     let mut debouncer = new_debouncer(
@@ -120,8 +139,8 @@ pub fn spawn_watcher(
                 .read()
                 .unwrap_or_else(|e| e.into_inner())
                 .clone();
-            if let Some(batch) = classify(&events, &cls_source, &cls_config, &plugins, &ignore_dir)
-            {
+            let configs = cls_config.read().unwrap_or_else(|e| e.into_inner()).clone();
+            if let Some(batch) = classify(&events, &cls_source, &configs, &plugins, &ignore_dir) {
                 let _ = tx.send(batch);
             }
         },
@@ -132,15 +151,20 @@ pub fn spawn_watcher(
         .watcher()
         .watch(&source_dir, RecursiveMode::Recursive)
         .with_context(|| format!("watching {}", source_dir.display()))?;
+    let mut watched_dirs = Vec::new();
     if let Some(parent) = config_path.parent() {
         debouncer
             .watcher()
             .watch(parent, RecursiveMode::NonRecursive)
             .with_context(|| format!("watching {}", parent.display()))?;
+        watched_dirs.push(parent.to_path_buf());
     }
     let mut watcher = DevWatcher {
         debouncer,
         plugin_dirs,
+        config_files,
+        source_dir,
+        watched_dirs,
     };
     watcher.set_plugin_dirs(initial_plugin_dirs)?;
     Ok(watcher)
@@ -151,7 +175,7 @@ pub fn spawn_watcher(
 pub fn classify(
     events: &[DebouncedEvent],
     source_dir: &Path,
-    config_path: &Path,
+    config_files: &[PathBuf],
     plugin_dirs: &[PathBuf],
     ignore_dir: &Path,
 ) -> Option<ChangeBatch> {
@@ -161,7 +185,7 @@ pub fn classify(
             if path.starts_with(ignore_dir) {
                 continue;
             }
-            let kind = classify_path(path, source_dir, config_path, plugin_dirs);
+            let kind = classify_path(path, source_dir, config_files, plugin_dirs);
             match kind {
                 Some(ChangeKind::Config) => batch.kind_config = true,
                 Some(ChangeKind::Plugin) => batch.kind_plugin = true,
@@ -181,10 +205,10 @@ pub fn classify(
 pub fn classify_path(
     path: &Path,
     source_dir: &Path,
-    config_path: &Path,
+    config_files: &[PathBuf],
     plugin_dirs: &[PathBuf],
 ) -> Option<ChangeKind> {
-    if path == config_path {
+    if config_files.iter().any(|file| file == path) {
         return Some(ChangeKind::Config);
     }
     if plugin_dirs.iter().any(|d| path.starts_with(d)) {
@@ -205,6 +229,16 @@ pub fn local_plugin_dirs(project: &Project) -> Vec<PathBuf> {
         &project.user_plugins.root,
     );
     collect_local_plugin_dirs(&mut dirs, &project.config.plugins, &project.root);
+    if let Some(ts) = &project.ts {
+        dirs.extend(
+            project
+                .config
+                .plugins
+                .iter()
+                .filter_map(|plugin| ts.packages.get(plugin.package.as_deref()?))
+                .map(|package| package.dir.clone()),
+        );
+    }
     dirs
 }
 

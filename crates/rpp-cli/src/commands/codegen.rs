@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Result};
 
-use crate::project::CONFIG_FILE;
+use crate::project::{CONFIG_FILE, TS_CONFIG_FILE};
 use crate::{codegen, ui};
 
 const PLUGIN_FILE: &str = "plugin.toml";
@@ -18,16 +18,18 @@ pub fn run(dir: &Path) -> Result<()> {
     Ok(())
 }
 
-/// The nearest ancestor of `start` containing `rpp.toml` or `plugin.toml`.
+/// The nearest ancestor of `start` containing `rpp.toml`, `rpp.config.ts` or `plugin.toml`.
 pub(crate) fn find_root(start: &Path) -> Result<PathBuf> {
     let start = std::path::absolute(start)?;
-    let found = start
-        .ancestors()
-        .find(|dir| dir.join(CONFIG_FILE).is_file() || dir.join(PLUGIN_FILE).is_file());
+    let found = start.ancestors().find(|dir| {
+        [CONFIG_FILE, TS_CONFIG_FILE, PLUGIN_FILE]
+            .iter()
+            .any(|name| dir.join(name).is_file())
+    });
     match found {
         Some(dir) => Ok(dir.to_path_buf()),
         None => bail!(
-            "no `{CONFIG_FILE}` or `{PLUGIN_FILE}` found in `{}` or any parent directory",
+            "no `{CONFIG_FILE}`, `{TS_CONFIG_FILE}` or `{PLUGIN_FILE}` found in `{}` or any parent directory",
             start.display()
         ),
     }

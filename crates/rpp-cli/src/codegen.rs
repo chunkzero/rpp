@@ -1,11 +1,14 @@
 //! TypeScript editor and type-checker support: the SDK under `.rpp/sdk` and the
 //! tsconfig files that map `#rpp` onto it.
 
-use std::path::Path;
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 
-const TSCONFIG: &str = r##"{
+use crate::project::{resolve_ts_packages, CONFIG_FILE, TS_CONFIG_FILE};
+
+const TSCONFIG_HEAD: &str = r##"{
   "compilerOptions": {
     "target": "ES2023",
     "lib": ["ES2023"],
@@ -18,10 +21,14 @@ const TSCONFIG: &str = r##"{
     "isolatedModules": true,
     "skipLibCheck": true,
     "types": [],
-    "paths": { "#rpp": ["./sdk/index.ts"] }
+    "paths": {
+      "#rpp": ["./sdk/index.ts"]"##;
+
+const TSCONFIG_TAIL: &str = r#"
+    }
   }
 }
-"##;
+"#;
 
 const ROOT_TSCONFIG: &str = r#"{
   "extends": "./.rpp/tsconfig.json",
@@ -96,16 +103,49 @@ declare function atob(data: string): string;
 declare function btoa(data: string): string;
 "#;
 
+/// The `.rpp/tsconfig.json` contents. `plugin_configs` maps dependency names to their
+/// config modules; it is `Some` for `rpp.config.ts` projects, which also map `#rpp/config`.
+fn tsconfig(plugin_configs: Option<&BTreeMap<String, PathBuf>>) -> String {
+    let mut text = TSCONFIG_HEAD.to_string();
+    if let Some(plugin_configs) = plugin_configs {
+        text.push_str(",\n      \"#rpp/config\": [\"./sdk/config.ts\"]");
+        for (name, path) in plugin_configs {
+            let path = path.to_string_lossy().replace('\\', "/");
+            text.push_str(&format!(",\n      \"#plugins/{name}\": [{path:?}]"));
+        }
+    }
+    text.push_str(TSCONFIG_TAIL);
+    text
+}
+
 /// Write the SDK and tsconfig files under `root`, and `tsconfig.json` if absent.
 /// Returns whether any file changed.
 pub fn write(root: &Path) -> Result<bool> {
+    let ts_project = root.join(TS_CONFIG_FILE).is_file() && !root.join(CONFIG_FILE).is_file();
+    let plugin_configs = if ts_project {
+        let packages = resolve_ts_packages(root)?;
+        Some(
+            packages
+                .into_iter()
+                .filter_map(|(name, package)| {
+                    let config = package.manifest.config?;
+                    Some((name, package.dir.join(config)))
+                })
+                .collect(),
+        )
+    } else {
+        None
+    };
     let rpp_dir = root.join(".rpp");
     let mut changed = false;
     for (path, contents) in rpp::js::SDK_FILES {
         changed |= write_if_changed(&rpp_dir.join("sdk").join(path), contents)?;
     }
     changed |= write_if_changed(&rpp_dir.join("sdk/globals.d.ts"), GLOBALS)?;
-    changed |= write_if_changed(&rpp_dir.join("tsconfig.json"), TSCONFIG)?;
+    changed |= write_if_changed(
+        &rpp_dir.join("tsconfig.json"),
+        &tsconfig(plugin_configs.as_ref()),
+    )?;
 
     let root_config = root.join("tsconfig.json");
     if !root_config.exists() {

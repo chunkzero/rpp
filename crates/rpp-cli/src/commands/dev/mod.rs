@@ -47,7 +47,8 @@ async fn serve(project: Project) -> Result<()> {
     // Watch before the initial build so edits made during it are not lost;
     // they queue in the channel until the rebuild loop starts.
     let (fs_tx, fs_rx) = tokio::sync::mpsc::unbounded_channel();
-    let watcher = spawn_watcher(&root, &source_dir, &config_path, plugin_dirs, fs_tx)?;
+    let mut watcher = spawn_watcher(&root, &source_dir, &config_path, plugin_dirs, fs_tx)?;
+    watcher.set_config_files(project.config_files())?;
     let packs = pack::PackStore::default();
     let session = Arc::new(tokio::sync::Mutex::new(DevSession::new(
         project,
@@ -83,7 +84,7 @@ mod tests {
     #[test]
     fn classify_kinds() {
         let src = PathBuf::from("/proj/src");
-        let cfg = PathBuf::from("/proj/rpp.toml");
+        let cfg = vec![PathBuf::from("/proj/rpp.toml")];
         let plugins = vec![PathBuf::from("/proj/plugins/hello")];
 
         assert_eq!(
