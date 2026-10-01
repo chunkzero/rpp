@@ -3,3 +3,4 @@ id = "example-catalog"
 version = "1.0.0"
 description = "Generates item assets and an external catalog from Lua definitions."
 entry = "init.lua"
+overrides = ["**"]

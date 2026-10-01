@@ -21,6 +21,7 @@ struct MockFactory {
     has_generator: bool,
     behavior: Arc<ProcessFn>,
     generator: Option<Arc<GenerateFn>>,
+    overrides: Vec<String>,
 }
 
 impl MockFactory {
@@ -40,7 +41,13 @@ impl MockFactory {
             has_generator: false,
             behavior: Arc::new(behavior),
             generator: None,
+            overrides: Vec::new(),
         }
+    }
+
+    fn with_overrides(mut self, globs: &[&str]) -> Self {
+        self.overrides = globs.iter().map(|glob| glob.to_string()).collect();
+        self
     }
 
     fn with_generator(
@@ -68,6 +75,10 @@ impl PluginFactory for MockFactory {
 
     fn has_generator(&self) -> bool {
         self.has_generator
+    }
+
+    fn overrides(&self) -> &[String] {
+        &self.overrides
     }
 
     fn instantiate(&self) -> rpp::Result<Box<dyn PluginInstance>> {
@@ -169,12 +180,112 @@ fn colliding_generator_outputs_fail() {
         ])
         .build_engine()
         .unwrap();
-    engine.build().unwrap();
-    assert_eq!(
-        std::fs::read(project.root().join("dist/same.txt")).unwrap(),
-        b"second",
-        "a later generator overwrites an earlier generator's emit"
+    let err = engine.build().unwrap_err().to_string();
+    assert!(
+        err.contains("`second`") && err.contains("plugin `first`"),
+        "{err}"
     );
+    assert!(err.contains("same.txt"), "{err}");
+    assert!(!project.out_exists("same.txt"));
+}
+
+fn generator(
+    id: &str,
+    run: impl Fn(&mut dyn GeneratorHost) + Send + Sync + 'static,
+) -> MockFactory {
+    MockFactory::new(id, cache_key(id), |_, _file| ProcessOutcome::Unchanged).with_generator(
+        move |host| {
+            run(host);
+            Ok(())
+        },
+    )
+}
+
+fn build_error(project: &Project, plugins: Vec<Arc<dyn PluginFactory>>) -> String {
+    Engine::builder(project.config())
+        .project_root(project.root())
+        .plugins(plugins)
+        .build_engine()
+        .unwrap()
+        .build()
+        .unwrap_err()
+        .to_string()
+}
+
+#[test]
+fn generator_cannot_overwrite_source_output_without_override() {
+    let project = Project::new();
+    project.write_src("a.txt", "a");
+    let plugin = generator("gen", |host| host.emit("a.txt", b"x".to_vec()));
+    let err = build_error(&project, vec![Arc::new(plugin)]);
+    assert!(
+        err.contains("cannot emit `a.txt`: owned by source `a.txt`"),
+        "{err}"
+    );
+    assert!(err.contains("overrides"), "{err}");
+    assert!(!project.out_exists("a.txt"));
+}
+
+#[test]
+fn generator_override_glob_allows_overwrite_and_remove() {
+    let project = Project::new();
+    project.write_src("assets/a.txt", "a");
+    project.write_src("assets/b.txt", "b");
+    let plugin = generator("gen", |host| {
+        host.emit("assets/a.txt", b"x".to_vec());
+        host.remove("assets/b.txt");
+    })
+    .with_overrides(&["assets/*.txt"]);
+    build(&project, vec![Arc::new(plugin)]);
+    assert_eq!(project.read_out("assets/a.txt").as_deref(), Some("x"));
+    assert!(!project.out_exists("assets/b.txt"));
+}
+
+#[test]
+fn generator_cannot_remove_other_plugins_emit() {
+    let project = Project::new();
+    project.write_src("a.txt", "a");
+    let first = generator("first", |host| host.emit("x.txt", b"x".to_vec()));
+    let second = generator("second", |host| host.remove("x.txt"));
+    let err = build_error(&project, vec![Arc::new(first), Arc::new(second)]);
+    assert!(
+        err.contains("cannot remove `x.txt`: owned by plugin `first`"),
+        "{err}"
+    );
+}
+
+#[test]
+fn generator_may_reemit_and_remove_own_outputs() {
+    let project = Project::new();
+    project.write_src("a.txt", "a");
+    let plugin = generator("gen", |host| {
+        host.emit("x.txt", b"1".to_vec());
+        host.emit("x.txt", b"2".to_vec());
+        host.emit("y.txt", b"y".to_vec());
+        host.remove("x.txt");
+        host.remove("missing.txt");
+    });
+    build(&project, vec![Arc::new(plugin)]);
+    assert!(!project.out_exists("x.txt"));
+    assert_eq!(project.read_out("y.txt").as_deref(), Some("y"));
+}
+
+#[test]
+fn replayed_generator_rechecks_ownership_against_new_source() {
+    let project = Project::new();
+    project.write_src("a.txt", "a");
+    let plugin: Arc<dyn PluginFactory> =
+        Arc::new(generator("gen", |host| host.emit("out.txt", b"g".to_vec())));
+    build(&project, vec![plugin.clone()]);
+    assert_eq!(project.read_out("out.txt").as_deref(), Some("g"));
+
+    project.write_src("out.txt", "handwritten");
+    let err = build_error(&project, vec![plugin]);
+    assert!(
+        err.contains("cannot emit `out.txt`: owned by source `out.txt`"),
+        "{err}"
+    );
+    assert_eq!(project.read_out("out.txt").as_deref(), Some("g"));
 }
 
 #[test]

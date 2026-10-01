@@ -149,7 +149,7 @@ impl PublicationPlan {
             .filter(|path| !next_by_path.contains_key(*path))
             .cloned()
             .collect();
-        let mut recovery_by_path = previous_by_path;
+        let mut recovery_by_path = previous_by_path.clone();
         recovery_by_path.extend(
             next_by_path
                 .iter()
@@ -162,7 +162,16 @@ impl PublicationPlan {
         let mut writes = Vec::new();
         for (path, output) in next_by_path {
             let needs_write = match std::fs::read(&path) {
-                Ok(existing) => crate::util::hash::xxh3(&existing) != output.object,
+                Ok(existing) => {
+                    let same = crate::util::hash::xxh3(&existing) == output.object;
+                    if !same && !previous_by_path.contains_key(&path) {
+                        return Err(Error::Build(format!(
+                            "refusing to overwrite unowned file {}",
+                            path.display()
+                        )));
+                    }
+                    !same
+                }
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => true,
                 Err(error) => return Err(Error::io(&path, error)),
             };
@@ -319,8 +328,20 @@ mod tests {
         let root = project.path();
         std::fs::create_dir(root.join("generated")).unwrap();
         std::fs::write(root.join("generated/a.txt"), "previous").unwrap();
+        OwnershipManifest {
+            version: VERSION,
+            outputs: vec![OwnedOutput {
+                plugin: "test".into(),
+                root: "generated".into(),
+                path: "a.txt".into(),
+                object: 0,
+            }],
+        }
+        .save(root)
+        .unwrap();
         let manifest = build_manifest(&store, &["a.txt", "z.txt"]);
         let plan = PublicationPlan::prepare(&config, root, &manifest, &store).unwrap();
+        std::fs::remove_file(root.join(MANIFEST_PATH)).unwrap();
         std::fs::create_dir(root.join(MANIFEST_PATH)).unwrap();
         assert!(plan.record_recovery(root).is_err());
         drop(plan);

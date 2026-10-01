@@ -67,6 +67,7 @@ struct Shared {
     execution_limit: Duration,
     access: RuntimeAccess,
     cache_key: u64,
+    overrides: Vec<String>,
 }
 
 impl LuaPluginFactory {
@@ -136,6 +137,7 @@ impl LuaPluginFactory {
         Ok(LuaPluginFactory {
             shared: Arc::new(Shared {
                 id: manifest.id,
+                overrides: manifest.overrides,
                 root,
                 entry: manifest.entry,
                 entry_source,
@@ -218,6 +220,10 @@ impl PluginFactory for LuaPluginFactory {
 
     fn output_roots(&self) -> std::collections::BTreeMap<String, PathBuf> {
         self.shared.access.outputs.clone()
+    }
+
+    fn overrides(&self) -> &[String] {
+        &self.shared.overrides
     }
 
     fn instantiate(&self) -> Result<Box<dyn PluginInstance>> {

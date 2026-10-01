@@ -90,6 +90,11 @@ pub trait PluginFactory: Send + Sync {
     fn output_roots(&self) -> BTreeMap<String, PathBuf> {
         BTreeMap::new()
     }
+    /// Pack-path globs this plugin's generator may emit over or remove when another source
+    /// or plugin owns them.
+    fn overrides(&self) -> &[String] {
+        &[]
+    }
     /// Whether a source file is authoring input of this plugin (a discovered definition or
     /// an imported helper) and therefore not part of the pack.
     fn is_authoring_source(&self, _rel: &str) -> bool {

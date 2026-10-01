@@ -43,6 +43,31 @@ impl PluginDir {
         self
     }
 
+    /// Declare `overrides` globs in the plugin manifest.
+    pub fn with_overrides(self, globs: &[&str]) -> Self {
+        let id = self.id_from_manifest();
+        let list = globs
+            .iter()
+            .map(|g| format!("{g:?}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        std::fs::write(
+            self.dir.path().join("plugin.toml"),
+            format!("[plugin]\nid = \"{id}\"\nversion = \"1.0.0\"\noverrides = [{list}]\n"),
+        )
+        .unwrap();
+        self
+    }
+
+    fn id_from_manifest(&self) -> String {
+        let text = std::fs::read_to_string(self.dir.path().join("plugin.toml")).unwrap();
+        text.lines()
+            .find_map(|line| line.strip_prefix("id = \""))
+            .and_then(|rest| rest.strip_suffix('"'))
+            .expect("manifest id")
+            .to_string()
+    }
+
     pub fn path(&self) -> &Path {
         self.dir.path()
     }

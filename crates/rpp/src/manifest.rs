@@ -39,6 +39,9 @@ pub struct PluginManifest {
     /// Entry discovery patterns by name, relative to the pack source directory;
     /// `rpp.json` packages only.
     pub discover: BTreeMap<String, String>,
+    /// Pack-path globs of files this plugin's generator may emit over or remove even when
+    /// another source or plugin owns them.
+    pub overrides: Vec<String>,
 }
 
 /// One named component library shipped in a plugin package.
@@ -67,6 +70,8 @@ struct RawPlugin {
     authors: Vec<String>,
     #[serde(default)]
     entry: Option<String>,
+    #[serde(default)]
+    overrides: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -93,8 +98,18 @@ struct RawJsonManifest {
     #[serde(default)]
     discover: BTreeMap<String, String>,
     #[serde(default)]
+    overrides: Vec<String>,
+    #[serde(default)]
     #[allow(dead_code)]
     dependencies: Option<serde::de::IgnoredAny>,
+}
+
+fn validate_overrides(overrides: &[String]) -> std::result::Result<(), String> {
+    for pattern in overrides {
+        validate_relative(pattern).map_err(|m| format!("invalid `overrides` pattern: {m}"))?;
+        glob::compile(pattern).map_err(|m| format!("invalid `overrides` pattern: {m}"))?;
+    }
+    Ok(())
 }
 
 fn is_script_entry(entry: &str) -> bool {
@@ -134,6 +149,11 @@ impl PluginManifest {
             message: format!("invalid `entry`: {message}"),
         })?;
 
+        validate_overrides(&raw.overrides).map_err(|message| Error::Manifest {
+            path: path.clone(),
+            message,
+        })?;
+
         let mut validated_components = BTreeMap::new();
         for (name, component) in components {
             if !ID_REGEX.is_match(&name) {
@@ -164,6 +184,7 @@ impl PluginManifest {
             config: None,
             rpp: None,
             discover: BTreeMap::new(),
+            overrides: raw.overrides,
         })
     }
 
@@ -251,6 +272,8 @@ impl PluginManifest {
                 .map_err(|m| fail(format!("invalid pattern for discover `{name}`: {m}")))?;
         }
 
+        validate_overrides(&raw.overrides).map_err(fail)?;
+
         Ok(PluginManifest {
             id: raw.name,
             version,
@@ -261,6 +284,7 @@ impl PluginManifest {
             config: raw.config,
             rpp,
             discover: raw.discover,
+            overrides: raw.overrides,
         })
     }
 
@@ -402,6 +426,41 @@ authors = ["someone"]
             let err = PluginManifest::parse_json(&text, "rpp.json").unwrap_err();
             assert!(matches!(err, Error::Manifest { .. }), "{discover}");
         }
+    }
+
+    #[test]
+    fn parses_json_overrides() {
+        let m = PluginManifest::parse_json(
+            r#"{"name":"x","version":"1.0.0","overrides":["assets/*/textures/**"]}"#,
+            "rpp.json",
+        )
+        .unwrap();
+        assert_eq!(m.overrides, ["assets/*/textures/**"]);
+    }
+
+    #[test]
+    fn parses_toml_overrides() {
+        let m = PluginManifest::parse(
+            "[plugin]\nid=\"x\"\nversion=\"1.0.0\"\noverrides=[\"assets/**\"]\n",
+            "plugin.toml",
+        )
+        .unwrap();
+        assert_eq!(m.overrides, ["assets/**"]);
+    }
+
+    #[test]
+    fn rejects_invalid_overrides() {
+        for overrides in [r#"["../a"]"#, r#"["/abs/**"]"#, r#"["a/["]"#, r#"[""]"#] {
+            let text = format!(r#"{{"name":"x","version":"1.0.0","overrides":{overrides}}}"#);
+            let err = PluginManifest::parse_json(&text, "rpp.json").unwrap_err();
+            assert!(matches!(err, Error::Manifest { .. }), "{overrides}");
+        }
+        let err = PluginManifest::parse(
+            "[plugin]\nid=\"x\"\nversion=\"1.0.0\"\noverrides=[\"a/[\"]\n",
+            "plugin.toml",
+        )
+        .unwrap_err();
+        assert!(matches!(err, Error::Manifest { .. }));
     }
 
     #[test]

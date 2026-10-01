@@ -26,7 +26,6 @@ pub(crate) struct FilePhaseCtx<'a> {
     pub(crate) prev: Option<&'a Manifest>,
     pub(crate) new_manifest: &'a mut Manifest,
     pub(crate) output: &'a mut super::generator::OutputSet,
-    pub(crate) source_owners: &'a mut BTreeMap<String, String>,
     pub(crate) factories: &'a Arc<Vec<Arc<dyn crate::model::PluginFactory>>>,
 }
 
@@ -39,7 +38,6 @@ pub(crate) fn process_files(ctx: FilePhaseCtx<'_>) -> Result<FilePhaseStats> {
         prev,
         new_manifest,
         output,
-        source_owners,
         factories,
     } = ctx;
     let mut processed = 0usize;
@@ -74,14 +72,7 @@ pub(crate) fn process_files(ctx: FilePhaseCtx<'_>) -> Result<FilePhaseStats> {
 
         if clean {
             let entry = candidate.expect("clean implies prev entry").clone();
-            if materialize_file_entry(
-                store,
-                &engine.output,
-                &entry,
-                output,
-                source_owners,
-                &src.rel,
-            )? {
+            if materialize_file_entry(store, &engine.output, &entry, output, &src.rel)? {
                 if entry.outputs.is_empty() {
                     dropped += 1;
                 }
@@ -116,7 +107,7 @@ pub(crate) fn process_files(ctx: FilePhaseCtx<'_>) -> Result<FilePhaseStats> {
     // order, independent of worker completion order.
     for (rel, entry) in completed {
         for out in &entry.outputs {
-            super::cache_replay::claim_source_output(source_owners, &out.path, &rel)?;
+            super::cache_replay::claim_source_output(&mut output.owners, &out.path, &rel)?;
             output.files.insert(
                 out.path.clone(),
                 super::generator::OutputContent::Object(out.object),
@@ -197,10 +188,7 @@ name = "test"
             .unwrap();
         let store = ObjectStore::open(dir.path().join(".rpp/cache/objects")).unwrap();
         let mut manifest = Manifest::empty(0);
-        let mut output = super::super::generator::OutputSet {
-            files: BTreeMap::new(),
-        };
-        let mut owners = BTreeMap::new();
+        let mut output = super::super::generator::OutputSet::default();
         let result = process_files(FilePhaseCtx {
             engine: &engine,
             compiled: &engine.compiled,
@@ -209,7 +197,6 @@ name = "test"
             prev: None,
             new_manifest: &mut manifest,
             output: &mut output,
-            source_owners: &mut owners,
             factories: &engine.factories,
         });
         assert!(result.is_err());

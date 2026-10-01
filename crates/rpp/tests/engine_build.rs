@@ -728,7 +728,8 @@ plugin:generator("g", function(ctx)
 end)
 return plugin
 "#,
-    );
+    )
+    .with_overrides(&["remove.txt"]);
 
     build(&project, vec![plugin.factory_arc("")]);
     assert!(!project.out_exists("remove.txt"));
@@ -1194,4 +1195,110 @@ fn destination_boundaries_allow_symlinked_source_and_sibling_parents() {
         .plugin(factory("../alias/generated"))
         .build_engine()
         .is_err());
+}
+
+const EXTERNAL_GENERATOR: &str = r#"
+local rpp = require("rpp")
+local plugin = rpp.plugin()
+plugin:generator("codegen", function(ctx)
+    ctx:emit_output("code", "Gen.kt", ctx:read_source("v.txt") or "")
+    ctx:emit("a.txt", "generated")
+end)
+return plugin
+"#;
+
+#[test]
+fn ownership_conflict_publishes_nothing() {
+    let project = Project::new();
+    project.write_src("v.txt", "v1");
+    let plugin = PluginDir::lua("codegen", EXTERNAL_GENERATOR);
+    build(&project, vec![external_factory(&plugin, project.root())]);
+    let manifest = project.root().join(".rpp/cache/manifest.bin");
+    let manifest_before = std::fs::read(&manifest).unwrap();
+
+    project.write_src("v.txt", "v2");
+    project.write_src("a.txt", "handwritten");
+    let engine = Engine::builder(project.config())
+        .project_root(project.root())
+        .plugin(external_factory(&plugin, project.root()))
+        .build_engine()
+        .unwrap();
+    let error = engine.build().unwrap_err().to_string();
+    assert!(error.contains("cannot emit `a.txt`"), "{error}");
+    assert_eq!(project.read_out("a.txt").as_deref(), Some("generated"));
+    assert_eq!(
+        std::fs::read_to_string(project.root().join("generated/Gen.kt")).unwrap(),
+        "v1"
+    );
+    assert_eq!(std::fs::read(&manifest).unwrap(), manifest_before);
+}
+
+#[test]
+fn external_output_refuses_unowned_handwritten_file() {
+    let project = Project::new();
+    project.write_src("v.txt", "v1");
+    std::fs::create_dir(project.root().join("generated")).unwrap();
+    std::fs::write(project.root().join("generated/Gen.kt"), "handwritten").unwrap();
+    let plugin = PluginDir::lua("codegen", EXTERNAL_GENERATOR);
+    let engine = Engine::builder(project.config())
+        .project_root(project.root())
+        .plugin(external_factory(&plugin, project.root()))
+        .build_engine()
+        .unwrap();
+    let error = engine.build().unwrap_err().to_string();
+    assert!(
+        error.contains("refusing to overwrite unowned file"),
+        "{error}"
+    );
+    assert!(error.contains("Gen.kt"), "{error}");
+    assert_eq!(
+        std::fs::read_to_string(project.root().join("generated/Gen.kt")).unwrap(),
+        "handwritten"
+    );
+    assert!(!project.out_exists("a.txt"));
+}
+
+#[test]
+fn external_output_adopts_identical_unowned_file() {
+    let project = Project::new();
+    project.write_src("v.txt", "v1");
+    std::fs::create_dir(project.root().join("generated")).unwrap();
+    std::fs::write(project.root().join("generated/Gen.kt"), "v1").unwrap();
+    let plugin = PluginDir::lua("codegen", EXTERNAL_GENERATOR);
+    build(&project, vec![external_factory(&plugin, project.root())]);
+    let engine = Engine::builder(project.config())
+        .project_root(project.root())
+        .plugin(external_factory(&plugin, project.root()))
+        .build_engine()
+        .unwrap();
+    engine.clean().unwrap();
+    assert!(!project.root().join("generated/Gen.kt").exists());
+}
+
+#[test]
+fn processor_error_publishes_nothing() {
+    let project = Project::new();
+    project.write_src("a.txt", "a");
+    project.write_src("bad.txt", "bad");
+    let plugin = PluginDir::lua(
+        "failing",
+        r#"
+local rpp = require("rpp")
+local plugin = rpp.plugin()
+plugin:processor("p", { files = { "**/*.txt" } }, function(ctx, file)
+    if file.path == "bad.txt" then error("boom") end
+    file.text = "processed"
+end)
+return plugin
+"#,
+    );
+    let engine = Engine::builder(project.config())
+        .project_root(project.root())
+        .plugin(plugin.factory_arc(""))
+        .build_engine()
+        .unwrap();
+    let error = engine.build().unwrap_err().to_string();
+    assert!(error.contains("boom"), "{error}");
+    assert!(!project.root().join("dist").exists());
+    assert!(!project.root().join(".rpp/cache/manifest.bin").exists());
 }
