@@ -1,14 +1,6 @@
 // The dispatcher bundled with every plugin as `rpp:runtime`. Its exports are the functions rpp calls.
 
-import type {
-  BuildStats,
-  Context,
-  File,
-  GeneratorContext,
-  Pack,
-  Plugin,
-  Processor,
-} from "#rpp";
+import type { BuildStats, Context, File, GeneratorContext, Pack, Plugin, Processor } from "#rpp";
 
 declare const __rpp: {
   call(
