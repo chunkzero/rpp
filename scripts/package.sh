@@ -60,9 +60,7 @@ mkdir -p "$compiler" "$work/typescript" "$work/native"
 tar -xzf "$work/typescript.tgz" -C "$work/typescript" --strip-components=1
 tar -xzf "$work/native.tgz" -C "$work/native" --strip-components=1
 install -m 755 "$executable" "$root/rpp"
-if [ -f LICENSE.txt ]; then
-  install -m 644 LICENSE.txt "$root/LICENSE.txt"
-fi
+install -m 644 LICENSE-MIT LICENSE-APACHE "$root/"
 cp "$work"/native/lib/* "$compiler/"
 install -m 644 "$work/typescript/LICENSE" "$work/typescript/NOTICE.txt" "$compiler/"
 chmod 755 "$compiler/tsc"

@@ -1,52 +1,54 @@
 # rpp
 
-`rpp` is a Rust toolchain for building Minecraft resource packs with
-incremental TypeScript and WASIp2 component plugins.
+Build Minecraft resource packs with plugins written in TypeScript.
 
-The project is currently `0.1.0-alpha.0`. It provides sandboxed TypeScript
-plugins running on V8, Wasmtime-hosted component plugins, a plugin registry with
-a lockfile, content-addressed incremental builds, deterministic release archives,
-and a watch server with live-reload events.
+rpp takes a pack source directory, runs it through your plugins, and produces a
+loose pack for development and an optimized zip for release. Plugins are small
+TypeScript modules: they transform files, generate new ones, and can call into
+WebAssembly components when TypeScript isn't the right tool.
+
+- **Incremental.** Builds are content-addressed. Unchanged files and plugins are
+  replayed from cache, so a rebuild with nothing to do finishes almost instantly.
+- **Sandboxed.** Plugins run in V8 isolates without filesystem, network, clock, or
+  randomness access unless the project grants it.
+- **Typed.** `rpp codegen` writes types for the SDK, your plugins' options, and any
+  WASIp2 components, and `rpp check` type-checks the project with a bundled compiler.
+- **Live.** `rpp dev` rebuilds on change and serves the pack to Minecraft servers
+  through the [JVM dev client](integrations/jvm/README.md).
+- **Shareable.** Plugins are versioned packages in
+  [rpp-registry](https://github.com/chunkzero/rpp-registry), pinned by `rpp.lock`.
+
+rpp is alpha software (`0.1.0-alpha.0`). Expect breaking changes.
 
 ## Install
 
-Linux x64 release archives bundle the native TypeScript compiler used by `rpp check`.
-Install a version with its checksum-verified archive:
+Linux x64:
 
 ```bash
 curl -fsSLO https://github.com/chunkzero/rpp/releases/download/v0.1.0-alpha.0/install.sh
 sh install.sh 0.1.0-alpha.0
 ```
 
-This installs under `~/.local/share/rpp/<version>` and links `~/.local/bin/rpp`;
-set `RPP_INSTALL_DIR` to use another prefix. No Rust toolchain is needed.
+This installs into `~/.local/share/rpp/<version>` and links `~/.local/bin/rpp`. Set
+`RPP_INSTALL_DIR` to use another prefix.
 
-## Quick Start
-
-First complete the [development setup](#development) to install the pinned tools.
-The commands below assume mise is activated; otherwise prefix them with `mise exec --`.
+On other platforms, build from source with Rust 1.96 or newer:
 
 ```bash
-cargo build --release
-target/release/rpp init my-pack --yes
+cargo install --locked --git https://github.com/chunkzero/rpp rpp-cli
+```
+
+## Getting started
+
+```bash
+rpp init my-pack
 cd my-pack
-../target/release/rpp build
+rpp build      # writes dist/ and dist/my-pack.zip
+rpp dev        # rebuilds on change and serves the pack
 ```
 
-To build the checked-in example:
-
-```bash
-cd examples/pack
-cargo run -p rpp-cli -- build
-cargo run -p rpp-cli -- build
-```
-
-The second build should report `processed 0`. Loose pack files remain the
-engine's unsquashed output; optimization is applied to the release zip only.
-
-## Configuration
-
-A project is configured by `rpp.config.ts`, and lists the plugins it uses in `rpp.json`:
+A project has two files at its root. `rpp.config.ts` describes the pack and the
+plugins it runs:
 
 ```ts
 import { defineConfig } from "#rpp/config";
@@ -54,119 +56,87 @@ import jsonMinify from "#plugins/json-minify";
 
 export default defineConfig({
   pack: { name: "my-pack", description: "My resource pack", packFormat: 34 },
-  build: {
-    source: "src",
-    output: "dist",
-    squash: { enabled: true, engine: "builtin", json: true, png: "fast", zip: true },
-  },
+  build: { source: "src", output: "dist" },
   plugins: [jsonMinify({ pretty: false })],
 });
 ```
+
+`rpp.json` lists the plugin packages the project depends on, either as registry
+version ranges or local directories:
 
 ```json
 { "dependencies": { "json-minify": "^1.0.0", "my-plugin": "path:plugins/my-plugin" } }
 ```
 
-Dependencies are registry version ranges or `path:` directories. Projects that used
-`rpp.toml` and Lua plugins follow [docs/MIGRATING.md](docs/MIGRATING.md).
+## Writing a plugin
 
-Build paths must be separate, project-relative directories. Plugin-produced
-paths are normalized relative pack paths and cannot escape the source or output
-roots. Plugins may also emit into named external roots explicitly declared by the
-project; RPP atomically replaces owned artifacts, removes only its own stale
-generated files, and preserves handwritten neighbors.
+A plugin is a directory with an `rpp.json` manifest and a TypeScript entry point:
+
+```ts
+import { definePlugin } from "#rpp";
+
+export default definePlugin<{ greeting?: string }>({
+  // Processors run on every matching file.
+  processors: {
+    shout: {
+      files: ["assets/*/lang/*.json"],
+      run(ctx, file) {
+        file.text = file.text.toUpperCase();
+      },
+    },
+  },
+  // Generators run once, after processing, and can emit new files.
+  generate(ctx) {
+    ctx.emit("credits.txt", `${ctx.options.greeting ?? "built"} by rpp`);
+  },
+});
+```
+
+Learn more:
+
+- [Example pack and plugins](examples), including a WebAssembly component plugin
+- [Publishing a plugin to the registry](docs/publishing.md)
+- [WebAssembly component plugins](docs/WASM_PLUGINS.md)
+- [Generated types](docs/CODEGEN.md)
+- [Migrating from `rpp.toml` and Lua plugins](docs/MIGRATING.md)
+- [Specification](docs/SPEC.md)
 
 ## Commands
 
-```text
-rpp init [dir]
-rpp build [--no-cache] [--no-squash] [--jobs N]
-rpp dev
-rpp clean
-rpp add <name>[@range] | path:<dir>
-rpp remove <name>
-rpp update [name...]
-rpp search <query>
-rpp codegen
-rpp check
-rpp plugin pack [dir]
-```
+| Command                                        | Description                                              |
+| ---------------------------------------------- | -------------------------------------------------------- |
+| `rpp init [dir]`                               | Create a project                                         |
+| `rpp build`                                    | Build the pack (`--no-cache`, `--no-squash`, `--jobs N`) |
+| `rpp dev`                                      | Rebuild on change and serve the pack                     |
+| `rpp clean`                                    | Remove build output and caches                           |
+| `rpp add <name>[@range]`, `rpp add path:<dir>` | Add a plugin dependency                                  |
+| `rpp remove <name>`                            | Remove a plugin dependency                               |
+| `rpp update [name...]`                         | Update locked plugin versions                            |
+| `rpp search <query>`                           | Search the registry                                      |
+| `rpp codegen`                                  | Write TypeScript types for the project                   |
+| `rpp check`                                    | Type-check the project                                   |
+| `rpp plugin pack [dir]`                        | Package a plugin for publishing                          |
 
-Prompts and build status go to stderr; search results go to stdout.
-Redirected status output is plain text. Prompts use defaults when stdin or stderr
-is redirected; use `init --yes` to skip them in a terminal. Set `NO_COLOR=1` to disable color, and use `-v` / `-vv` or `RUST_LOG`
-to control diagnostic and dev-server logs.
+Set `NO_COLOR=1` to disable color, and use `-v`, `-vv`, or `RUST_LOG` for more logging.
 
-`rpp dev` serves loose output. Builtin squash and PackSquash are release archive
-operations and do not run in dev mode.
+## Contributing
 
-## Plugin Authoring
-
-- [Publishing a plugin](docs/publishing.md)
-- [Migrating from Lua](docs/MIGRATING.md)
-- [WASM plugin guide](docs/WASM_PLUGINS.md)
-- [Authoritative specification](docs/SPEC.md)
-
-Working plugins live under [`examples/plugins`](examples/plugins), including a
-WASIp2 component plugin (`just example-wasm` builds its guest crate).
-
-## Development
-
-Install [mise](https://mise.jdx.dev/getting-started.html) and a C compiler and native
-linker (for example, `build-essential` on Ubuntu or Xcode Command Line Tools on
-macOS). The final Rust executable
-needs a native linker.
-
-From the repository root:
+Development tools are pinned with [mise](https://mise.jdx.dev). You also need a C
+compiler and linker (`build-essential` on Ubuntu, Xcode Command Line Tools on macOS).
 
 ```bash
-mise trust
-mise install
-mise exec -- just --list
-mise exec -- just check-crate rpp
+mise trust && mise install
+mise exec -- just --list   # available tasks
+mise exec -- just ci       # everything CI runs
 ```
 
-`mise.toml` pins Rust, just, JDKs 21 and 25, Node (for oxfmt), and the repository
-formatters. It installs rustfmt, Clippy, and the `wasm32-wasip2` target, and exposes
-both JDKs to Gradle. The workspace's supported Rust baseline is 1.96.0. Keep the manifest baseline
-and mise toolchain pin aligned when updating Rust, and run `just verify-wasm`
-before adopting a new toolchain: guest imports must remain compatible with the sandbox. With mise activated in your shell,
-you can run `just` and `cargo` directly.
-
-Use `just check-crate <crate>`, `just lint-crate <crate>`, and
-`just test-crate <crate> <test-filter>` while iterating. Check and lint recipes accept
-Cargo feature flags. `just check-features` checks the core library independently in
-its core-only, `js`, and `js` + WASM + tracing configurations.
-
-`just fmt` formats Rust (including standalone WASM guests), Java, Gradle Kotlin
-scripts, configuration, documentation, and the justfile. `just fmt-check`
-checks the same files. Scoped recipes are `fmt-rust`, `fmt-jvm`, and `fmt-config`; use `fmt-rust --check` or the other recipes' `-check` variants to
-check without writing. Generated files, lockfiles, and pack data used by examples
-are excluded from configuration formatting.
-
-Shared VS Code and Zed settings select these formatters. For VS Code, install the
-recommended extensions and launch it with `mise exec -- code .` so its formatter
-extensions find the pinned binaries. Zed's external formatters invoke mise directly.
-Both editors should open the repository root. On Windows, the just recipes require
-Git Bash; the dedicated Windows core checks also run directly through Cargo.
-
-Run `just verify-wasm` for component host and CLI integration tests. It fails when
-the guest target is missing, instead of allowing those tests to skip. Guest crates
-have their own committed lockfiles outside the workspace.
-
-Run `just verify-jvm` to build the CLI, test the JVM client against an actual dev
-server, and compile the Minestom example. `just jvm <tasks>` runs the Gradle wrapper
-with the configured JDKs. The verification recipe reruns the test task so a previous
-run without `RPP_BIN` cannot silently skip the process integration test.
-
-Run `just ci` before publishing substantial changes. GitHub Actions runs the same
-format, lint, feature, workspace test, and JVM checks in separate jobs on standard
-GitHub runners, including WASM prerequisites. `just verify-rust` runs only the Rust checks.
-Verification commands use `--locked`; update lockfiles deliberately when changing
-dependencies.
+Commits and pull request titles follow [Conventional Commits](https://www.conventionalcommits.org).
 
 ## License
 
-MIT
+Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or
+[MIT license](LICENSE-MIT), at your option.
 
-For Minecraft server live pack updates, see the [JVM client and Minestom/Spigot examples](integrations/jvm/README.md).
+Unless you explicitly state otherwise, any contribution intentionally submitted for
+inclusion in this project by you, as defined in the Apache-2.0 license, shall be dual
+licensed as above, without any additional terms or conditions.
