@@ -14,11 +14,8 @@ mod file;
 mod generator_ctx;
 mod instance;
 mod plugin_builder;
-mod process;
-mod runtime;
 mod sandbox;
 mod traceback;
 
-pub use ctx::PackInfo;
+pub use crate::host::{PackInfo, RuntimeAccess};
 pub use factory::{LuaPluginFactory, LuaPluginLimits};
-pub use runtime::RuntimeAccess;

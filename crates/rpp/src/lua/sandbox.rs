@@ -8,14 +8,20 @@ use std::time::{Duration, Instant};
 use mlua::{HookTriggers, Lua, Table, Value, Variadic, VmState};
 use parking_lot::Mutex;
 
+use crate::config::LuaCapability;
+use crate::host::log::{emit, LogLevel};
+use crate::host::RuntimeAccess;
 use crate::lua::builtins;
-use crate::lua::builtins::log::{emit, stringify_values, LogLevel};
-use crate::lua::runtime::RuntimeAccess;
+use crate::lua::builtins::log::stringify_values;
 
 /// Default per-Lua-state memory limit (256 MB).
 pub(crate) const DEFAULT_MEMORY_LIMIT: usize = 256 * 1024 * 1024;
 pub(crate) const DEFAULT_EXECUTION_LIMIT: Duration = Duration::from_secs(60);
 pub(crate) type Deadline = Arc<Mutex<Option<Instant>>>;
+
+pub(crate) fn has_lua(access: &RuntimeAccess, cap: LuaCapability) -> bool {
+    access.is_native() || access.permissions.lua.contains(&cap)
+}
 
 pub(crate) fn install_limits(lua: &Lua, memory_limit: usize) -> mlua::Result<Deadline> {
     lua.set_memory_limit(memory_limit)?;
@@ -170,22 +176,22 @@ fn install_stdlib(
         env.set("os", os)?;
     }
 
-    if access.has_lua(crate::config::LuaCapability::Io) {
+    if has_lua(access, LuaCapability::Io) {
         let value: Value = g.get("io")?;
         env.set("io", value)?;
     }
-    if access.has_lua(crate::config::LuaCapability::Os) {
+    if has_lua(access, LuaCapability::Os) {
         let value: Value = g.get("os")?;
         env.set("os", value)?;
     }
-    if access.has_lua(crate::config::LuaCapability::Load) {
+    if has_lua(access, LuaCapability::Load) {
         install_loaders(lua, env, memory_limit)?;
     }
-    if access.has_lua(crate::config::LuaCapability::Debug) {
+    if has_lua(access, LuaCapability::Debug) {
         let value: Value = g.get("debug")?;
         env.set("debug", value)?;
     }
-    if access.has_lua(crate::config::LuaCapability::Package) {
+    if has_lua(access, LuaCapability::Package) {
         // Search paths only: `loadlib`/`cpath` would load native code and
         // `loaded`/`preload`/`searchers` reach the real global table.
         let source: Table = g.get("package")?;

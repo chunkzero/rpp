@@ -11,7 +11,7 @@ use mlua::{Lua, Table};
 use mlua::{MultiValue, UserData, UserDataMethods, Value, Variadic};
 
 #[cfg(feature = "wasm")]
-use crate::lua::runtime::{Phase, RuntimeAccess};
+use crate::host::{Phase, RuntimeAccess};
 
 #[cfg(feature = "wasm")]
 use rpp_wasm::{CompiledComponent, Value as WasmValue, ValueType, WasmInstance};
@@ -39,10 +39,7 @@ pub(crate) fn module(lua: &Lua, access: RuntimeAccess) -> mlua::Result<Table> {
 }
 
 #[cfg(not(feature = "wasm"))]
-pub(crate) fn module(
-    lua: &Lua,
-    _access: crate::lua::runtime::RuntimeAccess,
-) -> mlua::Result<Table> {
+pub(crate) fn module(lua: &Lua, _access: crate::host::RuntimeAccess) -> mlua::Result<Table> {
     let table = lua.create_table()?;
     table.set(
         "load",

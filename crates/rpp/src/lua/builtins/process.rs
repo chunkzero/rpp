@@ -5,8 +5,8 @@ use std::time::{Duration, Instant};
 
 use mlua::{Lua, Table, Value};
 
-use crate::lua::process::{self, ProcessRequest};
-use crate::lua::runtime::{Phase, RuntimeAccess};
+use crate::host::process::{self, ProcessRequest};
+use crate::host::{Phase, RuntimeAccess};
 use crate::lua::sandbox::Deadline;
 
 pub(crate) fn module(lua: &Lua, access: RuntimeAccess, deadline: Deadline) -> mlua::Result<Table> {

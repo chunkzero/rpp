@@ -8,10 +8,9 @@ use std::time::Duration;
 
 use crate::config::LuaConfig;
 use crate::error::{Error, Result};
+use crate::host::{PackInfo, PhaseCell, RuntimeAccess};
 use crate::lua::bootstrap::eval_entry;
-use crate::lua::ctx::PackInfo;
 use crate::lua::instance::{extract_builder, LuaPluginInstance};
-use crate::lua::runtime::{PhaseCell, RuntimeAccess};
 use crate::lua::sandbox::{DEFAULT_EXECUTION_LIMIT, DEFAULT_MEMORY_LIMIT};
 use crate::manifest::PluginManifest;
 use crate::model::{PluginFactory, PluginInstance, ProcessorDef};

@@ -13,7 +13,8 @@ use std::sync::Arc;
 use anyhow::{anyhow, bail, Context, Result};
 use rpp::config::{Config, PluginConfig};
 use rpp::engine::{Engine, EngineBuilder};
-use rpp::lua::{LuaPluginFactory, LuaPluginLimits, PackInfo};
+use rpp::host::{PackInfo, RuntimeAccess};
+use rpp::lua::{LuaPluginFactory, LuaPluginLimits};
 use rpp::manifest::PluginManifest;
 use rpp::model::PluginFactory;
 use rpp_fetch::{Lockfile, Pin, PluginSource, Resolver};
@@ -336,7 +337,7 @@ impl Project {
                 components.insert(name.clone(), compiled);
             }
         }
-        let access = rpp::lua::RuntimeAccess::new(
+        let access = RuntimeAccess::new(
             plugin_cfg.security,
             plugin_cfg.permissions.clone(),
             self.root.clone(),

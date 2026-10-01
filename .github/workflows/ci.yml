@@ -60,4 +60,4 @@ jobs:
           components: clippy
       - uses: Swatinem/rust-cache@v2
       - run: cargo clippy --locked -p rpp --all-targets -- -D warnings
-      - run: cargo test --locked -p rpp --lib lua::process
+      - run: cargo test --locked -p rpp --lib host::process

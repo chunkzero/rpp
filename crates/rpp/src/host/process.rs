@@ -1,10 +1,10 @@
-//! Trusted external-process execution for `rpp.process.run`.
+//! Trusted external-process execution for plugin `process.run` calls.
 
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use crate::lua::runtime::RuntimeAccess;
+use crate::host::RuntimeAccess;
 
 const MAX_CAPTURE: usize = 16 * 1024 * 1024;
 
