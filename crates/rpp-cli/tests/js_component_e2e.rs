@@ -90,7 +90,7 @@ export default definePlugin({{
 fn build(plugin_ts: &str) -> anyhow::Result<tempfile::TempDir> {
     let dir = tempfile::tempdir()?;
     scaffold(dir.path(), plugin_ts);
-    let project = Project::discover_isolated(dir.path())?;
+    let project = Project::discover(dir.path())?;
     project.build_engine()?.build()?;
     Ok(dir)
 }

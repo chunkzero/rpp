@@ -51,7 +51,7 @@ pub struct EngineBuilder {
 }
 
 impl EngineBuilder {
-    /// Set the project root (directory containing `rpp.toml`). Defaults to `.`.
+    /// Set the project root (directory containing `rpp.config.ts`). Defaults to `.`.
     pub fn project_root(mut self, root: impl Into<PathBuf>) -> Self {
         self.project_root = root.into();
         self
@@ -132,20 +132,20 @@ fn validate_build_dirs(config: &Config, project_root: &Path) -> Result<()> {
                 .any(|component| !matches!(component, Component::Normal(_)))
         {
             return Err(Error::Config {
-                path: project_root.join("rpp.toml"),
+                path: project_root.join("rpp.config.ts"),
                 message: format!("`build.{label}` must be a normalized project-relative path"),
             });
         }
         if path.starts_with(".rpp") {
             return Err(Error::Config {
-                path: project_root.join("rpp.toml"),
+                path: project_root.join("rpp.config.ts"),
                 message: format!("`build.{label}` must not be inside `.rpp`"),
             });
         }
     }
     if source == output || source.starts_with(output) || output.starts_with(source) {
         return Err(Error::Config {
-            path: project_root.join("rpp.toml"),
+            path: project_root.join("rpp.config.ts"),
             message: "`build.source` and `build.output` must be separate directories".into(),
         });
     }

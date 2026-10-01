@@ -292,7 +292,7 @@ mod tests {
 
     fn fixture() -> (tempfile::TempDir, Config, ObjectStore) {
         let project = tempfile::tempdir().unwrap();
-        let config = Config::parse("[pack]\nname = 'test'\n", "rpp.toml").unwrap();
+        let config = Config::new("test");
         let store = ObjectStore::open(project.path().join(".rpp/cache/objects")).unwrap();
         (project, config, store)
     }

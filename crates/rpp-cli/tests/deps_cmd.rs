@@ -101,7 +101,7 @@ fn refuses_legacy_project() {
     let out = run(temp.path(), &["remove", "tool"]);
     assert!(!out.status.success());
     assert!(
-        stderr(&out).contains("configured by rpp.toml; use `rpp plugin remove`"),
+        stderr(&out).contains("`rpp.toml` is no longer supported"),
         "{}",
         stderr(&out)
     );

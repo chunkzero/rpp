@@ -1,10 +1,8 @@
 //! The `rpp` command-line interface.
 //!
 //! Subcommands (spec §9): `init`, `build`, `dev`, `clean`, `codegen`, `check`, `add`, `remove`,
-//! `update`, `search`, and
-//! `plugin ...`.
-//! Shared project plumbing lives in [`project`]; pretty output in [`ui`]; LuaLS
-//! editor stubs in [`luals`].
+//! `update`, `search`, and `plugin pack`.
+//! Shared project plumbing lives in [`project`]; pretty output in [`ui`].
 
 use std::path::PathBuf;
 
@@ -12,7 +10,6 @@ use clap::{Args, Parser, Subcommand};
 
 use rpp_cli::commands;
 use rpp_cli::commands::build::BuildArgs;
-use rpp_cli::commands::component::ComponentCommand;
 use rpp_cli::commands::init::InitArgs;
 use rpp_cli::commands::plugin::PluginCommand;
 use rpp_cli::ui;
@@ -69,12 +66,9 @@ enum Command {
     Codegen,
     /// Generate definitions, then type-check TypeScript with `tsc`.
     Check,
-    /// Manage plugins (`add`/`remove`/`list`/`update`/`search`).
+    /// Package plugins for distribution (`pack`).
     #[command(subcommand)]
     Plugin(PluginCommand),
-    /// Inspect and generate bindings for WASM components.
-    #[command(subcommand)]
-    Component(ComponentCommand),
 }
 
 #[derive(Debug, Args)]
@@ -139,7 +133,6 @@ fn main() {
         Command::Codegen => commands::codegen::run(&dir),
         Command::Check => commands::check::run(&dir),
         Command::Plugin(cmd) => commands::plugin::run(&dir, cmd),
-        Command::Component(cmd) => commands::component::run(&dir, cmd),
     };
 
     if let Err(err) = result {

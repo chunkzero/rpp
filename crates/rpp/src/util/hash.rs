@@ -1,4 +1,4 @@
-//! Hashing helpers used by the cache, plugins, and builtin Lua modules.
+//! Hashing helpers used by the cache, and plugins.
 
 use twox_hash::XxHash3_64;
 

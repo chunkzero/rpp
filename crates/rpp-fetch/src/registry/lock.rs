@@ -56,9 +56,9 @@ impl PackageLock {
     ///
     /// # Errors
     ///
-    /// [`crate::Error::UnsupportedLockVersion`] when `version` isn't 3 (this
-    /// includes legacy `rpp.toml` locks), [`crate::Error::InvalidLockfile`] for
-    /// malformed TOML or duplicate names, or an I/O error.
+    /// [`crate::Error::InvalidLockfile`] for version 1 or 2 locks (with a migration
+    /// guide), malformed TOML, or duplicate names; [`crate::Error::UnsupportedLockVersion`]
+    /// for any other version than 3; or an I/O error.
     pub fn load(path: &Path) -> Result<Self> {
         let text = match std::fs::read_to_string(path) {
             Ok(t) => t,
@@ -71,6 +71,12 @@ impl PackageLock {
         };
 
         let header: RawHeader = toml::from_str(&text).map_err(|e| invalid(e.to_string()))?;
+        if matches!(header.version, 1 | 2) {
+            return Err(invalid(format!(
+                "lock version {} is no longer supported; delete it so rpp can regenerate it; see https://github.com/chunkzero/rpp/blob/main/docs/MIGRATING.md",
+                header.version
+            )));
+        }
         if header.version != PACKAGE_LOCK_VERSION {
             return Err(Error::UnsupportedLockVersion {
                 found: header.version,
@@ -254,20 +260,24 @@ mod tests {
     }
 
     #[test]
-    fn rejects_legacy_version() {
+    fn legacy_lock_version_points_to_guide() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("rpp.lock");
-        std::fs::write(
-            &path,
-            "version = 2\n\n[[plugin]]\nsource = \"github:a/b\"\n",
-        )
-        .unwrap();
+        for version in [1, 2] {
+            std::fs::write(&path, format!("version = {version}\n")).unwrap();
+            let err = PackageLock::load(&path).unwrap_err();
+            assert!(matches!(err, Error::InvalidLockfile { .. }));
+            assert!(
+                err.to_string().ends_with(
+                    "; see https://github.com/chunkzero/rpp/blob/main/docs/MIGRATING.md"
+                ),
+                "{err}"
+            );
+        }
+        std::fs::write(&path, "version = 4\n").unwrap();
         assert!(matches!(
             PackageLock::load(&path),
-            Err(Error::UnsupportedLockVersion {
-                found: 2,
-                supported: 3
-            })
+            Err(Error::UnsupportedLockVersion { found: 4, .. })
         ));
     }
 

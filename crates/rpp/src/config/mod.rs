@@ -1,8 +1,8 @@
-//! Project configuration: the `rpp.toml` schema (spec §1).
+//! Project configuration: the schema `rpp.config.ts` default-exports (spec §1).
 //!
-//! TOML is the only supported project config format. The [`Config`] type mirrors
-//! the documented schema. The `squash` and `dev` sections are parsed into plain
-//! structs here and consumed by other crates (`rpp-squash`, the dev server).
+//! The [`Config`] type is built from the evaluated config by [`Config::from_ts_json`]. The
+//! `squash` and `dev` sections are plain structs consumed by other crates (`rpp-squash`,
+//! the dev server).
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -13,7 +13,7 @@ use crate::error::{Error, Result};
 
 mod ts;
 
-/// The fully parsed `rpp.toml`.
+/// The project configuration exported by `rpp.config.ts`.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
@@ -30,7 +30,7 @@ pub struct Config {
     pub plugins: Vec<PluginConfig>,
 }
 
-/// `[pack]` section.
+/// `pack` section.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct PackConfig {
@@ -44,28 +44,28 @@ pub struct PackConfig {
     pub pack_format: Option<u32>,
 }
 
-/// Lua sandbox limits (`[build.lua]`).
+/// Plugin runtime limits (`build.limits`).
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct LuaConfig {
-    /// Per-Lua-state memory limit in megabytes.
-    #[serde(default = "default_lua_memory_limit_mb")]
+pub struct LimitsConfig {
+    /// Per-plugin-runtime memory limit in megabytes.
+    #[serde(default = "default_limits_memory_limit_mb")]
     pub memory_limit_mb: u32,
-    /// Maximum wall-clock execution time per Lua call, in seconds.
-    #[serde(default = "default_lua_execution_deadline_seconds")]
+    /// Maximum wall-clock execution time per plugin call, in seconds.
+    #[serde(default = "default_limits_execution_deadline_seconds")]
     pub execution_deadline_seconds: u64,
 }
 
-impl Default for LuaConfig {
+impl Default for LimitsConfig {
     fn default() -> Self {
         Self {
-            memory_limit_mb: default_lua_memory_limit_mb(),
-            execution_deadline_seconds: default_lua_execution_deadline_seconds(),
+            memory_limit_mb: default_limits_memory_limit_mb(),
+            execution_deadline_seconds: default_limits_execution_deadline_seconds(),
         }
     }
 }
 
-/// WASM component limits (`[build.wasm]`).
+/// WASM component limits (`build.wasm`).
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct WasmConfig {
@@ -86,7 +86,7 @@ impl Default for WasmConfig {
     }
 }
 
-/// `[build]` section.
+/// `build` section.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct BuildConfig {
@@ -99,9 +99,9 @@ pub struct BuildConfig {
     /// Worker thread count; `0` means available parallelism.
     #[serde(default)]
     pub workers: usize,
-    /// Lua sandbox limits.
+    /// Plugin runtime limits.
     #[serde(default)]
-    pub lua: LuaConfig,
+    pub limits: LimitsConfig,
     /// WASM component limits.
     #[serde(default)]
     pub wasm: WasmConfig,
@@ -116,14 +116,14 @@ impl Default for BuildConfig {
             source: default_source(),
             output: default_output(),
             workers: 0,
-            lua: LuaConfig::default(),
+            limits: LimitsConfig::default(),
             wasm: WasmConfig::default(),
             squash: SquashConfig::default(),
         }
     }
 }
 
-/// `[build.squash]` section. Consumed by `rpp-squash`.
+/// `build.squash` section. Consumed by `rpp-squash`.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct SquashConfig {
@@ -145,7 +145,7 @@ pub struct SquashConfig {
     /// Glob patterns of files to strip from the output before zipping.
     #[serde(default = "default_strip")]
     pub strip: Vec<String>,
-    /// PackSquash binary name/path (used when `engine = "packsquash"`).
+    /// PackSquash binary name/path (used when `engine` is `"packsquash"`).
     #[serde(default = "default_packsquash_binary")]
     pub packsquash_binary: String,
     /// Optional passthrough options file for PackSquash.
@@ -222,7 +222,7 @@ impl Serialize for PngSetting {
     }
 }
 
-/// `[dev]` section. Consumed by the dev server.
+/// `dev` section. Consumed by the dev server.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct DevConfig {
@@ -247,25 +247,12 @@ impl Default for DevConfig {
     }
 }
 
-/// One `[[plugin]]` entry.
+/// One entry of `plugins`.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct PluginConfig {
-    /// Global plugin id to use for this project.
-    #[serde(default)]
-    pub id: Option<String>,
-    /// Source descriptor (`path:...` or `github:owner/repo`).
-    #[serde(default)]
-    pub source: Option<String>,
-    /// Dependency name from the project's `rpp.json` (`rpp.config.ts` projects only).
-    #[serde(default)]
-    pub package: Option<String>,
-    /// Optional git ref (tag/branch/sha) for GitHub sources.
-    #[serde(default)]
-    pub r#ref: Option<String>,
-    /// Optional subdirectory within a GitHub repo.
-    #[serde(default)]
-    pub subdir: Option<String>,
+    /// Dependency name from the project's `rpp.json`.
+    pub package: String,
     /// Arbitrary options passed to the plugin.
     #[serde(default = "empty_table")]
     pub options: toml::Value,
@@ -289,15 +276,13 @@ pub enum SecurityMode {
     Sandboxed,
     /// Explicit host capabilities are enabled while resource limits remain active.
     Trusted,
-    /// Full Lua standard library and arbitrary host access; no sandbox guarantee.
-    Native,
 }
 
-/// Capabilities granted by a `[[plugin]]` configuration entry.
+/// Capabilities granted by a plugin entry.
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct PluginPermissions {
-    /// Executable names or absolute paths accepted by `rpp.process.run`.
+    /// Executable names or absolute paths accepted by `process.run`.
     #[serde(default)]
     pub process: Vec<String>,
     /// Environment variable names visible to process calls and WASI components.
@@ -312,34 +297,15 @@ pub struct PluginPermissions {
     /// Permit WASI sockets.
     #[serde(default)]
     pub network: bool,
-    /// Permit WASI clocks and Lua's restricted `os.clock`/`time`/`date` table.
+    /// Permit WASI clocks and real time in plugin code.
     #[serde(default)]
     pub clocks: bool,
-    /// Permit host-backed WASI randomness and Lua's `math.random` functions.
+    /// Permit host-backed WASI randomness and real randomness in plugin code.
     #[serde(default)]
     pub random: bool,
     /// Permit inherited WASI stdout/stderr.
     #[serde(default)]
     pub stdio: bool,
-    /// Additional Lua standard-library capabilities in trusted mode.
-    #[serde(default)]
-    pub lua: Vec<LuaCapability>,
-}
-
-/// Additional Lua facilities available only to trusted/native plugins.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum LuaCapability {
-    /// The `io` standard library.
-    Io,
-    /// Full `os` standard library, including `os.execute`.
-    Os,
-    /// Dynamic Lua loading (`load`, `loadfile`, and `dofile`).
-    Load,
-    /// The debug standard library.
-    Debug,
-    /// Lua package search paths, excluding native modules.
-    Package,
 }
 
 /// An empty TOML table; the default for plugin options.
@@ -348,59 +314,53 @@ pub(crate) fn empty_table() -> toml::Value {
 }
 
 impl PluginConfig {
-    /// Validate entry identity and capability policy, attributing errors to its manifest.
+    /// Validate capability policy and output roots, attributing errors to `path`.
     pub fn validate(&self, path: &Path) -> Result<()> {
-        validate_plugin_identity(self, path)?;
+        if !valid_dependency_name(&self.package) {
+            return Err(Error::Config {
+                path: path.to_path_buf(),
+                message: format!(
+                    "plugin package `{}` must match ^[a-z0-9][a-z0-9_-]*$",
+                    self.package
+                ),
+            });
+        }
         validate_plugin_security(self, path)
     }
 
     /// Human-readable identity for diagnostics.
     pub fn label(&self) -> &str {
-        self.source
-            .as_deref()
-            .or(self.id.as_deref())
-            .or(self.package.as_deref())
-            .unwrap_or("<unnamed>")
+        &self.package
     }
 }
 
 impl Config {
-    /// Parse a [`Config`] from TOML text, attributing errors to `path`.
-    pub fn parse(text: &str, path: impl Into<PathBuf>) -> Result<Self> {
-        let path = path.into();
-        let config: Config = toml::from_str(text).map_err(|e| Error::Config {
-            path: path.clone(),
-            message: format!("{e}"),
-        })?;
-        if config.plugins.iter().any(|plugin| plugin.package.is_some()) {
-            return Err(Error::Config {
-                path,
-                message: "`package` is only supported in rpp.config.ts".into(),
-            });
+    /// A config with default settings and the given pack name.
+    pub fn new(name: impl Into<String>) -> Self {
+        Self {
+            pack: PackConfig {
+                name: name.into(),
+                description: None,
+                pack_format: None,
+            },
+            build: BuildConfig::default(),
+            dev: DevConfig::default(),
+            plugins: Vec::new(),
         }
-        config.validate(&path)?;
-        Ok(config)
     }
 
     /// Build a [`Config`] from the JSON value `rpp.config.ts` default-exports,
     /// attributing errors to `path`.
     ///
-    /// Keys are the camelCase forms of the `rpp.toml` schema (`pack.packFormat`,
-    /// `build.squash.packsquashBinary`), with these differences: `plugins` is an array of
-    /// `{ plugin, options?, security?, permissions?, outputs? }` where `plugin` names an
-    /// `rpp.json` dependency (stored in [`PluginConfig::package`]); `build.limits` holds
-    /// the plugin runtime limits (stored in `build.lua`); `build.lua`, `id`, `source`,
-    /// `ref`, `subdir`, `permissions.lua` and `security: "native"` are rejected. Keys
-    /// inside `options` and `outputs` are kept verbatim; `null` values are invalid.
+    /// Keys are camelCase (`pack.packFormat`, `build.squash.packsquashBinary`). `plugins` is
+    /// an array of `{ plugin, options?, security?, permissions?, outputs? }` where `plugin`
+    /// names an `rpp.json` dependency (stored in [`PluginConfig::package`]), and
+    /// `build.limits` holds the plugin runtime limits. Keys from the removed TOML schema
+    /// (`build.lua`, `permissions.lua`, `security: "native"`, `id`, `source`, `ref`,
+    /// `subdir`) are rejected with a pointer to [`crate::MIGRATION_GUIDE`]. Keys inside
+    /// `options` and `outputs` are kept verbatim; `null` values are invalid.
     pub fn from_ts_json(value: &serde_json::Value, path: impl Into<PathBuf>) -> Result<Self> {
         ts::from_json(value, path.into())
-    }
-
-    /// Load and parse a `rpp.toml` from disk.
-    pub fn load(path: impl AsRef<Path>) -> Result<Self> {
-        let path = path.as_ref();
-        let text = std::fs::read_to_string(path).map_err(|e| Error::io(path, e))?;
-        Self::parse(&text, path)
     }
 
     fn validate(&self, path: &Path) -> Result<()> {
@@ -434,17 +394,16 @@ impl Config {
         for plugin in &self.plugins {
             plugin.validate(path)?;
         }
-
-        if self.build.lua.memory_limit_mb == 0 {
+        if self.build.limits.memory_limit_mb == 0 {
             return Err(Error::Config {
                 path: path.to_path_buf(),
-                message: "`build.lua.memory_limit_mb` must be greater than 0".into(),
+                message: "`build.limits.memory_limit_mb` must be greater than 0".into(),
             });
         }
-        if self.build.lua.execution_deadline_seconds == 0 {
+        if self.build.limits.execution_deadline_seconds == 0 {
             return Err(Error::Config {
                 path: path.to_path_buf(),
-                message: "`build.lua.execution_deadline_seconds` must be greater than 0".into(),
+                message: "`build.limits.execution_deadline_seconds` must be greater than 0".into(),
             });
         }
         if self.build.wasm.memory_limit_mb == 0 {
@@ -464,7 +423,7 @@ impl Config {
     }
 
     pub(crate) fn validate_source(&self, project_root: &Path) -> Result<()> {
-        let path = project_root.join("rpp.toml");
+        let path = project_root.join("rpp.config.ts");
         if let Some(expected) = self.pack.pack_format {
             let mcmeta_path = project_root.join(&self.build.source).join("pack.mcmeta");
             if mcmeta_path.is_file() {
@@ -476,47 +435,12 @@ impl Config {
     }
 }
 
-fn validate_plugin_identity(plugin: &PluginConfig, path: &Path) -> Result<()> {
-    let config_error = |message: String| Error::Config {
-        path: path.to_path_buf(),
-        message,
-    };
-    let (id, source, package) = (
-        plugin.id.as_deref(),
-        plugin.source.as_deref(),
-        plugin.package.as_deref(),
-    );
-    match (id, source, package) {
-        (Some(id), None, None) if valid_plugin_id_ref(id) => Ok(()),
-        (Some(id), None, None) => Err(config_error(format!("plugin id `{id}` is invalid"))),
-        // Source grammar is owned by rpp-fetch and validated during resolution.
-        (None, Some(_), None) => Ok(()),
-        (None, None, Some(package)) if valid_dependency_name(package) => Ok(()),
-        (None, None, Some(package)) => Err(config_error(format!(
-            "plugin package `{package}` must match ^[a-z0-9][a-z0-9_-]*$"
-        ))),
-        (None, None, None) => Err(config_error(
-            "plugin entries must set one of `id`, `source` or `package`".into(),
-        )),
-        _ => Err(config_error(
-            "plugin entries must set exactly one of `id`, `source` or `package`".into(),
-        )),
-    }
-}
-
 fn valid_dependency_name(name: &str) -> bool {
     let mut bytes = name.bytes();
     bytes
         .next()
         .is_some_and(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
         && bytes.all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'_' | b'-'))
-}
-
-fn valid_plugin_id_ref(id: &str) -> bool {
-    !id.is_empty()
-        && id
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'))
 }
 
 fn validate_plugin_security(plugin: &PluginConfig, path: &Path) -> Result<()> {
@@ -528,13 +452,12 @@ fn validate_plugin_security(plugin: &PluginConfig, path: &Path) -> Result<()> {
         || permissions.network
         || permissions.clocks
         || permissions.random
-        || permissions.stdio
-        || !permissions.lua.is_empty();
+        || permissions.stdio;
     if plugin.security == SecurityMode::Sandboxed && has_permissions {
         return Err(Error::Config {
             path: path.to_path_buf(),
             message: format!(
-                "plugin `{}` grants permissions but uses `security = \"sandboxed\"`",
+                "plugin `{}` grants permissions but uses `security: \"sandboxed\"`",
                 plugin.label()
             ),
         });
@@ -658,10 +581,10 @@ fn default_wasm_execution_deadline_seconds() -> u64 {
     60
 }
 
-fn default_lua_memory_limit_mb() -> u32 {
+fn default_limits_memory_limit_mb() -> u32 {
     256
 }
-fn default_lua_execution_deadline_seconds() -> u64 {
+fn default_limits_execution_deadline_seconds() -> u64 {
     60
 }
 
@@ -670,135 +593,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parses_minimal_config() {
-        let cfg = Config::parse("[pack]\nname = \"demo\"\n", "rpp.toml").unwrap();
+    fn new_has_documented_defaults() {
+        let cfg = Config::new("demo");
         assert_eq!(cfg.pack.name, "demo");
         assert_eq!(cfg.build.source, PathBuf::from("src"));
         assert_eq!(cfg.build.output, PathBuf::from("dist"));
+        assert_eq!(cfg.build.workers, 0);
+        assert_eq!(cfg.build.limits.memory_limit_mb, 256);
+        assert_eq!(cfg.build.limits.execution_deadline_seconds, 60);
+        assert_eq!(cfg.build.wasm.memory_limit_mb, 512);
         assert!(cfg.build.squash.enabled);
         assert_eq!(cfg.dev.port, 8080);
         assert!(cfg.plugins.is_empty());
-    }
-
-    #[test]
-    fn toml_rejects_package_plugins() {
-        let text = "[pack]\nname = \"demo\"\n[[plugin]]\npackage = \"window\"\n";
-        let err = Config::parse(text, "rpp.toml").unwrap_err().to_string();
-        assert!(err.contains("only supported in rpp.config.ts"), "{err}");
-    }
-
-    #[test]
-    fn parses_full_config() {
-        let text = r#"
-[pack]
-name = "my-pack"
-description = "An example pack"
-pack_format = 34
-
-[build]
-source = "source"
-output = "out"
-workers = 4
-
-[build.squash]
-enabled = true
-engine = "packsquash"
-json = true
-png = "max"
-zip = false
-strip = ["**/*.bak"]
-packsquash_binary = "ps"
-
-[dev]
-host = "0.0.0.0"
-port = 9000
-open = true
-
-[[plugin]]
-source = "path:plugins/json-minify"
-[plugin.options]
-pretty = false
-
-[[plugin]]
-source = "github:example/rpp-plugins"
-ref = "v1.2.0"
-subdir = "plugins/atlas"
-"#;
-        let cfg = Config::parse(text, "rpp.toml").unwrap();
-        assert_eq!(cfg.pack.pack_format, Some(34));
-        assert_eq!(cfg.build.workers, 4);
-        assert_eq!(cfg.build.squash.engine, "packsquash");
-        assert_eq!(cfg.build.squash.png, PngSetting::Max);
-        assert!(!cfg.build.squash.zip);
-        assert_eq!(cfg.dev.host, "0.0.0.0");
-        assert_eq!(cfg.plugins.len(), 2);
-    }
-
-    #[test]
-    fn parses_global_plugin_reference() {
-        let cfg = Config::parse(
-            "[pack]\nname = \"demo\"\n[[plugin]]\nid = \"window\"\nsecurity = \"trusted\"\n",
-            "rpp.toml",
-        )
-        .unwrap();
-        assert_eq!(cfg.plugins[0].id.as_deref(), Some("window"));
-        assert!(cfg.plugins[0].source.is_none());
-    }
-
-    #[test]
-    fn png_bool_false_is_off() {
-        let cfg = Config::parse(
-            "[pack]\nname=\"x\"\n[build.squash]\npng = false\n",
-            "rpp.toml",
-        )
-        .unwrap();
-        assert_eq!(cfg.build.squash.png, PngSetting::Off);
-    }
-
-    #[test]
-    fn empty_name_rejected() {
-        let err = Config::parse("[pack]\nname = \"\"\n", "rpp.toml").unwrap_err();
-        assert!(matches!(err, Error::Config { .. }));
-    }
-
-    #[test]
-    fn unsafe_pack_name_rejected() {
-        let err = Config::parse("[pack]\nname = \"../escape\"\n", "rpp.toml").unwrap_err();
-        assert!(matches!(err, Error::Config { .. }));
-    }
-
-    #[test]
-    fn unknown_field_rejected() {
-        let err = Config::parse("[pack]\nname=\"x\"\nbogus = 1\n", "rpp.toml").unwrap_err();
-        assert!(matches!(err, Error::Config { .. }));
-    }
-
-    #[test]
-    fn bad_engine_rejected() {
-        let err = Config::parse(
-            "[pack]\nname=\"x\"\n[build.squash]\nengine=\"nope\"\n",
-            "rpp.toml",
-        )
-        .unwrap_err();
-        assert!(matches!(err, Error::Config { .. }));
-    }
-
-    #[test]
-    fn lua_defaults() {
-        let cfg = Config::parse("[pack]\nname = \"demo\"\n", "rpp.toml").unwrap();
-        assert_eq!(cfg.build.lua.memory_limit_mb, 256);
-        assert_eq!(cfg.build.lua.execution_deadline_seconds, 60);
-    }
-
-    #[test]
-    fn parses_lua_limits() {
-        let cfg = Config::parse(
-            "[pack]\nname=\"x\"\n[build.lua]\nmemory_limit_mb = 512\nexecution_deadline_seconds = 120\n",
-            "rpp.toml",
-        )
-        .unwrap();
-        assert_eq!(cfg.build.lua.memory_limit_mb, 512);
-        assert_eq!(cfg.build.lua.execution_deadline_seconds, 120);
+        cfg.validate(Path::new("rpp.config.ts")).unwrap();
     }
 
     #[test]
@@ -811,30 +618,16 @@ subdir = "plugins/atlas"
             r#"{"pack":{"pack_format":9}}"#,
         )
         .unwrap();
-        let config = Config::parse(
-            "[pack]\nname=\"x\"\npack_format = 34\n",
-            root.join("rpp.toml"),
-        )
-        .unwrap();
-        let err = config.validate_source(root).unwrap_err();
-        let msg = err.to_string();
+        let mut config = Config::new("x");
+        config.pack.pack_format = Some(34);
+        let msg = config.validate_source(root).unwrap_err().to_string();
         assert!(msg.contains("does not match"), "{msg}");
-    }
 
-    #[test]
-    fn pack_format_agreement_accepted() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path();
-        std::fs::create_dir_all(root.join("src")).unwrap();
         std::fs::write(
             root.join("src/pack.mcmeta"),
             r#"{"pack":{"pack_format":34}}"#,
         )
         .unwrap();
-        Config::parse(
-            "[pack]\nname=\"x\"\npack_format = 34\n",
-            root.join("rpp.toml"),
-        )
-        .unwrap();
+        config.validate_source(root).unwrap();
     }
 }

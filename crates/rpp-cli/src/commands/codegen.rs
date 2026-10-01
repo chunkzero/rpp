@@ -5,10 +5,8 @@ use std::path::{Path, PathBuf};
 use anyhow::{bail, Result};
 use rpp_fetch::registry::PACKAGE_MANIFEST;
 
-use crate::project::{CONFIG_FILE, TS_CONFIG_FILE};
+use crate::project::CONFIG_FILE;
 use crate::{codegen, ui};
-
-const PLUGIN_FILE: &str = "plugin.toml";
 
 /// Run the codegen command from `dir`.
 pub fn run(dir: &Path) -> Result<()> {
@@ -19,20 +17,17 @@ pub fn run(dir: &Path) -> Result<()> {
     Ok(())
 }
 
-/// The nearest ancestor of `start` containing `rpp.toml`, `rpp.config.ts`, `plugin.toml` or an
+/// The nearest ancestor of `start` containing `rpp.config.ts` or an
 /// `rpp.json` plugin manifest (one with `name` and `version`).
 pub(crate) fn find_root(start: &Path) -> Result<PathBuf> {
     let start = std::path::absolute(start)?;
     let found = start.ancestors().find(|dir| {
-        [CONFIG_FILE, TS_CONFIG_FILE, PLUGIN_FILE]
-            .iter()
-            .any(|name| dir.join(name).is_file())
-            || is_plugin_manifest(&dir.join(PACKAGE_MANIFEST))
+        dir.join(CONFIG_FILE).is_file() || is_plugin_manifest(&dir.join(PACKAGE_MANIFEST))
     });
     match found {
         Some(dir) => Ok(dir.to_path_buf()),
         None => bail!(
-            "no `{CONFIG_FILE}`, `{TS_CONFIG_FILE}`, `{PLUGIN_FILE}` or plugin `{PACKAGE_MANIFEST}` found in `{}` or any parent directory",
+            "no `{CONFIG_FILE}` or plugin `{PACKAGE_MANIFEST}` found in `{}` or any parent directory",
             start.display()
         ),
     }

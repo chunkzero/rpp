@@ -90,20 +90,15 @@ impl RuntimeAccess {
         self
     }
 
-    pub(crate) fn is_native(&self) -> bool {
-        self.security == SecurityMode::Native
-    }
-
     pub(crate) fn allows_process(&self) -> bool {
-        self.is_native() || !self.permissions.process.is_empty()
+        !self.permissions.process.is_empty()
     }
 
     /// Whether calls made through this policy are deterministic from RPP's
     /// tracked inputs. Declared output roots are tracked destinations, not an
     /// ambient capability, so they do not disable cache replay.
     pub(crate) fn is_deterministic(&self) -> bool {
-        !self.is_native()
-            && self.permissions.process.is_empty()
+        self.permissions.process.is_empty()
             && self.permissions.environment.is_empty()
             && self.permissions.read.is_empty()
             && self.permissions.write.is_empty()
@@ -111,7 +106,6 @@ impl RuntimeAccess {
             && !self.permissions.clocks
             && !self.permissions.random
             && !self.permissions.stdio
-            && self.permissions.lua.is_empty()
     }
 
     #[cfg(feature = "wasm")]
@@ -138,10 +132,10 @@ impl RuntimeAccess {
             });
         }
         Permissions {
-            clocks: self.is_native() || self.permissions.clocks,
-            random: self.is_native() || self.permissions.random,
-            stdio: self.is_native() || self.permissions.stdio,
-            network: self.is_native() || self.permissions.network,
+            clocks: self.permissions.clocks,
+            random: self.permissions.random,
+            stdio: self.permissions.stdio,
+            network: self.permissions.network,
             environment: env,
             preopens,
         }

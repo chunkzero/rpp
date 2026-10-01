@@ -10,7 +10,7 @@ use rpp::manifest::PluginManifest;
 use rpp_fetch::registry::PACKAGE_MANIFEST;
 
 use crate::commands::codegen::is_plugin_manifest;
-use crate::project::{resolve_ts_packages, CONFIG_FILE, TS_CONFIG_FILE};
+use crate::project::{resolve_ts_packages, CONFIG_FILE};
 
 const TSCONFIG_HEAD: &str = r##"{
   "compilerOptions": {
@@ -126,7 +126,7 @@ fn tsconfig(plugin_configs: Option<&BTreeMap<String, PathBuf>>) -> String {
 /// Write the SDK and tsconfig files under `root`, and `tsconfig.json` if absent.
 /// Returns whether any file changed.
 pub fn write(root: &Path) -> Result<bool> {
-    let ts_project = root.join(TS_CONFIG_FILE).is_file() && !root.join(CONFIG_FILE).is_file();
+    let ts_project = root.join(CONFIG_FILE).is_file();
     let plugin_configs = if ts_project {
         let packages = resolve_ts_packages(root)?;
         Some(
@@ -138,8 +138,7 @@ pub fn write(root: &Path) -> Result<bool> {
                 })
                 .collect(),
         )
-    } else if root.join("plugin.toml").is_file() || is_plugin_manifest(&root.join(PACKAGE_MANIFEST))
-    {
+    } else if is_plugin_manifest(&root.join(PACKAGE_MANIFEST)) {
         Some(BTreeMap::new())
     } else {
         None
@@ -168,7 +167,7 @@ pub fn write(root: &Path) -> Result<bool> {
 
 /// Write `.rpp/generated/<name>.d.ts` for each component the plugin manifest in `root` declares.
 fn write_component_dts(root: &Path) -> Result<bool> {
-    if !root.join("plugin.toml").is_file() && !is_plugin_manifest(&root.join(PACKAGE_MANIFEST)) {
+    if !is_plugin_manifest(&root.join(PACKAGE_MANIFEST)) {
         return Ok(false);
     }
     let manifest = PluginManifest::load(root)?;

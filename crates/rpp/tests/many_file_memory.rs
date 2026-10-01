@@ -13,11 +13,8 @@ fn many_file_memory() {
         bytes[..4].copy_from_slice(&index.to_le_bytes());
         std::fs::write(source.join(format!("{index:04}.bin")), bytes).unwrap();
     }
-    let config = Config::parse(
-        "[pack]\nname = 'memory'\n[build]\nworkers = 4\n",
-        "rpp.toml",
-    )
-    .unwrap();
+    let mut config = Config::new("memory");
+    config.build.workers = 4;
     let engine = Engine::builder(config)
         .project_root(dir.path())
         .build_engine()

@@ -1,0 +1,7 @@
+{
+  "name": "grayscale-wasm",
+  "version": "1.0.0",
+  "description": "Converts textures to grayscale with a WASIp2 component.",
+  "entry": "src/plugin.ts",
+  "components": { "grayscale": "grayscale.wasm" }
+}

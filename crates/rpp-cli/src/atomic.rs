@@ -1,4 +1,4 @@
-//! Atomic replacement of user-maintained files (`rpp.toml`, `plugins.toml`).
+//! Atomic replacement of user-maintained files (`rpp.json`).
 
 use std::path::Path;
 
@@ -36,7 +36,7 @@ mod tests {
     #[test]
     fn replacement_preserves_permissions() {
         let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("rpp.toml");
+        let path = directory.path().join("rpp.json");
         std::fs::write(&path, "old").unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640)).unwrap();
 

@@ -1,6 +1,6 @@
 //! TypeScript plugins on V8 through `rpp-js` (spec §4).
 //!
-//! A plugin whose `plugin.toml` `entry` ends in `.ts`, `.mts` or `.js` is bundled with
+//! A plugin whose `rpp.json` `entry` ends in `.ts`, `.mts`, `.js` or `.mjs` is bundled with
 //! three virtual modules:
 //!
 //! - `#rpp`: the SDK ([`SDK_FILES`]), whose public API is `sdk/index.ts`.
@@ -46,11 +46,11 @@
 //! | `component.load` | `{ name }` | – | `{ handle, functions: [{ path, params: [[name, type]], results: [type] }] }` |
 //! | `component.call` | `{ handle, path, args }` | byte lists, by `[offset, len]` | `{ results }` + byte lists, or `{ failure: { kind: "trap" \| "timeout", message } }` |
 //!
-//! Generator host calls fail outside `generate`; `process.run` follows the Lua phase
-//! and permission rules. Component instances live until the call's host is dropped. Paths are validated as relative pack paths.
+//! Generator host calls fail outside `generate`; `process.run` additionally requires
+//! process permissions. Component instances live until the call's host is dropped. Paths are validated as relative pack paths.
 //!
 //! Bundle evaluation and `init` always run on a fixed clock seeded by the plugin id;
-//! calls use real time and randomness only in `native` mode or when both
+//! calls use real time and randomness only when both
 //! `permissions.clocks` and `permissions.random` are granted, otherwise a fixed clock.
 //!
 //! Each worker thread owns one [`rpp_js::Engine`]. A [`PluginInstance`] keeps one
@@ -78,7 +78,7 @@ pub const SDK_FILES: &[(&str, &str)] = &[
     ("config.ts", include_str!("sdk/config.ts")),
 ];
 
-/// Whether a `plugin.toml` entry selects the JavaScript runtime.
+/// Whether an `rpp.json` entry selects the JavaScript runtime.
 pub fn is_js_entry(entry: &str) -> bool {
     [".ts", ".mts", ".js", ".mjs"]
         .iter()

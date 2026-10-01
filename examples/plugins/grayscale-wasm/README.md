@@ -10,17 +10,22 @@ The component is a Rust crate under [`guest/`](guest). Build it once (needs
 just example-wasm            # builds guest/ and copies grayscale.wasm here
 ```
 
-```toml
-[[plugin]]
-source = "path:../plugins/grayscale-wasm"
+`rpp.json`:
+
+```json
+{ "dependencies": { "grayscale-wasm": "path:../plugins/grayscale-wasm" } }
 ```
 
+`rpp.config.ts` lists `plugin("grayscale-wasm")` in `plugins`.
+
 `grayscale.wasm` is not checked in; the build fails with a clear error if it
-is missing. The WIT world is a single function:
+is missing. The package declares it in `rpp.json` as `"components": { "grayscale":
+"grayscale.wasm" }`. The WIT world is a single function:
 
 ```wit
 export grayscale: func(input: list<u8>) -> result<list<u8>, string>;
 ```
 
-`list<u8>` maps to a Lua string in both directions, so the Lua side is just
-`file.bytes = grayscale:call("grayscale", file.bytes).ok`.
+`list<u8>` maps to a `Uint8Array` in both directions, and a `result` unwraps to its
+`ok` value or throws, so the plugin is just
+`file.bytes = components.load("grayscale").exports.grayscale(file.bytes)`.

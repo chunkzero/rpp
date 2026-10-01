@@ -24,7 +24,7 @@ pub enum Error {
     #[error("io error: {0}")]
     IoBare(#[source] std::io::Error),
 
-    /// Failed to parse `rpp.toml`.
+    /// Failed to convert or validate `rpp.config.ts`.
     #[error("invalid config {path}: {message}")]
     Config {
         /// The config file path.
@@ -33,7 +33,7 @@ pub enum Error {
         message: String,
     },
 
-    /// Failed to parse or validate a `plugin.toml` manifest.
+    /// Failed to parse or validate an `rpp.json` manifest.
     #[error("invalid plugin manifest {path}: {message}")]
     Manifest {
         /// The manifest path.

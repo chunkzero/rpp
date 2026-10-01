@@ -449,3 +449,29 @@ fn bundle_still_rejects_outside_node_modules_by_default() {
 
     assert!(message.contains("outside the root"), "{message}");
 }
+
+#[test]
+fn bundle_ignores_project_tsconfig() {
+    let dir = TempDir::new().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    write(&root, "util.ts", "export const value: number = 1;\n");
+    write(
+        &root,
+        "main.ts",
+        "import { value } from './util';\nexport const out = value;\n",
+    );
+
+    for config in [
+        r#"{ "extends": "./.rpp/tsconfig.json" }"#,
+        r#"{ "compilerOptions": { "paths": { "./util": ["./missing.ts"] } } }"#,
+    ] {
+        write(&root, "tsconfig.json", config);
+        let output = bundle(&request(&root, "main.ts")).unwrap();
+        assert!(output.code.contains("export"), "{config}: {}", output.code);
+        assert!(
+            !output.code.contains("import "),
+            "{config}: {}",
+            output.code
+        );
+    }
+}

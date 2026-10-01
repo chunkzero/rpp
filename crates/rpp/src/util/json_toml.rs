@@ -2,49 +2,25 @@
 //! because dependencies may enable `serde_json/arbitrary_precision`, which changes how
 //! numbers deserialize.
 
-#![cfg_attr(not(any(feature = "lua", feature = "js")), allow(dead_code))]
+#![cfg_attr(not(feature = "js"), allow(dead_code))]
 
 use serde_json::Value;
 
 /// The single key of the object that stands for a TOML datetime in tagged JSON.
 const DATETIME_KEY: &str = "$__toml_private_datetime";
 
-/// How [`toml_to_json`] represents datetimes.
-#[derive(Clone, Copy)]
-pub(crate) enum Datetimes {
-    /// As RFC 3339 strings.
-    #[cfg_attr(not(feature = "js"), allow(dead_code))]
-    Strings,
-    #[cfg_attr(not(feature = "lua"), allow(dead_code))]
-    /// As `{ "$__toml_private_datetime": "<RFC 3339>" }`, which [`json_to_toml`]
-    /// turns back into a datetime.
-    Tagged,
-}
-
-pub(crate) fn toml_to_json(value: &toml::Value, datetimes: Datetimes) -> Value {
+pub(crate) fn toml_to_json(value: &toml::Value) -> Value {
     match value {
         toml::Value::String(s) => Value::String(s.clone()),
         toml::Value::Integer(i) => Value::from(*i),
         toml::Value::Float(f) => Value::from(*f),
         toml::Value::Boolean(b) => Value::Bool(*b),
-        toml::Value::Datetime(d) => match datetimes {
-            Datetimes::Strings => Value::String(d.to_string()),
-            Datetimes::Tagged => Value::Object(
-                [(DATETIME_KEY.to_string(), Value::String(d.to_string()))]
-                    .into_iter()
-                    .collect(),
-            ),
-        },
-        toml::Value::Array(items) => Value::Array(
-            items
-                .iter()
-                .map(|item| toml_to_json(item, datetimes))
-                .collect(),
-        ),
+        toml::Value::Datetime(d) => Value::String(d.to_string()),
+        toml::Value::Array(items) => Value::Array(items.iter().map(toml_to_json).collect()),
         toml::Value::Table(table) => Value::Object(
             table
                 .iter()
-                .map(|(key, value)| (key.clone(), toml_to_json(value, datetimes)))
+                .map(|(key, value)| (key.clone(), toml_to_json(value)))
                 .collect(),
         ),
     }

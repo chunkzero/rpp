@@ -23,11 +23,11 @@ test-crate crate *ARGS:
     cargo test --locked -p {{ crate }} {{ ARGS }}
 
 # Format sources, configuration, and documentation
-fmt: fmt-rust fmt-jvm fmt-lua fmt-config
+fmt: fmt-rust fmt-jvm fmt-config
     just --unstable --fmt
 
 # Check formatting without modifying
-fmt-check: (fmt-rust "--check") fmt-jvm-check fmt-lua-check fmt-config-check
+fmt-check: (fmt-rust "--check") fmt-jvm-check fmt-config-check
     just --unstable --fmt --check
 
 # Format Rust, including guest crates outside the workspace; accepts --check
@@ -48,14 +48,6 @@ fmt-jvm-check:
     ktlint "integrations/jvm/**/*.kts" "!**/build/**" "!**/.gradle/**"
     git ls-files -z --cached --others --exclude-standard -- '*.java' | xargs -0 google-java-format --aosp --dry-run --set-exit-if-changed
 
-# Format Lua plugins and examples
-fmt-lua:
-    stylua --verify examples
-
-# Check Lua formatting
-fmt-lua-check:
-    stylua --check examples
-
 # Format configuration and documentation
 fmt-config:
     oxfmt --write .
@@ -74,10 +66,9 @@ lint-crate crate *ARGS:
 
 # Check the core library's supported configurations independently of the CLI
 check-features:
-    cargo check --locked -p rpp --all-targets --no-default-features
     cargo check --locked -p rpp --all-targets
-    cargo check --locked -p rpp --all-targets --features wasm,tracing
-    cargo check --locked -p rpp --all-targets --no-default-features --features js
+    cargo check --locked -p rpp --all-targets --features js
+    cargo check --locked -p rpp --all-targets --features js,wasm,tracing
 
 # Fail before tests can skip WASM coverage when the guest target is missing
 require-wasm:
@@ -86,7 +77,7 @@ require-wasm:
 # Exercise the component host and its CLI integrations
 verify-wasm: require-wasm
     cargo test --locked -p rpp-wasm --test integration
-    cargo test --locked -p rpp-cli --test example_wasm_plugin --test window_host_e2e --test js_component_e2e
+    cargo test --locked -p rpp-cli --test examples --test window_host_e2e --test js_component_e2e
 
 # Build release binaries
 build:

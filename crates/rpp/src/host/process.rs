@@ -49,13 +49,11 @@ pub(crate) fn run(
     access: &RuntimeAccess,
     request: ProcessRequest,
 ) -> Result<ProcessOutput, String> {
-    let native = access.is_native();
-    let permitted = native
-        || access
-            .permissions
-            .process
-            .iter()
-            .any(|allowed| allowed == &request.program);
+    let permitted = access
+        .permissions
+        .process
+        .iter()
+        .any(|allowed| allowed == &request.program);
     if !permitted {
         return Err(format!("process `{}` is not permitted", request.program));
     }
@@ -74,7 +72,7 @@ pub(crate) fn run(
         }
     }
     for (name, value) in &request.environment {
-        if !native && !access.permissions.environment.contains(name) {
+        if !access.permissions.environment.contains(name) {
             return Err(format!("environment variable `{name}` is not permitted"));
         }
         command.env(name, value);

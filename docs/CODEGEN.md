@@ -3,41 +3,41 @@
 Status: **implemented**.
 
 Some plugins produce artifacts whose consumer is not the resource pack. Window,
-for example, compiles Lua UI sources into pack font assets and also generates
+for example, compiles UI sources into pack font assets and also generates
 typed Kotlin views for the server runtime. Those generated sources should not
 be squashed into the resource-pack zip, but they do need to participate in the
 same build and invalidation story.
 
 ## Declaring Output Roots
 
-Plugins may declare named project-relative output roots in `rpp.toml`:
+Projects declare named project-relative output roots per plugin in `rpp.config.ts`:
 
-```toml
-[[plugin]]
-id = "window"
+```ts
+import { defineConfig } from "#rpp/config";
+import window from "#plugins/window";
 
-[plugin.options]
-kotlin_package = "dev.example.generated"
-
-[plugin.outputs]
-kotlin = "../server/src/main/kotlin/dev/example/generated"
+export default defineConfig({
+  pack: { name: "my-pack" },
+  plugins: [
+    window(
+      { kotlinPackage: "dev.example.generated" },
+      { outputs: { kotlin: "../server/src/main/kotlin/dev/example/generated" } },
+    ),
+  ],
+});
 ```
 
 Declared output roots are safe in sandboxed mode: the project chooses each root,
 and the plugin can only emit normalized paths beneath it. `trusted` is needed only
 when granting ambient capabilities such as environment, filesystem, or process
-access; `native` remains the unrestricted local-tooling mode.
-
-The `id = "window"` form references a plugin installed globally with
-`rpp plugin add <path-or-source> --global`; the project still owns the options
-and output roots.
+access.
 
 ## Emitting Artifacts
 
-Generator Lua can write to a root with:
+A generator can write to a root with:
 
-```lua
-ctx:emit_output("kotlin", "ShopView.kt", contents)
+```ts
+ctx.emitOutput("kotlin", "ShopView.kt", contents);
 ```
 
 The engine records external-output mutations alongside normal generator
@@ -54,17 +54,11 @@ while unrelated pack-only cache hits do not rewrite generated artifacts.
 Files not recorded in the ownership manifest are never removed. Two plugins that
 resolve to the same external path fail with an attributed collision diagnostic.
 
-## Component Bindgen
+## Component Types
 
-For Lua plugins that call WASM components, `rpp component bindgen` can generate
-a Lua wrapper from the component export schema:
-
-```bash
-rpp component bindgen compiler.wasm --name compiler --out compiler.lua
-```
-
-The wrapper uses `rpp.component.load("<name>")`, calls typed component exports,
-and includes LuaLS-style annotations for the generated functions.
+For plugins that call WASM components, `rpp codegen` writes TypeScript declarations
+from each built component's export schema to `.rpp/generated/<name>.d.ts`, so
+`components.load("<name>")` is typed. See [WASM_PLUGINS.md](WASM_PLUGINS.md).
 
 ## Integration Tests
 
@@ -72,7 +66,7 @@ The `rpp-cli` crate is also a library. Plugin repositories can drive builds from
 their own tests without loading user-global plugins:
 
 ```rust
-let mut project = rpp_cli::project::Project::discover_isolated("example/pack")?;
+let mut project = rpp_cli::project::Project::discover(std::path::Path::new("example/pack"))?;
 project.config.build.workers = 1;
 let result = project.build_engine()?.build()?;
 assert_eq!(result.generated, 1);

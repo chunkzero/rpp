@@ -6,11 +6,13 @@ use crate::config::{BuildConfig, Config, PackConfig};
 use crate::util::hash::xxh3;
 
 /// Produce a deterministic string form of options independent of TOML formatting.
+#[cfg_attr(not(feature = "js"), allow(dead_code))]
 pub(crate) fn canonical_options_json(options: &toml::Value) -> String {
     let json: serde_json::Value = serde_json::to_value(options).unwrap_or(serde_json::Value::Null);
     canonical_json(&json)
 }
 
+#[cfg_attr(not(feature = "js"), allow(dead_code))]
 fn canonical_json(value: &serde_json::Value) -> String {
     match value {
         serde_json::Value::Object(map) => {
@@ -41,7 +43,7 @@ fn canonical_json(value: &serde_json::Value) -> String {
 #[derive(Serialize)]
 struct BuildKeySection<'a> {
     source: String,
-    lua: &'a crate::config::LuaConfig,
+    limits: &'a crate::config::LimitsConfig,
 }
 
 /// `[pack]` plus build-relevant fields for the global cache key.
@@ -58,7 +60,7 @@ fn path_key(path: &std::path::Path) -> String {
 fn build_key_section(build: &BuildConfig) -> BuildKeySection<'_> {
     BuildKeySection {
         source: path_key(&build.source),
-        lua: &build.lua,
+        limits: &build.limits,
     }
 }
 

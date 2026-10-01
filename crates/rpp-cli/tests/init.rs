@@ -10,7 +10,7 @@ fn run(root: &Path, args: &[&str]) -> std::process::Output {
 }
 
 #[test]
-fn init_scaffolds_a_buildable_project() {
+fn init_scaffolds_a_buildable_ts_project() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
 
@@ -33,19 +33,19 @@ fn init_scaffolds_a_buildable_project() {
         String::from_utf8_lossy(&out.stderr)
     );
 
-    // Scaffold contents.
-    assert!(root.join("rpp.toml").is_file());
-    assert!(root.join("src/pack.mcmeta").is_file());
-    assert!(root.join("plugins/hello/plugin.toml").is_file());
-    assert!(root.join("plugins/hello/init.lua").is_file());
-    assert!(root.join(".gitignore").is_file());
-    // LuaLS definitions written.
-    assert!(root.join(".rpp/api/rpp.lua").is_file());
-    assert!(root.join(".rpp/api/file.lua").is_file());
-
-    let toml = std::fs::read_to_string(root.join("rpp.toml")).unwrap();
-    assert!(toml.contains("name = \"scaffolded\""));
-    assert!(toml.contains("pack_format = 34"));
+    for file in [
+        "rpp.config.ts",
+        "rpp.json",
+        "src/pack.mcmeta",
+        "plugins/hello/rpp.json",
+        "plugins/hello/src/plugin.ts",
+        ".gitignore",
+    ] {
+        assert!(root.join(file).is_file(), "{file} missing");
+    }
+    let config = std::fs::read_to_string(root.join("rpp.config.ts")).unwrap();
+    assert!(config.contains("name: \"scaffolded\""));
+    assert!(config.contains("packFormat: 34"));
 
     // The scaffolded project builds successfully.
     let build = run(root, &["build"]);
@@ -73,23 +73,23 @@ fn init_uses_defaults_without_a_terminal() {
     assert!(report.contains("Initialized rpp project"), "{report}");
     assert!(!report.contains('\x1b'), "redirected output must be plain");
 
-    let config = rpp::config::Config::load(root.join("rpp.toml")).unwrap();
+    let project = rpp_cli::project::Project::discover(root).unwrap();
     assert_eq!(
-        config.pack.name,
+        project.config.pack.name,
         root.file_name().unwrap().to_string_lossy()
     );
     assert_eq!(
-        config.pack.description.as_deref(),
+        project.config.pack.description.as_deref(),
         Some("A Minecraft resource pack")
     );
-    assert_eq!(config.pack.pack_format, Some(34));
+    assert_eq!(project.config.pack.pack_format, Some(34));
 }
 
 #[test]
 fn init_refuses_to_overwrite() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
-    std::fs::write(root.join("rpp.toml"), "[pack]\nname=\"x\"\n").unwrap();
+    std::fs::write(root.join("rpp.config.ts"), "export default {};\n").unwrap();
 
     let out = run(root, &["init", "--yes"]);
     assert!(!out.status.success(), "should refuse to overwrite");
@@ -111,7 +111,7 @@ fn init_refuses_to_overwrite_any_scaffold_file() {
         std::fs::read_to_string(root.join(".gitignore")).unwrap(),
         "keep\n"
     );
-    assert!(!root.join("rpp.toml").exists());
+    assert!(!root.join("rpp.config.ts").exists());
 }
 
 #[test]
@@ -136,7 +136,8 @@ fn init_escapes_user_strings() {
         "{}",
         String::from_utf8_lossy(&out.stderr)
     );
-    rpp::config::Config::load(root.join("rpp.toml")).unwrap();
+    let project = rpp_cli::project::Project::discover(&root).unwrap();
+    assert_eq!(project.config.pack.name, "quoted \" pack");
     let mcmeta: serde_json::Value =
         serde_json::from_slice(&std::fs::read(root.join("src/pack.mcmeta")).unwrap()).unwrap();
     assert_eq!(mcmeta["pack"]["description"], "line \" one");

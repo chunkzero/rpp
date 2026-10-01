@@ -40,7 +40,7 @@ pub(crate) struct WorkerPool {
 impl WorkerPool {
     /// Spawn `count` workers, each instantiating every factory once.
     ///
-    /// Instantiation happens on the worker thread (Lua states are per-worker).
+    /// Instantiation happens on the worker thread (plugin runtimes are per-worker).
     /// If any worker fails to instantiate, that error surfaces on the result
     /// channel as the first job is awaited.
     pub(crate) fn new(count: usize, factories: Arc<Vec<Arc<dyn PluginFactory>>>) -> Self {

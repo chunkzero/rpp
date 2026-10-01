@@ -1,0 +1,9 @@
+{
+  "name": "example-catalog",
+  "version": "1.0.0",
+  "description": "Generates item assets and an external catalog from TypeScript definitions.",
+  "entry": "src/plugin.ts",
+  "config": "src/config.ts",
+  "overrides": ["**"],
+  "discover": { "items": "items/*.ts" }
+}

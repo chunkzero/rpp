@@ -1,6 +1,6 @@
 //! Core, runtime-agnostic plugin model (spec §3).
 //!
-//! The build pipeline is defined entirely in terms of these traits. Lua and
+//! The build pipeline is defined entirely in terms of these traits. The V8 runtime and
 //! WASM runtimes are implementations of [`PluginFactory`] / [`PluginInstance`];
 //! the build engine implements [`GeneratorHost`].
 

@@ -11,9 +11,9 @@ use rpp_squash::{
     ZipOptions,
 };
 
+use crate::codegen;
 use crate::project::Project;
 use crate::ui;
-use crate::{codegen, luals};
 
 /// Arguments for `rpp build`.
 #[derive(Debug, Clone, Default)]
@@ -34,8 +34,6 @@ pub fn run(dir: &Path, args: BuildArgs) -> Result<()> {
         project.config.build.workers = jobs;
     }
 
-    // Refresh editor definitions if stale (best-effort; non-fatal).
-    let _ = luals::write_if_stale(&project.root.join(".rpp").join("api"));
     codegen::write_best_effort(&project.root);
 
     if args.no_cache {

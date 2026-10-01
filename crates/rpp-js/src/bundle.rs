@@ -12,7 +12,7 @@ use rolldown::plugin::{
 };
 use rolldown::{
     Bundler, BundlerOptions, ChunkFilenamesOutputOption, CodeSplittingMode, InputItem, ModuleType,
-    OutputFormat, Platform, ResolveOptions, SourceMapPathTransform, SourceMapType,
+    OutputFormat, Platform, ResolveOptions, SourceMapPathTransform, SourceMapType, TsConfig,
 };
 use rolldown_common::{Output, ResolvedExternal};
 use rolldown_sourcemap::{JSONSourceMap, SourceMap};
@@ -193,6 +193,7 @@ pub(crate) fn build(
         chunk_filenames: settings
             .split
             .then(|| ChunkFilenamesOutputOption::String("chunk-[hash].js".to_string())),
+        tsconfig: Some(TsConfig::Auto(false)),
         resolve: settings
             .main_fields
             .clone()

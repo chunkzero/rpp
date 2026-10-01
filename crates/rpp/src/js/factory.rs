@@ -20,7 +20,7 @@ use crate::model::{PluginFactory, PluginInstance, ProcessorDef};
 use crate::util::canonical::canonical_options_json;
 use crate::util::glob::GlobSet;
 use crate::util::hash::HashWriter;
-use crate::util::json_toml::{toml_to_json, Datetimes};
+use crate::util::json_toml::toml_to_json;
 use crate::util::path::to_forward_slash;
 
 const RUNTIME_SOURCE: &str = include_str!("sdk/runtime.ts");
@@ -91,7 +91,7 @@ struct ProcessorDescription {
 }
 
 impl JsPluginFactory {
-    /// Read `rpp.json` (or `plugin.toml`) in `dir`, bundle its entry, evaluate it once to read its
+    /// Read `rpp.json` in `dir`, bundle its entry, evaluate it once to read its
     /// processors and handlers, and compute the cache key.
     ///
     /// When the manifest declares `discover` patterns, the files they match under `source`
@@ -189,7 +189,7 @@ impl JsPluginFactory {
         }
         let init = json!({
             "plugin": id,
-            "options": toml_to_json(&options, Datetimes::Strings),
+            "options": toml_to_json(&options),
             "pack": pack_json,
         });
         let description = describe(&id, &bundle, limits, &access).map_err(load_error)?;

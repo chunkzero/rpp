@@ -4,7 +4,6 @@
     "rust-lang.rust-analyzer",
     "redhat.java",
     "jkillian.custom-local-formatters",
-    "JohnnyMorganz.stylua",
     "oxc.oxc-vscode"
   ]
 }
