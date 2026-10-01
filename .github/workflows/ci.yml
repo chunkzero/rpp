@@ -40,6 +40,9 @@ jobs:
         with:
           version: 2026.9.1
       - uses: Swatinem/rust-cache@v2
+      - name: Rerun the V8 build script
+        # rust-cache keeps the v8 build-script fingerprint but deletes the archive it downloaded.
+        run: rm -rf target/debug/.fingerprint/v8-* target/debug/build/v8-*
       - run: mise exec -- just verify-rust
 
   jvm:
@@ -54,6 +57,9 @@ jobs:
         with:
           version: 2026.9.1
       - uses: Swatinem/rust-cache@v2
+      - name: Rerun the V8 build script
+        # rust-cache keeps the v8 build-script fingerprint but deletes the archive it downloaded.
+        run: rm -rf target/debug/.fingerprint/v8-* target/debug/build/v8-*
       - run: mise exec -- just verify-jvm
 
   windows:
