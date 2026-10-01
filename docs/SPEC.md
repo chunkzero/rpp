@@ -153,6 +153,21 @@ the same identity and capability validation; global entries require a source.
 Source `pack.mcmeta` format validation runs on each build, rather than configuration
 loading, so configuration-only commands such as `clean` work with malformed sources.
 
+### `rpp.config.ts`
+
+A TypeScript project may configure itself with `rpp.config.ts`, whose default export is
+the config object. Keys are the camelCase forms of the `rpp.toml` schema
+(`pack.packFormat`, `build.squash.packsquashBinary`). Differences:
+
+- `plugins` is an array of `{ plugin, options?, security?, permissions?, outputs? }`;
+  `plugin` names an `rpp.json` dependency (`^[a-z0-9][a-z0-9_-]*$`).
+- `build.limits` holds the plugin runtime limits (`memoryLimitMb`,
+  `executionDeadlineSeconds`); `build.lua` is rejected.
+- `id`, `source`, `ref`, `subdir`, `permissions.lua` and `security: "native"` are rejected.
+- Keys inside `options` and `outputs` are kept verbatim; `null` values are invalid.
+
+A `[[plugin]]` entry in `rpp.toml` sets exactly one of `id`, `source` or `package`.
+
 ## 2. Plugin manifest: `plugin.toml`
 
 A **plugin is a directory** ("plugin package") containing `plugin.toml`:
@@ -168,6 +183,29 @@ entry = "init.lua"          # Lua entry script relative to plugin root (default 
 [component.compiler]        # optional named WASIp2 components callable from Lua
 module = "compiler.wasm"
 ```
+
+### `rpp.json` plugin packages
+
+A package may declare itself with `rpp.json` instead of `plugin.toml`; `rpp.json` is
+preferred when both exist.
+
+```json
+{
+  "name": "window",
+  "version": "0.1.0",
+  "description": "…",
+  "rpp": ">=0.2",
+  "entry": "src/plugin.ts",
+  "config": "src/config.ts",
+  "components": { "compiler": "window.wasm" }
+}
+```
+
+- `name` follows the plugin id grammar; `version` is semver; `rpp` is a semver range
+  checked during dependency resolution.
+- `entry` defaults to `src/plugin.ts` and must be a `.ts`, `.mts`, `.js` or `.mjs` file;
+  `entry`, `config` (the config-factory module) and component paths are relative.
+- `dependencies` is accepted and ignored; other unknown keys are rejected.
 
 ## 3. Core plugin model (in `crates/rpp`)
 

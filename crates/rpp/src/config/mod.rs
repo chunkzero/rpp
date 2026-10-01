@@ -11,6 +11,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
 
+mod ts;
+
 /// The fully parsed `rpp.toml`.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -357,6 +359,7 @@ impl PluginConfig {
         self.source
             .as_deref()
             .or(self.id.as_deref())
+            .or(self.package.as_deref())
             .unwrap_or("<unnamed>")
     }
 }
@@ -384,8 +387,7 @@ impl Config {
     /// `ref`, `subdir`, `permissions.lua` and `security: "native"` are rejected. Keys
     /// inside `options` and `outputs` are kept verbatim; `null` values are invalid.
     pub fn from_ts_json(value: &serde_json::Value, path: impl Into<PathBuf>) -> Result<Self> {
-        let _ = (value, path.into());
-        todo!()
+        ts::from_json(value, path.into())
     }
 
     /// Load and parse a `rpp.toml` from disk.
@@ -469,23 +471,39 @@ impl Config {
 }
 
 fn validate_plugin_identity(plugin: &PluginConfig, path: &Path) -> Result<()> {
-    match (plugin.id.as_deref(), plugin.source.as_deref()) {
-        (Some(id), None) if valid_plugin_id_ref(id) => Ok(()),
-        (Some(id), None) => Err(Error::Config {
-            path: path.to_path_buf(),
-            message: format!("plugin id `{id}` is invalid"),
-        }),
+    let config_error = |message: String| Error::Config {
+        path: path.to_path_buf(),
+        message,
+    };
+    let (id, source, package) = (
+        plugin.id.as_deref(),
+        plugin.source.as_deref(),
+        plugin.package.as_deref(),
+    );
+    match (id, source, package) {
+        (Some(id), None, None) if valid_plugin_id_ref(id) => Ok(()),
+        (Some(id), None, None) => Err(config_error(format!("plugin id `{id}` is invalid"))),
         // Source grammar is owned by rpp-fetch and validated during resolution.
-        (None, Some(_)) => Ok(()),
-        (Some(_), Some(_)) => Err(Error::Config {
-            path: path.to_path_buf(),
-            message: "plugin entries must set either `id` or `source`, not both".into(),
-        }),
-        (None, None) => Err(Error::Config {
-            path: path.to_path_buf(),
-            message: "plugin entries must set either `id` or `source`".into(),
-        }),
+        (None, Some(_), None) => Ok(()),
+        (None, None, Some(package)) if valid_dependency_name(package) => Ok(()),
+        (None, None, Some(package)) => Err(config_error(format!(
+            "plugin package `{package}` must match ^[a-z0-9][a-z0-9_-]*$"
+        ))),
+        (None, None, None) => Err(config_error(
+            "plugin entries must set one of `id`, `source` or `package`".into(),
+        )),
+        _ => Err(config_error(
+            "plugin entries must set exactly one of `id`, `source` or `package`".into(),
+        )),
     }
+}
+
+fn valid_dependency_name(name: &str) -> bool {
+    let mut bytes = name.bytes();
+    bytes
+        .next()
+        .is_some_and(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
+        && bytes.all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'_' | b'-'))
 }
 
 fn valid_plugin_id_ref(id: &str) -> bool {

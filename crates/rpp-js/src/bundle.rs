@@ -1,7 +1,7 @@
 //! Rolldown bundling into one ESM file.
 
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use rolldown::plugin::{
@@ -77,9 +77,25 @@ pub fn bundle(request: &BundleRequest) -> Result<Bundle> {
             request.root.display()
         ))
     })?;
+    let mut packages = Vec::with_capacity(request.packages.len());
+    for (specifier, package) in &request.packages {
+        let dir = package.dir.canonicalize().map_err(|e| {
+            Error::Bundle(format!(
+                "cannot resolve package `{specifier}` at {}: {e}",
+                package.dir.display()
+            ))
+        })?;
+        packages.push(Package {
+            specifier: specifier.clone(),
+            dir,
+            entry: package.entry.clone(),
+        });
+    }
+    let packages = Arc::new(packages);
     let diagnostics = Arc::new(Mutex::new(Vec::new()));
     let plugin = VirtualModules {
         root: root.clone(),
+        packages: Arc::clone(&packages),
         modules: request.virtual_modules.clone(),
         diagnostics: Arc::clone(&diagnostics),
     };
@@ -100,8 +116,18 @@ pub fn bundle(request: &BundleRequest) -> Result<Bundle> {
         platform: Some(Platform::Neutral),
         sourcemap: Some(SourceMapType::Hidden),
         code_splitting: Some(CodeSplittingMode::Bool(false)),
-        sourcemap_path_transform: Some(SourceMapPathTransform::new(Arc::new(|sources, _| {
-            Box::pin(async move { Ok(sources.iter().map(|s| display_source(s)).collect()) })
+        sourcemap_path_transform: Some(SourceMapPathTransform::new(Arc::new({
+            let root = root.clone();
+            move |sources, _| {
+                let root = root.clone();
+                let packages = Arc::clone(&packages);
+                Box::pin(async move {
+                    Ok(sources
+                        .iter()
+                        .map(|s| display_source(&root, &packages, s))
+                        .collect())
+                })
+            }
         }))),
         ..Default::default()
     };
@@ -171,17 +197,49 @@ pub fn bundle(request: &BundleRequest) -> Result<Bundle> {
 
 /// Turns a source path relative to `root` (as Rolldown reports it) into the form
 /// listed in the source map.
-fn display_source(source: &str) -> String {
-    match source.find(VIRTUAL_PREFIX) {
-        Some(at) => source[at + VIRTUAL_PREFIX.len()..].to_string(),
-        None => source.replace('\\', "/"),
+fn display_source(root: &Path, packages: &[Package], source: &str) -> String {
+    if let Some(at) = source.find(VIRTUAL_PREFIX) {
+        return source[at + VIRTUAL_PREFIX.len()..].to_string();
     }
+    let absolute = normalize(&root.join(source));
+    for package in packages {
+        if let Ok(relative) = absolute.strip_prefix(&package.dir) {
+            let relative = relative.to_string_lossy().replace('\\', "/");
+            return format!("{}/{relative}", package.specifier);
+        }
+    }
+    source.replace('\\', "/")
 }
 
-/// Serves `virtual_modules` and rejects imports that leave `root`.
+/// Resolves `.` and `..` components without touching the filesystem.
+fn normalize(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                out.pop();
+            }
+            other => out.push(other),
+        }
+    }
+    out
+}
+
+/// A [`BundlePackage`] with its directory canonicalized.
+#[derive(Debug)]
+struct Package {
+    specifier: String,
+    dir: PathBuf,
+    entry: String,
+}
+
+/// Serves `virtual_modules` and package entries, and rejects imports that leave `root`
+/// and the package directories.
 #[derive(Debug)]
 struct VirtualModules {
     root: PathBuf,
+    packages: Arc<Vec<Package>>,
     modules: BTreeMap<String, String>,
     diagnostics: Arc<Mutex<Vec<String>>>,
 }
@@ -210,10 +268,10 @@ impl VirtualModules {
         }
     }
 
-    fn is_inside_root(&self, id: &str) -> bool {
-        Path::new(id)
-            .canonicalize()
-            .is_ok_and(|path| path.starts_with(&self.root))
+    fn is_allowed(&self, id: &str) -> bool {
+        Path::new(id).canonicalize().is_ok_and(|path| {
+            path.starts_with(&self.root) || self.packages.iter().any(|p| path.starts_with(&p.dir))
+        })
     }
 }
 
@@ -245,6 +303,20 @@ impl Plugin for VirtualModules {
             ))));
         }
         let importer = self.describe_importer(args.importer);
+        if let Some(package) = self.packages.iter().find(|p| p.specifier == specifier) {
+            return Ok(Some(
+                match package.dir.join(&package.entry).canonicalize() {
+                    Ok(path) if path.starts_with(&package.dir) => {
+                        HookResolveIdOutput::from_id(path.to_string_lossy().into_owned())
+                    }
+                    _ => self.reject(
+                        specifier,
+                        &importer,
+                        "the package entry is missing or outside the package directory",
+                    ),
+                },
+            ));
+        }
         if specifier.starts_with("node:") {
             return Ok(Some(self.reject(
                 specifier,
@@ -280,11 +352,11 @@ impl Plugin for VirtualModules {
                 "external imports are not supported",
             )));
         }
-        if !self.is_inside_root(resolved.id.as_str()) {
+        if !self.is_allowed(resolved.id.as_str()) {
             return Ok(Some(self.reject(
                 specifier,
                 &importer,
-                "the file is outside the root",
+                "the file is outside the root and package directories",
             )));
         }
         Ok(Some(HookResolveIdOutput::from_resolved_id(resolved)))

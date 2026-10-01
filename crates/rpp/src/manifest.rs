@@ -1,11 +1,11 @@
-//! Plugin manifest: `plugin.toml` parsing and validation (spec §2).
+//! Plugin manifest: `plugin.toml` and `rpp.json` parsing and validation (spec §2).
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 
 use regex::Regex;
-use semver::Version;
+use semver::{Version, VersionReq};
 use serde::Deserialize;
 
 use crate::error::{Error, Result};
@@ -67,6 +67,32 @@ struct RawPlugin {
 #[serde(deny_unknown_fields)]
 struct RawComponent {
     module: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawJsonManifest {
+    name: String,
+    version: String,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    rpp: Option<String>,
+    #[serde(default)]
+    entry: Option<String>,
+    #[serde(default)]
+    config: Option<String>,
+    #[serde(default)]
+    components: BTreeMap<String, String>,
+    #[serde(default)]
+    #[allow(dead_code)]
+    dependencies: Option<serde::de::IgnoredAny>,
+}
+
+fn is_script_entry(entry: &str) -> bool {
+    [".ts", ".mts", ".js", ".mjs"]
+        .iter()
+        .any(|ext| entry.ends_with(ext))
 }
 
 impl PluginManifest {
@@ -131,7 +157,6 @@ impl PluginManifest {
         })
     }
 
-    /// Load and parse a `plugin.toml` from a plugin package directory.
     /// Parse and validate an `rpp.json` package manifest, attributing errors to `path`.
     ///
     /// ```json
@@ -152,16 +177,84 @@ impl PluginManifest {
     /// validated as a version requirement here. Unknown keys are rejected, except
     /// `dependencies`, which is ignored.
     pub fn parse_json(text: &str, path: impl Into<PathBuf>) -> Result<Self> {
-        let _ = (text, path.into());
-        todo!()
+        let path = path.into();
+        let fail = |message: String| Error::Manifest {
+            path: path.clone(),
+            message,
+        };
+        let raw: RawJsonManifest = serde_json::from_str(text).map_err(|e| fail(e.to_string()))?;
+
+        if !ID_REGEX.is_match(&raw.name) {
+            return Err(fail(format!(
+                "`name` `{}` must match ^[a-z0-9][a-z0-9_-]*$",
+                raw.name
+            )));
+        }
+        let version = Version::parse(&raw.version).map_err(|e| {
+            fail(format!(
+                "`version` `{}` is not valid semver: {e}",
+                raw.version
+            ))
+        })?;
+        if let Some(req) = &raw.rpp {
+            VersionReq::parse(req)
+                .map_err(|e| fail(format!("`rpp` `{req}` is not a valid version range: {e}")))?;
+        }
+
+        let entry = raw.entry.unwrap_or_else(|| "src/plugin.ts".to_string());
+        validate_relative(&entry).map_err(|m| fail(format!("invalid `entry`: {m}")))?;
+        if !is_script_entry(&entry) {
+            return Err(fail(format!(
+                "`entry` `{entry}` must be a .ts, .mts, .js or .mjs file"
+            )));
+        }
+        if let Some(config) = &raw.config {
+            validate_relative(config).map_err(|m| fail(format!("invalid `config`: {m}")))?;
+        }
+
+        let mut components = BTreeMap::new();
+        for (name, module) in raw.components {
+            if !ID_REGEX.is_match(&name) {
+                return Err(fail(format!(
+                    "component name `{name}` must match ^[a-z0-9][a-z0-9_-]*$"
+                )));
+            }
+            validate_relative(&module)
+                .map_err(|m| fail(format!("invalid module for component `{name}`: {m}")))?;
+            components.insert(name, ComponentManifest { module });
+        }
+
+        Ok(PluginManifest {
+            id: raw.name,
+            version,
+            description: raw.description,
+            authors: Vec::new(),
+            entry,
+            components,
+            config: raw.config,
+        })
     }
 
     /// Load `rpp.json` from `dir` when present, otherwise `plugin.toml`.
     pub fn load(dir: impl AsRef<Path>) -> Result<Self> {
-        let dir = dir.as_ref();
-        let path = dir.join("plugin.toml");
+        Self::load_with_source(dir.as_ref()).map(|(manifest, _)| manifest)
+    }
+
+    /// Like [`PluginManifest::load`], also returning the manifest text.
+    pub(crate) fn load_with_source(dir: &Path) -> Result<(Self, String)> {
+        let json_path = dir.join("rpp.json");
+        let (path, is_json) = if json_path.is_file() {
+            (json_path, true)
+        } else {
+            (dir.join("plugin.toml"), false)
+        };
         let text = std::fs::read_to_string(&path).map_err(|e| Error::io(&path, e))?;
-        Self::parse(&text, path)
+        let manifest = if is_json {
+            Self::parse_json(&text, path)?
+        } else {
+            Self::parse(&text, path)?
+        };
+        Ok((manifest, text))
     }
 }
 
@@ -225,5 +318,34 @@ authors = ["someone"]
         )
         .unwrap();
         assert_eq!(m.entry, "main.lua");
+    }
+
+    #[test]
+    fn parses_json_manifest() {
+        let m = PluginManifest::parse_json(
+            r#"{"name":"window","version":"0.1.0","rpp":">=0.2","config":"src/config.ts",
+                "components":{"compiler":"window.wasm"},"dependencies":{"x":"^1"}}"#,
+            "rpp.json",
+        )
+        .unwrap();
+        assert_eq!(m.id, "window");
+        assert_eq!(m.entry, "src/plugin.ts");
+        assert_eq!(m.config.as_deref(), Some("src/config.ts"));
+        assert_eq!(m.components["compiler"].module, "window.wasm");
+    }
+
+    #[test]
+    fn rejects_invalid_json_manifests() {
+        for text in [
+            r#"{"name":"x","version":"1.0.0","bogus":1}"#,
+            r#"{"name":"X","version":"1.0.0"}"#,
+            r#"{"name":"x","version":"1.0.0","rpp":"nope"}"#,
+            r#"{"name":"x","version":"1.0.0","entry":"init.lua"}"#,
+            r#"{"name":"x","version":"1.0.0","entry":"../a.ts"}"#,
+            r#"{"name":"x","version":"1.0.0","components":{"c":"/abs.wasm"}}"#,
+        ] {
+            let err = PluginManifest::parse_json(text, "rpp.json").unwrap_err();
+            assert!(matches!(err, Error::Manifest { .. }), "{text}");
+        }
     }
 }
