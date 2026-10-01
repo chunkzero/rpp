@@ -4,7 +4,6 @@
   const encoding = core.loadExtScript("ext:deno_web/08_text_encoding.js");
   const url = core.loadExtScript("ext:deno_web/00_url.js");
   const base64 = core.loadExtScript("ext:deno_web/05_base64.js");
-  const clone = core.structuredClone;
   const random = core.ops.op_rpp_random;
   const log = core.ops.op_rpp_log;
   const Uint8 = Uint8Array;
@@ -32,10 +31,6 @@
     URLSearchParams: url.URLSearchParams,
     atob: base64.atob,
     btoa: base64.btoa,
-    structuredClone(value, options) {
-      if (options?.transfer?.length) throw new Error("Transfer lists are unavailable");
-      return clone(value);
-    },
   });
   delete url.URL.createObjectURL;
   delete url.URL.revokeObjectURL;

@@ -506,6 +506,9 @@ fn dates_are_utc() {
         Date.parse('2020-01-01T00:00:00'),
         new Date('2020-01-01T00:00:00').getTime(),
         new Date(2020, 0, 1, 5).toString(),
+        new Date({ toString: () => '2020-01-01T00:00:00' }).getTime(),
+        Number.isNaN(Date.parse('2020/01/01')),
+        typeof structuredClone,
     ];";
     let mut runtime = load(&engine, code);
     let value = call(&mut runtime, &engine, "dates", Value::Null).unwrap();
@@ -518,7 +521,10 @@ fn dates_are_utc() {
             utc,
             utc,
             utc,
-            "Wed Jan 01 2020 05:00:00 GMT+0000 (UTC)"
+            "Wed Jan 01 2020 05:00:00 GMT+0000 (UTC)",
+            utc,
+            true,
+            "undefined"
         ])
     );
 }

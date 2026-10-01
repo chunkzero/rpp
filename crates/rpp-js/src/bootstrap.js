@@ -88,10 +88,38 @@
   lock(proto, "getTimezoneOffset", function getTimezoneOffset() {
     return this.getTime() - this.getTime();
   });
-  const localIso = /^([+-]\d{6}|\d{4})-\d\d-\d\dT\d\d:\d\d(:\d\d(\.\d+)?)?$/;
-  const utcInput = (text) => (typeof text === "string" && localIso.test(text) ? `${text}Z` : text);
+  // Only ISO formats parse, and those without an offset are UTC, so results never
+  // depend on the host timezone.
+  const isoDate = /^(?:[+-]\d{6}|\d{4})(?:-\d\d(?:-\d\d)?)?$/;
+  const isoDateTime =
+    /^(?:[+-]\d{6}|\d{4})-\d\d-\d\dT\d\d:\d\d(?::\d\d(?:\.\d+)?)?(Z|[+-]\d\d:\d\d)?$/;
   const nativeParse = NativeDate.parse;
-  lock(NativeDate, "parse", (text) => nativeParse(utcInput(String(text))));
+  const parseUtc = (value) => {
+    const text = String(value);
+    if (isoDate.test(text)) return nativeParse(text);
+    const match = isoDateTime.exec(text);
+    return match ? nativeParse(match[1] ? text : `${text}Z`) : NaN;
+  };
+  const toPrimitive = (value) => {
+    if ((typeof value !== "object" || value === null) && typeof value !== "function") return value;
+    const exotic = value[Symbol.toPrimitive];
+    if (exotic !== undefined && exotic !== null) return exotic.call(value, "default");
+    for (const name of ["valueOf", "toString"]) {
+      const method = value[name];
+      if (typeof method === "function") {
+        const result = method.call(value);
+        if ((typeof result !== "object" || result === null) && typeof result !== "function")
+          return result;
+      }
+    }
+    throw new TypeError("Cannot convert object to primitive value");
+  };
+  const timeOf = (value) => {
+    if (value instanceof NativeDate) return value.getTime();
+    const primitive = toPrimitive(value);
+    return typeof primitive === "string" ? parseUtc(primitive) : primitive;
+  };
+  lock(NativeDate, "parse", parseUtc);
   const controlledDate = new Proxy(NativeDate, {
     apply: () => dateString(new NativeDate(now())),
     construct: (target, args, newTarget) => {
@@ -99,7 +127,7 @@
         args.length >= 2
           ? [NativeDate.UTC(...args)]
           : args.length === 1
-            ? [utcInput(args[0])]
+            ? [timeOf(args[0])]
             : [now()];
       return construct(target, input, newTarget);
     },
