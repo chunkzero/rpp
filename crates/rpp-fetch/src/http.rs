@@ -13,6 +13,10 @@ pub const DEFAULT_API_BASE: &str = "https://api.github.com";
 /// The default codeload (tarball download) base URL.
 pub const DEFAULT_CODELOAD_BASE: &str = "https://codeload.github.com";
 
+/// The default registry index base URL.
+pub const DEFAULT_REGISTRY_BASE: &str =
+    "https://raw.githubusercontent.com/chunkzero/rpp-registry/main";
+
 /// The `User-Agent` header sent with every request.
 pub const USER_AGENT: &str = "rpp";
 const MAX_TARBALL_BYTES: u64 = 128 * 1024 * 1024;
@@ -27,6 +31,9 @@ pub struct HttpConfig {
     pub api_base: String,
     /// Base URL for codeload tarball downloads (no trailing slash).
     pub codeload_base: String,
+    /// Base URL of the registry index (no trailing slash); `RPP_REGISTRY`
+    /// overrides the default.
+    pub registry_base: String,
     /// Optional bearer token; defaults to the `GITHUB_TOKEN` env var.
     pub token: Option<String>,
 }
@@ -36,20 +43,26 @@ impl Default for HttpConfig {
         HttpConfig {
             api_base: DEFAULT_API_BASE.to_string(),
             codeload_base: DEFAULT_CODELOAD_BASE.to_string(),
+            registry_base: std::env::var("RPP_REGISTRY")
+                .ok()
+                .filter(|base| !base.is_empty())
+                .map(|base| base.trim_end_matches('/').to_string())
+                .unwrap_or_else(|| DEFAULT_REGISTRY_BASE.to_string()),
             token: std::env::var("GITHUB_TOKEN").ok().filter(|t| !t.is_empty()),
         }
     }
 }
 
 impl HttpConfig {
-    /// A config pointing both API and codeload at the same `base` URL, with no
+    /// A config pointing the API, codeload and registry at the same `base` URL, with no
     /// token. Useful for tests backed by a single mock server.
     pub fn with_base(base: impl Into<String>) -> Self {
         let base = base.into();
         let base = base.trim_end_matches('/').to_string();
         HttpConfig {
             api_base: base.clone(),
-            codeload_base: base,
+            codeload_base: base.clone(),
+            registry_base: base,
             token: None,
         }
     }
@@ -203,6 +216,7 @@ mod tests {
         let cfg = HttpConfig::with_base("http://localhost:1234/");
         assert_eq!(cfg.api_base, "http://localhost:1234");
         assert_eq!(cfg.codeload_base, "http://localhost:1234");
+        assert_eq!(cfg.registry_base, "http://localhost:1234");
         assert!(cfg.token.is_none());
     }
 
