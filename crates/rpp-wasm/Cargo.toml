@@ -10,8 +10,8 @@ authors.workspace = true
 repository.workspace = true
 
 [dependencies]
-wasmtime = { version = "=41.0.0", features = ["cache", "component-model", "cranelift", "runtime"] }
-wasmtime-wasi = "=41.0.0"
+wasmtime = { version = "=49.0.1", features = ["cache", "component-model", "cranelift", "runtime"] }
+wasmtime-wasi = "=49.0.1"
 thiserror.workspace = true
 sha2.workspace = true
 

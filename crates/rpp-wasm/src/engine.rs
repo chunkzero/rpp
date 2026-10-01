@@ -205,7 +205,7 @@ fn schema(engine: &Engine, component: &Component) -> Schema {
         .collect();
     let mut functions = Vec::new();
     for (name, item) in ty.exports(engine) {
-        collect_functions(engine, name, item, &mut functions);
+        collect_functions(engine, name, item.ty, &mut functions);
     }
     functions.sort_by(|a, b| a.path.cmp(&b.path));
     Schema { imports, functions }
@@ -223,7 +223,7 @@ fn collect_functions(engine: &Engine, path: &str, item: ComponentItem, output: &
         }),
         ComponentItem::ComponentInstance(instance) => {
             for (name, item) in instance.exports(engine) {
-                collect_functions(engine, &format!("{path}#{name}"), item, output);
+                collect_functions(engine, &format!("{path}#{name}"), item.ty, output);
             }
         }
         _ => {}
@@ -270,6 +270,8 @@ fn value_type(ty: Type) -> ValueType {
         Type::Future(_) => ValueType::Unsupported("future".into()),
         Type::Stream(_) => ValueType::Unsupported("stream".into()),
         Type::ErrorContext => ValueType::Unsupported("error-context".into()),
+        Type::Map(_) => ValueType::Unsupported("map".into()),
+        Type::FixedLengthList(_) => ValueType::Unsupported("fixed-length list".into()),
     }
 }
 
