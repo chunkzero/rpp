@@ -31,6 +31,18 @@ const MAX_TOTAL_BYTES: u64 = 512 * 1024 * 1024;
 /// Returns [`Error::UnsafeTarEntry`] if any entry would escape `dest`, or an
 /// I/O / decompression error otherwise.
 pub(crate) fn extract_tarball(bytes: &[u8], dest: &Path) -> Result<()> {
+    extract_archive(bytes, dest, true, |_| Ok(()))
+}
+
+/// Like [`extract_tarball`], optionally keeping entries at the archive root
+/// (`strip_wrapper = false`). `validate` runs on the unpacked temp directory before
+/// it is renamed into place; if it fails nothing is published.
+pub(crate) fn extract_archive(
+    bytes: &[u8],
+    dest: &Path,
+    strip_wrapper: bool,
+    validate: impl FnOnce(&Path) -> Result<()>,
+) -> Result<()> {
     if dest.exists() {
         return Ok(());
     }
@@ -52,7 +64,7 @@ pub(crate) fn extract_tarball(bytes: &[u8], dest: &Path) -> Result<()> {
     let tmp = unique_temp_dir(parent)?;
 
     // Clean up the temp dir on any failure.
-    let result = unpack_into(bytes, &tmp);
+    let result = unpack_into(bytes, &tmp, strip_wrapper).and_then(|()| validate(&tmp));
     if let Err(e) = result {
         let _ = std::fs::remove_dir_all(&tmp);
         return Err(e);
@@ -75,8 +87,9 @@ pub(crate) fn extract_tarball(bytes: &[u8], dest: &Path) -> Result<()> {
     }
 }
 
-/// Unpack `bytes` into `root`, stripping the leading top-level directory.
-fn unpack_into(bytes: &[u8], root: &Path) -> Result<()> {
+/// Unpack `bytes` into `root`, stripping the leading top-level directory when
+/// `strip_wrapper` is set.
+fn unpack_into(bytes: &[u8], root: &Path, strip_wrapper: bool) -> Result<()> {
     std::fs::create_dir_all(root)
         .map_err(|e| Error::io(format!("creating temp dir {}", root.display()), e))?;
 
@@ -102,7 +115,12 @@ fn unpack_into(bytes: &[u8], root: &Path) -> Result<()> {
             .map_err(|e| Error::io("reading tar entry path", e))?
             .into_owned();
 
-        let Some(stripped) = strip_top_level(&raw_path) else {
+        let stripped = if strip_wrapper {
+            strip_top_level(&raw_path)
+        } else {
+            Some(raw_path.clone())
+        };
+        let Some(stripped) = stripped.filter(|p| !is_root(p)) else {
             // The top-level directory entry itself, or an empty path: skip.
             continue;
         };
@@ -164,6 +182,11 @@ fn strip_top_level(path: &Path) -> Option<PathBuf> {
     } else {
         Some(rest)
     }
+}
+
+/// Whether `path` names the extraction root itself (`.`, `./`).
+fn is_root(path: &Path) -> bool {
+    path.components().all(|c| c == Component::CurDir)
 }
 
 /// Ensure a relative path is composed only of normal components — no `..`, no

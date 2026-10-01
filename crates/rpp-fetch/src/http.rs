@@ -21,6 +21,12 @@ pub const DEFAULT_REGISTRY_BASE: &str =
 pub const USER_AGENT: &str = "rpp";
 const MAX_TARBALL_BYTES: u64 = 128 * 1024 * 1024;
 
+/// Size cap for registry archives.
+pub(crate) const MAX_ARCHIVE_BYTES: u64 = MAX_TARBALL_BYTES;
+
+/// Size cap for registry index files.
+pub(crate) const MAX_INDEX_BYTES: u64 = 8 * 1024 * 1024;
+
 /// HTTP endpoint + auth configuration shared by the resolver and search.
 ///
 /// The base URLs are configurable so integration tests can serve canned
@@ -175,6 +181,95 @@ impl GitHubClient {
         let url = format!("{}/search/repositories?q={}", self.config.api_base, encoded);
         self.get_json(&url)
     }
+}
+
+/// A failed registry request: the HTTP status when the server answered.
+#[derive(Debug)]
+pub(crate) struct Failure {
+    pub(crate) status: Option<u16>,
+    reason: String,
+}
+
+impl Failure {
+    pub(crate) fn into_error(self, url: &str) -> Error {
+        Error::Registry {
+            url: url.to_string(),
+            reason: self.reason,
+        }
+    }
+}
+
+/// Blocking client for registry files and archives. The bearer token is only sent
+/// to hosts equal to the API base host, never to archive URLs elsewhere.
+pub(crate) struct RegistryClient {
+    agent: ureq::Agent,
+    pub(crate) config: HttpConfig,
+}
+
+impl RegistryClient {
+    pub(crate) fn new(config: HttpConfig) -> Self {
+        let agent = ureq::AgentBuilder::new()
+            .timeout(std::time::Duration::from_secs(60))
+            .build();
+        RegistryClient { agent, config }
+    }
+
+    /// GET `url`, reading at most `max_bytes` of body.
+    pub(crate) fn get_bytes(
+        &self,
+        url: &str,
+        max_bytes: u64,
+    ) -> std::result::Result<Vec<u8>, Failure> {
+        let mut req = self.agent.get(url).set("User-Agent", USER_AGENT);
+        if let Some(token) = self.config.token.as_ref().filter(|_| {
+            authority(url).is_some_and(|host| Some(host) == authority(&self.config.api_base))
+        }) {
+            req = req.set("Authorization", &format!("Bearer {token}"));
+        }
+        let resp = req.call().map_err(|e| match e {
+            ureq::Error::Status(code, resp) => Failure {
+                status: Some(code),
+                reason: format!("HTTP {code} {}", resp.status_text()),
+            },
+            ureq::Error::Transport(t) => Failure {
+                status: None,
+                reason: format!("transport error: {t}"),
+            },
+        })?;
+        let mut buf = Vec::new();
+        resp.into_reader()
+            .take(max_bytes + 1)
+            .read_to_end(&mut buf)
+            .map_err(|e| Failure {
+                status: None,
+                reason: format!("failed reading response body: {e}"),
+            })?;
+        if buf.len() as u64 > max_bytes {
+            return Err(Failure {
+                status: None,
+                reason: format!("response exceeds {max_bytes} bytes"),
+            });
+        }
+        Ok(buf)
+    }
+
+    /// GET `url` and deserialize an index-sized JSON body.
+    pub(crate) fn get_json<T: serde::de::DeserializeOwned>(
+        &self,
+        url: &str,
+    ) -> std::result::Result<T, Failure> {
+        let bytes = self.get_bytes(url, MAX_INDEX_BYTES)?;
+        serde_json::from_slice(&bytes).map_err(|e| Failure {
+            status: None,
+            reason: format!("invalid JSON response: {e}"),
+        })
+    }
+}
+
+/// The `host[:port]` of an absolute URL.
+fn authority(url: &str) -> Option<&str> {
+    let rest = url.split_once("://")?.1;
+    rest.split(['/', '?', '#']).next()
 }
 
 /// Convert a `ureq::Error` into our [`Error::GitHub`], surfacing the status code

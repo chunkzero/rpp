@@ -16,7 +16,7 @@ use semver::{Version, VersionReq};
 use serde::Deserialize;
 
 use crate::error::{Error, Incompatibility, Result};
-use crate::http::HttpConfig;
+use crate::http::{HttpConfig, RegistryClient};
 
 pub use deps::{parse_dependencies, validate_name, Dependency, DependencySpec};
 pub use lock::{LockedPackage, PackageLock, PACKAGE_LOCK_VERSION};
@@ -80,8 +80,7 @@ pub struct PackageSummary {
 
 /// Client for the registry index plus the local archive cache.
 pub struct Registry {
-    http: HttpConfig,
-    agent: ureq::Agent,
+    client: RegistryClient,
     cache_root: PathBuf,
 }
 
@@ -89,7 +88,10 @@ impl Registry {
     /// A registry client reading the index at `http.registry_base` and caching
     /// extracted archives under `cache_root`.
     pub fn new(http: HttpConfig, cache_root: impl Into<PathBuf>) -> Self {
-        todo!("{http:?} {:?}", cache_root.into())
+        Registry {
+            client: RegistryClient::new(http),
+            cache_root: cache_root.into(),
+        }
     }
 
     /// A client using [`HttpConfig::default`] and `<rpp cache>/registry`, where the
@@ -99,7 +101,21 @@ impl Registry {
     ///
     /// Returns an error if no cache directory can be determined.
     pub fn from_env() -> Result<Self> {
-        todo!()
+        let base = match std::env::var_os("RPP_CACHE_DIR").filter(|dir| !dir.is_empty()) {
+            Some(dir) => PathBuf::from(dir),
+            None => dirs::cache_dir()
+                .ok_or_else(|| {
+                    Error::io(
+                        "determining user cache directory",
+                        std::io::Error::new(
+                            std::io::ErrorKind::NotFound,
+                            "no cache directory available; set RPP_CACHE_DIR",
+                        ),
+                    )
+                })?
+                .join("rpp"),
+        };
+        Ok(Self::new(HttpConfig::default(), base.join("registry")))
     }
 
     /// Fetch `plugins/<name>.json`. A 404 is [`Error::UnknownPackage`].
@@ -108,7 +124,22 @@ impl Registry {
     ///
     /// Returns an error for invalid names, network failures, or malformed index files.
     pub fn entry(&self, name: &str) -> Result<IndexEntry> {
-        todo!("{name}")
+        validate_name(name)?;
+        let url = format!("{}/plugins/{name}.json", self.client.config.registry_base);
+        let entry: IndexEntry = self.client.get_json(&url).map_err(|f| {
+            if f.status == Some(404) {
+                Error::UnknownPackage(name.to_string())
+            } else {
+                f.into_error(&url)
+            }
+        })?;
+        if entry.name != name {
+            return Err(Error::Registry {
+                url,
+                reason: format!("index entry is for `{}`, expected `{name}`", entry.name),
+            });
+        }
+        Ok(entry)
     }
 
     /// Fetch `index.json` and keep entries whose name or description contains
@@ -118,7 +149,21 @@ impl Registry {
     ///
     /// Returns an error for network failures or a malformed summary.
     pub fn search(&self, query: &str) -> Result<Vec<SearchHit>> {
-        todo!("{query}")
+        let url = format!("{}/index.json", self.client.config.registry_base);
+        let hits: Vec<SearchHit> = self.client.get_json(&url).map_err(|f| f.into_error(&url))?;
+        let needle = query.to_lowercase();
+        let mut hits: Vec<SearchHit> = hits
+            .into_iter()
+            .filter(|hit| {
+                hit.name.to_lowercase().contains(&needle)
+                    || hit
+                        .description
+                        .as_deref()
+                        .is_some_and(|d| d.to_lowercase().contains(&needle))
+            })
+            .collect();
+        hits.sort_by(|a, b| a.name.cmp(&b.name));
+        Ok(hits)
     }
 
     /// Ensure the archive for `name` `version` is extracted in the cache and return
@@ -137,7 +182,7 @@ impl Registry {
         url: &str,
         sha256: &str,
     ) -> Result<PathBuf> {
-        todo!("{name} {version} {url} {sha256}")
+        install::install(&self.client, &self.cache_root, name, version, url, sha256)
     }
 }
 

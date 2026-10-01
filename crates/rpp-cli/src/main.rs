@@ -1,6 +1,7 @@
 //! The `rpp` command-line interface.
 //!
-//! Subcommands (spec §9): `init`, `build`, `dev`, `clean`, and `plugin ...`.
+//! Subcommands (spec §9): `init`, `build`, `dev`, `clean`, `add`, `remove`, `update`, `search`, and
+//! `plugin ...`.
 //! Shared project plumbing lives in [`project`]; pretty output in [`ui`]; LuaLS
 //! editor stubs in [`luals`].
 
@@ -41,6 +42,28 @@ enum Command {
     Dev,
     /// Remove the build output and cache.
     Clean,
+    /// Add dependencies to `rpp.json` (`<name>[@range]` or `path:<dir>`).
+    Add {
+        /// Dependencies to add.
+        #[arg(required = true)]
+        specs: Vec<String>,
+    },
+    /// Remove dependencies from `rpp.json`.
+    Remove {
+        /// Dependency names to remove.
+        #[arg(required = true)]
+        names: Vec<String>,
+    },
+    /// Re-select registry dependency versions within their ranges.
+    Update {
+        /// Dependencies to update (all when omitted).
+        names: Vec<String>,
+    },
+    /// Search the plugin registry.
+    Search {
+        /// The search query.
+        query: String,
+    },
     /// Manage plugins (`add`/`remove`/`list`/`update`/`search`).
     #[command(subcommand)]
     Plugin(PluginCommand),
@@ -104,6 +127,10 @@ fn main() {
         ),
         Command::Dev => commands::dev::run(&dir),
         Command::Clean => commands::clean::run(&dir),
+        Command::Add { specs } => commands::deps::add(&dir, &specs),
+        Command::Remove { names } => commands::deps::remove(&dir, &names),
+        Command::Update { names } => commands::deps::update(&dir, &names),
+        Command::Search { query } => commands::deps::search(&query),
         Command::Plugin(cmd) => commands::plugin::run(&dir, cmd),
         Command::Component(cmd) => commands::component::run(&dir, cmd),
     };
