@@ -200,7 +200,7 @@ impl Failure {
 }
 
 /// Blocking client for registry files and archives. The bearer token is only sent
-/// to hosts equal to the API base host, never to archive URLs elsewhere.
+/// over HTTPS to the API base's origin, never to archive URLs elsewhere.
 pub(crate) struct RegistryClient {
     agent: ureq::Agent,
     pub(crate) config: HttpConfig,
@@ -222,7 +222,9 @@ impl RegistryClient {
     ) -> std::result::Result<Vec<u8>, Failure> {
         let mut req = self.agent.get(url).set("User-Agent", USER_AGENT);
         if let Some(token) = self.config.token.as_ref().filter(|_| {
-            authority(url).is_some_and(|host| Some(host) == authority(&self.config.api_base))
+            url.starts_with("https://")
+                && authority(url).is_some_and(|host| Some(host) == authority(&self.config.api_base))
+                && self.config.api_base.starts_with("https://")
         }) {
             req = req.set("Authorization", &format!("Bearer {token}"));
         }

@@ -2,7 +2,7 @@
 //!
 //! Archives are gzipped tars whose entries sit at the archive root (no wrapper
 //! directory) and include `rpp.json`. They extract to
-//! `<cache_root>/<name>/<version>-<first 16 hex chars of sha256>/`.
+//! `<cache_root>/<name>/<version>-<sha256>/`.
 
 use std::path::{Path, PathBuf};
 
@@ -25,16 +25,13 @@ pub(super) fn install(
 ) -> Result<PathBuf> {
     validate_name(name)?;
     let expected = sha256.to_ascii_lowercase();
-    let Some(prefix) = expected
-        .get(..16)
-        .filter(|p| p.bytes().all(|b| b.is_ascii_hexdigit()))
-    else {
+    if expected.len() != 64 || !expected.bytes().all(|b| b.is_ascii_hexdigit()) {
         return Err(Error::Registry {
             url: url.to_string(),
             reason: format!("invalid sha256 `{sha256}`"),
         });
-    };
-    let dir = cache_root.join(name).join(format!("{version}-{prefix}"));
+    }
+    let dir = cache_root.join(name).join(format!("{version}-{expected}"));
     if dir.exists() {
         return Ok(dir);
     }

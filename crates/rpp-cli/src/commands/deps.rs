@@ -76,12 +76,14 @@ impl Manifest {
         self.root.join(LOCK_FILE)
     }
 
+    /// Write `rpp.json`, then `rpp.lock`. The lock is derived from the manifest, so a
+    /// failed lock write leaves a stale lock that the next resolution corrects.
     fn save(&self, lock: &PackageLock) -> Result<()> {
-        lock.save(&self.lock_path())
-            .with_context(|| format!("writing {}", self.lock_path().display()))?;
         let mut text = serde_json::to_string_pretty(&self.doc)?;
         text.push('\n');
-        atomic::write(&self.root.join(PACKAGE_MANIFEST), text)
+        atomic::write(&self.root.join(PACKAGE_MANIFEST), text)?;
+        lock.save(&self.lock_path())
+            .with_context(|| format!("writing {}", self.lock_path().display()))
     }
 }
 
@@ -186,7 +188,11 @@ pub fn remove(dir: &Path, names: &[String]) -> Result<()> {
         }
     }
     let remaining = manifest.dependencies()?;
-    let kept: Vec<&str> = remaining.iter().map(|d| d.name.as_str()).collect();
+    let kept: Vec<&str> = remaining
+        .iter()
+        .filter(|d| matches!(d.spec, DependencySpec::Registry(_)))
+        .map(|d| d.name.as_str())
+        .collect();
     let mut lock = PackageLock::load(&manifest.lock_path())?;
     lock.retain_names(&kept);
     manifest.save(&lock)?;
