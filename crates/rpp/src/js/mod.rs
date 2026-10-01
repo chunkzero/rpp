@@ -39,6 +39,10 @@
 //! Generator host calls fail outside `generate`; `process.run` follows the Lua phase
 //! and permission rules. Paths are validated as relative pack paths.
 //!
+//! Bundle evaluation and `init` always run on a fixed clock seeded by the plugin id;
+//! calls use real time and randomness only in `native` mode or when both
+//! `permissions.clocks` and `permissions.random` are granted, otherwise a fixed clock.
+//!
 //! Each worker thread owns one [`rpp_js::Engine`]. A [`PluginInstance`] keeps one
 //! runtime for processors (module state persists between files) and loads a fresh
 //! runtime for each `generate`, `onStart` and `onFinish` call.

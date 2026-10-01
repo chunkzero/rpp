@@ -2,6 +2,7 @@
 
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::time::Instant;
 
 use rpp_js::{Call, Cancellation, Clock, Engine, LogLevel, Output, Runtime};
 use serde_json::{json, Value};
@@ -31,6 +32,17 @@ pub(super) fn engine() -> std::result::Result<Rc<Engine>, String> {
         *slot = Some(Rc::clone(&engine));
         Ok(engine)
     })
+}
+
+/// The clock for evaluating the bundle and running `init`, identical in validation
+/// and in every instance so module-level code is deterministic.
+pub(super) fn module_clock(id: &str) -> Clock {
+    let mut writer = HashWriter::new();
+    writer.write_str(id);
+    Clock::Fixed {
+        timestamp_ms: 0,
+        seed: writer.finish(),
+    }
 }
 
 /// Why a runtime operation failed.
@@ -70,7 +82,7 @@ impl JsPluginInstance {
         if instance.factory.processors().is_empty() {
             return Ok(instance);
         }
-        match instance.load_runtime(instance.clock(&[&id])) {
+        match instance.load_runtime() {
             Ok(runtime) => instance.processor_runtime = Some(runtime),
             Err(Failure::Load(message) | Failure::Call(message)) => {
                 return Err(Error::PluginLoad {
@@ -87,7 +99,9 @@ impl JsPluginInstance {
     }
 
     fn clock(&self, parts: &[&str]) -> Clock {
-        if !self.access.is_deterministic() {
+        if self.access.is_native()
+            || (self.access.permissions.clocks && self.access.permissions.random)
+        {
             return Clock::Real;
         }
         let mut writer = HashWriter::new();
@@ -98,6 +112,11 @@ impl JsPluginInstance {
             timestamp_ms: 0,
             seed: writer.finish(),
         }
+    }
+
+    /// The instant a call starting now runs out of time.
+    fn deadline(&self) -> Instant {
+        Instant::now() + self.factory.shared().limits.time
     }
 
     fn emit_logs(&self, output: &Output) {
@@ -113,8 +132,9 @@ impl JsPluginInstance {
     }
 
     /// Evaluate the bundle in a new runtime and call `init`.
-    fn load_runtime(&self, clock: Clock) -> std::result::Result<Runtime, Failure> {
+    fn load_runtime(&self) -> std::result::Result<Runtime, Failure> {
         let shared = self.factory.shared();
+        let clock = module_clock(&shared.id);
         let (mut runtime, logs) = self
             .engine
             .load(
@@ -131,7 +151,7 @@ impl JsPluginInstance {
             logs,
         };
         self.emit_logs(&output);
-        let mut host = JsHost::new(&self.access, shared.limits.time, None);
+        let mut host = JsHost::new(&self.access, self.deadline(), None);
         self.call(
             &mut runtime,
             "init",
@@ -178,8 +198,8 @@ impl JsPluginInstance {
         generator: Option<&'a mut dyn GeneratorHost>,
     ) -> std::result::Result<(), Failure> {
         let clock = self.clock(&[self.id()]);
-        let mut runtime = self.load_runtime(clock)?;
-        let mut host = JsHost::new(&self.access, self.factory.shared().limits.time, generator);
+        let mut runtime = self.load_runtime()?;
+        let mut host = JsHost::new(&self.access, self.deadline(), generator);
         self.access.phase.set(phase);
         let result = self.call(&mut runtime, export, args, None, clock, &mut host);
         self.access.phase.set(Phase::Load);
@@ -206,13 +226,13 @@ impl PluginInstance for JsPluginInstance {
         let clock = self.clock(&[self.id(), processor, &file.path]);
         let mut runtime = match self.processor_runtime.take() {
             Some(runtime) => runtime,
-            None => self.load_runtime(clock).map_err(|failure| match failure {
+            None => self.load_runtime().map_err(|failure| match failure {
                 Failure::Load(message) | Failure::Call(message) => self.load_error(message),
             })?,
         };
 
         let original = std::mem::take(&mut file.contents);
-        let mut host = JsHost::new(&self.access, self.factory.shared().limits.time, None);
+        let mut host = JsHost::new(&self.access, self.deadline(), None);
         self.access.phase.set(Phase::Processor);
         let result = self.call(
             &mut runtime,

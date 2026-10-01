@@ -439,3 +439,66 @@ export default definePlugin({
     assert_eq!(run("a.txt"), run("a.txt"));
     assert_ne!(run("a.txt"), run("b.txt"));
 }
+
+#[test]
+fn module_level_randomness_validates_and_absent_pack_fields_are_undefined() {
+    let dir = write_plugin(
+        r##"
+import { definePlugin } from "#rpp";
+export default definePlugin({
+  processors: {
+    [String(Math.random())]: {
+      files: "**/*",
+      run(ctx, file) { file.text = String(ctx.pack.description === undefined); },
+    },
+  },
+});
+"##,
+    );
+    let factory = load(dir.path(), "");
+    let name = factory.processors()[0].name.clone();
+    let mut instance = factory.instantiate().unwrap();
+    let (file, _) = process(instance.as_mut(), &name, "a.txt", "");
+    assert_eq!(text(&file), "true");
+}
+
+#[test]
+fn clocks_alone_keep_randomness_fixed() {
+    let dir = write_plugin(
+        r##"
+import { definePlugin } from "#rpp";
+export default definePlugin({
+  processors: { rand: { files: "**/*", run(ctx, file) { file.text = String(Math.random()); } } },
+});
+"##,
+    );
+    let mut access = RuntimeAccess::sandboxed(".".into());
+    access.permissions.clocks = true;
+    let factory = try_load_with(dir.path(), "", access).unwrap();
+    let run = || {
+        let mut instance = factory.instantiate().unwrap();
+        text(&process(instance.as_mut(), "rand", "a.txt", "").0).to_string()
+    };
+    assert_eq!(run(), run());
+}
+
+#[test]
+fn process_cwd_must_stay_inside_project() {
+    let dir = write_plugin(
+        r##"
+import { definePlugin, process } from "#rpp";
+export default definePlugin({
+  generate() { process.run({ program: "true", cwd: "../outside" }); },
+});
+"##,
+    );
+    let mut access = RuntimeAccess::sandboxed(".".into());
+    access.security = rpp::config::SecurityMode::Trusted;
+    access.permissions.process = vec!["true".into()];
+    let mut instance = try_load_with(dir.path(), "", access)
+        .unwrap()
+        .instantiate()
+        .unwrap();
+    let error = instance.generate(&mut Recorder::default()).unwrap_err();
+    assert!(error.to_string().contains("must not contain"), "{error}");
+}

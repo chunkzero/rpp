@@ -29,11 +29,14 @@ fn codegen_writes_sdk_and_tsconfig() {
         let written = std::fs::read_to_string(root.join(".rpp/sdk").join(path)).unwrap();
         assert_eq!(&written, contents);
     }
-    assert!(root.join(".rpp/sdk/globals.d.ts").is_file());
+    let globals = std::fs::read_to_string(root.join(".rpp/sdk/globals.d.ts")).unwrap();
+    assert!(globals.contains("declare var crypto"));
+    assert!(!globals.contains("structuredClone"));
     let tsconfig = std::fs::read_to_string(root.join(".rpp/tsconfig.json")).unwrap();
     assert!(tsconfig.contains("\"#rpp\": [\"./sdk/index.ts\"]"));
     let root_config = std::fs::read_to_string(root.join("tsconfig.json")).unwrap();
     assert!(root_config.contains("./.rpp/tsconfig.json"));
+    assert!(root_config.contains("**/*.mts"));
 }
 
 #[test]

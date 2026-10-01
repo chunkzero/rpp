@@ -1,7 +1,6 @@
 //! Host calls reachable from plugin JavaScript.
 
-use std::path::PathBuf;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use rpp_js::{Host, HostReply};
 use serde::de::DeserializeOwned;
@@ -18,7 +17,7 @@ use crate::util::path::validate_relative;
 /// The host for one JavaScript call.
 pub(super) struct JsHost<'a> {
     access: &'a RuntimeAccess,
-    time_limit: Duration,
+    deadline: Instant,
     generator: Option<&'a mut dyn GeneratorHost>,
     /// The final path and drop flag reported by the `file` call.
     pub(super) file: Option<(String, bool)>,
@@ -107,12 +106,12 @@ fn null() -> Result<HostReply, String> {
 impl<'a> JsHost<'a> {
     pub(super) fn new(
         access: &'a RuntimeAccess,
-        time_limit: Duration,
+        deadline: Instant,
         generator: Option<&'a mut dyn GeneratorHost>,
     ) -> Self {
         Self {
             access,
-            time_limit,
+            deadline,
             generator,
             file: None,
         }
@@ -132,15 +131,26 @@ impl<'a> JsHost<'a> {
         if !access.is_native() && !matches!(access.phase.get(), Phase::Generator | Phase::Hook) {
             return Err("process execution is only available in generators and hooks".into());
         }
-        let timeout = args.timeout_ms.map_or(self.time_limit, |ms| {
-            Duration::from_millis(ms).min(self.time_limit)
-        });
+        let remaining = self.deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err("execution time limit exhausted before the process started".into());
+        }
+        let timeout = args
+            .timeout_ms
+            .map_or(remaining, |ms| Duration::from_millis(ms).min(remaining));
+        let cwd = match &args.cwd {
+            Some(cwd) => {
+                relative(cwd)?;
+                Some(access.project_root.join(cwd))
+            }
+            None => None,
+        };
         let output = process::run(
             access,
             ProcessRequest {
                 program: args.program,
                 args: args.args,
-                cwd: args.cwd.map(PathBuf::from),
+                cwd,
                 environment: args.env.into_iter().collect(),
                 stdin,
                 timeout: Some(timeout),

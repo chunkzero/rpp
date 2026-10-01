@@ -3,9 +3,9 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use rpp_js::{Bundle, BundleRequest, Call, Cancellation, Clock, Engine, Limits};
+use rpp_js::{Bundle, BundleRequest, Call, Cancellation, Engine, Limits};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
@@ -140,14 +140,17 @@ impl JsPluginFactory {
             heap_bytes: limits.memory_limit,
             time: limits.execution_limit,
         };
+        let mut pack_json = json!({ "name": pack.name });
+        if let Some(description) = pack.description {
+            pack_json["description"] = json!(description);
+        }
+        if let Some(format) = pack.format {
+            pack_json["format"] = json!(format);
+        }
         let init = json!({
             "plugin": id,
             "options": toml_to_json(&options, Datetimes::Strings),
-            "pack": {
-                "name": pack.name,
-                "description": pack.description,
-                "format": pack.format,
-            },
+            "pack": pack_json,
         });
         let description = describe(&id, &bundle, limits, &access).map_err(load_error)?;
         let processors = processor_defs(description.processors).map_err(load_error)?;
@@ -243,14 +246,11 @@ fn describe(
     Engine::init_platform();
     let engine = instance::engine()?;
     let cancellation = Cancellation::new();
-    let clock = Clock::Fixed {
-        timestamp_ms: 0,
-        seed: 0,
-    };
+    let clock = instance::module_clock(id);
     let (mut runtime, _) = engine
         .load(id, bundle, limits, clock, &cancellation)
         .map_err(|e| e.to_string().trim_end().to_string())?;
-    let mut host = JsHost::new(access, limits.time, None);
+    let mut host = JsHost::new(access, Instant::now() + limits.time, None);
     let call = Call {
         export: "describe",
         args: Value::Null,
