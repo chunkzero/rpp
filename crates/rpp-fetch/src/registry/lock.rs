@@ -124,7 +124,17 @@ impl PackageLock {
             .parent()
             .filter(|p| !p.as_os_str().is_empty())
             .unwrap_or_else(|| Path::new("."));
-        let mut file = tempfile::NamedTempFile::new_in(parent)
+        #[cfg_attr(not(unix), allow(unused_mut))]
+        let mut builder = tempfile::Builder::new();
+        // `rpp.lock` is committed, so it gets the mode `File::create` would give it rather than tempfile's 0o600.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            builder.permissions(std::fs::Permissions::from_mode(0o666));
+        }
+        let mut file = builder
+            .tempfile_in(parent)
             .map_err(|e| Error::io(format!("staging {}", path.display()), e))?;
         file.write_all(text.as_bytes())
             .map_err(|e| Error::io(format!("writing {}", path.display()), e))?;
