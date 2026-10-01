@@ -58,28 +58,6 @@ runs:
         echo "file=$(jq -r .file "$out/packed.json")" >> "$GITHUB_OUTPUT"
         echo "sha256=$(jq -r .sha256 "$out/packed.json")" >> "$GITHUB_OUTPUT"
 
-    - name: Prepare registry update
-      shell: bash
-      env:
-        GH_TOKEN: ${{ inputs.registry-token }}
-        OUT: ${{ steps.pack.outputs.out }}
-        UPDATE_ENTRY: ${{ github.action_path }}/update_entry.py
-      run: |
-        registry=chunkzero/rpp-registry
-        name=$(jq -r .name "$OUT/packed.json")
-        version=$(jq -r .version "$OUT/packed.json")
-
-        gh repo fork "$registry" --clone=false
-        gh auth setup-git
-        git clone "https://github.com/$registry" "$RUNNER_TEMP/registry"
-        cd "$RUNNER_TEMP/registry"
-        git checkout -b "$name-$version"
-
-        python3 "$UPDATE_ENTRY" --registry . --repository "https://github.com/$GITHUB_REPOSITORY" \
-          --tag "$GITHUB_REF_NAME" --packed "$OUT/packed.json"
-        python3 scripts/registry.py index
-        python3 scripts/registry.py check --base origin/main
-
     - name: Upload release asset
       shell: bash
       env:
@@ -103,6 +81,28 @@ runs:
         else
           gh release upload "$GITHUB_REF_NAME" "$OUT/$FILE" "$OUT/$FILE.sha256"
         fi
+
+    - name: Prepare registry update
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.registry-token }}
+        OUT: ${{ steps.pack.outputs.out }}
+        UPDATE_ENTRY: ${{ github.action_path }}/update_entry.py
+      run: |
+        registry=chunkzero/rpp-registry
+        name=$(jq -r .name "$OUT/packed.json")
+        version=$(jq -r .version "$OUT/packed.json")
+
+        gh repo fork "$registry" --clone=false
+        gh auth setup-git
+        git clone "https://github.com/$registry" "$RUNNER_TEMP/registry"
+        cd "$RUNNER_TEMP/registry"
+        git checkout -b "$name-$version"
+
+        python3 "$UPDATE_ENTRY" --registry . --repository "https://github.com/$GITHUB_REPOSITORY" \
+          --tag "$GITHUB_REF_NAME" --packed "$OUT/packed.json"
+        python3 scripts/registry.py index
+        python3 scripts/registry.py check --base origin/main
 
     - name: Open registry pull request
       shell: bash
