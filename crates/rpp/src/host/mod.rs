@@ -7,6 +7,7 @@ pub mod log;
 pub(crate) mod process;
 
 pub use access::RuntimeAccess;
+#[cfg(feature = "lua")]
 pub(crate) use access::{Phase, PhaseCell};
 
 /// Pack metadata exposed to plugin code as `ctx.pack`.
