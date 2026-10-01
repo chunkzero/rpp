@@ -372,6 +372,12 @@ impl Config {
             path: path.clone(),
             message: format!("{e}"),
         })?;
+        if config.plugins.iter().any(|plugin| plugin.package.is_some()) {
+            return Err(Error::Config {
+                path,
+                message: "`package` is only supported in rpp.config.ts".into(),
+            });
+        }
         config.validate(&path)?;
         Ok(config)
     }
@@ -672,6 +678,13 @@ mod tests {
         assert!(cfg.build.squash.enabled);
         assert_eq!(cfg.dev.port, 8080);
         assert!(cfg.plugins.is_empty());
+    }
+
+    #[test]
+    fn toml_rejects_package_plugins() {
+        let text = "[pack]\nname = \"demo\"\n[[plugin]]\npackage = \"window\"\n";
+        let err = Config::parse(text, "rpp.toml").unwrap_err().to_string();
+        assert!(err.contains("only supported in rpp.config.ts"), "{err}");
     }
 
     #[test]

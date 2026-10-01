@@ -166,3 +166,21 @@ fn codegen_maps_plugin_config_paths() {
     );
     assert!(root.join(".rpp/sdk/config.ts").is_file());
 }
+
+#[test]
+fn add_from_subdirectory_writes_manifest_at_ts_project_root() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("project");
+    write(&root, "rpp.config.ts", "export default {};\n");
+    write(&root, "src/.keep", "");
+    write(
+        dir.path(),
+        "tool/rpp.json",
+        r#"{"name":"tool","version":"0.1.0"}"#,
+    );
+
+    let out = run(&root.join("src"), &["add", "path:../../tool"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(root.join("rpp.json").is_file());
+    assert!(!root.join("src/rpp.json").exists());
+}

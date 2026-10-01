@@ -135,6 +135,14 @@ impl Project {
             files.push(self.root.join(PACKAGE_MANIFEST));
             files.push(self.lock_path());
             files.extend(ts.inputs.iter().cloned());
+            for package in ts.packages.values() {
+                files.extend(
+                    [PACKAGE_MANIFEST, "plugin.toml"]
+                        .iter()
+                        .map(|name| package.dir.join(name))
+                        .filter(|path| path.is_file()),
+                );
+            }
         }
         files
     }

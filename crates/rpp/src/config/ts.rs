@@ -60,6 +60,7 @@ fn convert_root(value: &Value) -> std::result::Result<Value, String> {
                     .collect::<std::result::Result<Vec<_>, _>>()?;
                 out.insert("plugin".into(), Value::Array(plugins));
             }
+            "plugin" => return Err("unknown field `plugin`; use `plugins`".into()),
             "build" => {
                 out.insert(key.clone(), convert_build(item)?);
             }
@@ -261,6 +262,10 @@ mod tests {
             message(json!({ "pack": pack, "plugins": [{ "options": {} }] }))
                 .contains("must set `plugin`")
         );
+        assert!(message(
+            json!({ "pack": pack, "plugin": [{ "package": "a", "security": "native" }] })
+        )
+        .contains("unknown field `plugin`"));
         assert!(
             message(json!({ "pack": { "name": "demo", "packFromat": 1 } }))
                 .contains("`packFromat`")

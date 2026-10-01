@@ -61,8 +61,16 @@ pub struct DevWatcher {
 impl DevWatcher {
     /// Treat `files` as project config files, watching their directories.
     pub fn set_config_files(&mut self, files: Vec<PathBuf>) -> Result<()> {
+        let plugin_dirs = self
+            .plugin_dirs
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
         for dir in files.iter().filter_map(|file| file.parent()) {
-            if self.watched_dirs.iter().any(|d| d == dir) || dir.starts_with(&self.source_dir) {
+            if self.watched_dirs.iter().any(|d| d == dir)
+                || dir.starts_with(&self.source_dir)
+                || plugin_dirs.iter().any(|plugin| dir.starts_with(plugin))
+            {
                 continue;
             }
             self.debouncer

@@ -6,6 +6,8 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 
+use rpp_fetch::registry::PACKAGE_MANIFEST;
+
 use crate::project::{resolve_ts_packages, CONFIG_FILE, TS_CONFIG_FILE};
 
 const TSCONFIG_HEAD: &str = r##"{
@@ -104,7 +106,8 @@ declare function btoa(data: string): string;
 "#;
 
 /// The `.rpp/tsconfig.json` contents. `plugin_configs` maps dependency names to their
-/// config modules; it is `Some` for `rpp.config.ts` projects, which also map `#rpp/config`.
+/// config modules; it is `Some` for `rpp.config.ts` and plugin projects, which also map
+/// `#rpp/config`.
 fn tsconfig(plugin_configs: Option<&BTreeMap<String, PathBuf>>) -> String {
     let mut text = TSCONFIG_HEAD.to_string();
     if let Some(plugin_configs) = plugin_configs {
@@ -133,6 +136,11 @@ pub fn write(root: &Path) -> Result<bool> {
                 })
                 .collect(),
         )
+    } else if ["plugin.toml", PACKAGE_MANIFEST]
+        .iter()
+        .any(|name| root.join(name).is_file())
+    {
+        Some(BTreeMap::new())
     } else {
         None
     };

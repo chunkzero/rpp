@@ -33,6 +33,8 @@ pub struct PluginManifest {
     /// Config module (relative to the plugin root) whose default export is the
     /// plugin's config factory; `rpp.json` packages only.
     pub config: Option<String>,
+    /// Required rpp version range; `rpp.json` packages only.
+    pub rpp: Option<VersionReq>,
 }
 
 /// One named component library shipped in a plugin package.
@@ -154,6 +156,7 @@ impl PluginManifest {
             entry,
             components: validated_components,
             config: None,
+            rpp: None,
         })
     }
 
@@ -173,8 +176,7 @@ impl PluginManifest {
     ///
     /// `name` becomes [`PluginManifest::id`] (same grammar). `entry` defaults to
     /// `src/plugin.ts` and must be a JavaScript entry; `entry`, `config` and component
-    /// paths must be relative. `rpp` is checked during dependency resolution and only
-    /// validated as a version requirement here. Unknown keys are rejected, except
+    /// paths must be relative. `rpp` is a version requirement checked by [`PluginManifest::load`]. Unknown keys are rejected, except
     /// `dependencies`, which is ignored.
     pub fn parse_json(text: &str, path: impl Into<PathBuf>) -> Result<Self> {
         let path = path.into();
@@ -196,10 +198,14 @@ impl PluginManifest {
                 raw.version
             ))
         })?;
-        if let Some(req) = &raw.rpp {
-            VersionReq::parse(req)
-                .map_err(|e| fail(format!("`rpp` `{req}` is not a valid version range: {e}")))?;
-        }
+        let rpp = raw
+            .rpp
+            .as_deref()
+            .map(|req| {
+                VersionReq::parse(req)
+                    .map_err(|e| fail(format!("`rpp` `{req}` is not a valid version range: {e}")))
+            })
+            .transpose()?;
 
         let entry = raw.entry.unwrap_or_else(|| "src/plugin.ts".to_string());
         validate_relative(&entry).map_err(|m| fail(format!("invalid `entry`: {m}")))?;
@@ -232,6 +238,7 @@ impl PluginManifest {
             entry,
             components,
             config: raw.config,
+            rpp,
         })
     }
 
@@ -250,10 +257,23 @@ impl PluginManifest {
         };
         let text = std::fs::read_to_string(&path).map_err(|e| Error::io(&path, e))?;
         let manifest = if is_json {
-            Self::parse_json(&text, path)?
+            Self::parse_json(&text, path.clone())?
         } else {
-            Self::parse(&text, path)?
+            Self::parse(&text, path.clone())?
         };
+        if let Some(req) = &manifest.rpp {
+            let mut running = Version::parse(env!("CARGO_PKG_VERSION")).expect("crate version");
+            running.pre = semver::Prerelease::EMPTY;
+            if !req.matches(&running) {
+                return Err(Error::Manifest {
+                    path,
+                    message: format!(
+                        "requires rpp `{req}`, but the running rpp is {}",
+                        env!("CARGO_PKG_VERSION")
+                    ),
+                });
+            }
+        }
         Ok((manifest, text))
     }
 }
@@ -332,6 +352,26 @@ authors = ["someone"]
         assert_eq!(m.entry, "src/plugin.ts");
         assert_eq!(m.config.as_deref(), Some("src/config.ts"));
         assert_eq!(m.components["compiler"].module, "window.wasm");
+    }
+
+    #[test]
+    fn load_rejects_unmatched_rpp_requirement() {
+        let dir = tempfile::tempdir().unwrap();
+        let write = |req: &str| {
+            std::fs::write(
+                dir.path().join("rpp.json"),
+                format!(r#"{{"name":"x","version":"1.0.0","rpp":"{req}"}}"#),
+            )
+            .unwrap();
+        };
+        write(">=0.1");
+        PluginManifest::load(dir.path()).unwrap();
+        write(">=99");
+        let err = PluginManifest::load(dir.path()).unwrap_err().to_string();
+        assert!(
+            err.contains(">=99") && err.contains(env!("CARGO_PKG_VERSION")),
+            "{err}"
+        );
     }
 
     #[test]
