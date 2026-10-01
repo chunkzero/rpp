@@ -22,6 +22,7 @@ serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tokio = { version = "1", features = ["rt", "time", "sync", "macros"] }
+twox-hash = { version = "2.1.2", default-features = false, features = ["std", "xxhash3_64"] }
 
 [build-dependencies]
 deno_core = "=0.412.0"

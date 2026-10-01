@@ -31,13 +31,21 @@ export interface DiscoveredModule<M = Record<string, unknown>> {
   readonly module: M;
 }
 
-/** Available to every handler. */
+/** Available to every handler, including processors. */
 export interface Context<Options = unknown> {
   /** The plugin id. */
   readonly plugin: string;
   /** The plugin's configured options. */
   readonly options: Options;
   readonly pack: Pack;
+}
+
+/**
+ * Available to the generator, `onStart` and `onFinish`. Processors do not get `discovered`,
+ * because their cached results are not invalidated when discovered modules change; top-level
+ * side effects of discovered modules are not tracked for processors either.
+ */
+export interface HookContext<Options = unknown> extends Context<Options> {
   /** Modules matched by the `discover` pattern `name`, sorted by path. Throws if undeclared. */
   discovered<M = Record<string, unknown>>(name: string): readonly DiscoveredModule<M>[];
 }
@@ -54,7 +62,7 @@ export interface File {
 }
 
 /** Available to the generator. Every read is tracked for incremental rebuilds. */
-export interface GeneratorContext<Options = unknown> extends Context<Options> {
+export interface GeneratorContext<Options = unknown> extends HookContext<Options> {
   /** Processed output paths, optionally filtered by a glob. */
   files(glob?: string): string[];
   /** Raw source paths, optionally filtered by a glob. */
@@ -91,8 +99,8 @@ export interface Processor<Options = unknown> {
 export interface Plugin<Options = unknown> {
   processors?: Record<string, Processor<Options>>;
   generate?(ctx: GeneratorContext<Options>): void | Promise<void>;
-  onStart?(ctx: Context<Options>): void | Promise<void>;
-  onFinish?(ctx: Context<Options>, stats: BuildStats): void | Promise<void>;
+  onStart?(ctx: HookContext<Options>): void | Promise<void>;
+  onFinish?(ctx: HookContext<Options>, stats: BuildStats): void | Promise<void>;
 }
 
 /** Declare a plugin. The entry module must export the result as its default export. */

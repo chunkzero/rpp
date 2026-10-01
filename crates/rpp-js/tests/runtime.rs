@@ -18,6 +18,7 @@ fn bundle(code: &str) -> Bundle {
         code: code.to_string(),
         source_map: r#"{"version":3,"sources":[],"names":[],"mappings":""}"#.to_string(),
         inputs: Vec::new(),
+        input_hashes: Vec::new(),
     }
 }
 

@@ -11,6 +11,7 @@ use serde_json::{json, Value};
 
 use crate::error::{Error, Result};
 use crate::host::{PackInfo, PhaseCell, RuntimeAccess};
+use crate::js::bundle_cache::cached_bundle;
 use crate::js::discover::{discovered_module, Discovery};
 use crate::js::host::JsHost;
 use crate::js::instance::{self, JsPluginInstance};
@@ -57,6 +58,7 @@ pub(super) struct Shared {
     pub(super) access: RuntimeAccess,
     processors: Vec<ProcessorDef>,
     pub(super) handlers: Handlers,
+    processor_key: u64,
     cache_key: u64,
     discovery: Discovery,
     /// Source-relative files bundled into the plugin that are not pack content.
@@ -97,8 +99,13 @@ impl JsPluginFactory {
     /// `ctx.discovered(name)`. Those files and everything they import from `source` are not
     /// part of the pack ([`PluginFactory::is_authoring_source`]).
     ///
-    /// The cache key covers the bundled code, the manifest, declared component
-    /// bytes, canonical `options`, host access and the rpp version.
+    /// The processor key covers the manifest, declared component bytes, canonical `options`,
+    /// host access, the rpp version and every bundled file outside `source` (the plugin's own
+    /// files). The generator key adds the bundled code, so editing a discovered module or
+    /// adding or removing one reruns generators but not cached processor results. Top-level
+    /// side effects of discovered modules are not tracked for processors.
+    ///
+    /// The bundle is cached under `<cache_dir>/bundles` while its inputs are unchanged.
     ///
     /// # Errors
     ///
@@ -112,6 +119,7 @@ impl JsPluginFactory {
         limits: JsPluginLimits,
         access: RuntimeAccess,
         source: &Path,
+        cache_dir: Option<&Path>,
     ) -> Result<Self> {
         let dir = dir.as_ref();
         let (manifest, manifest_source) = PluginManifest::load_with_source(dir)?;
@@ -140,18 +148,32 @@ impl JsPluginFactory {
         }
 
         let discovery = Discovery::new(&manifest.discover).map_err(&load_error)?;
-        let (bundle, authoring) = if manifest.discover.is_empty() {
-            let bundle = rpp_js::bundle(&BundleRequest {
+        let (bundle, authoring, source) = if manifest.discover.is_empty() {
+            let request = BundleRequest {
                 root: root.clone(),
                 entry: "rpp:entry".into(),
                 virtual_modules: virtual_modules(&format!("./{}", manifest.entry), false),
                 ..Default::default()
+            };
+            let bundle = cached_bundle(cache_dir, &id, &request, || {
+                rpp_js::bundle(&request).map_err(|e| e.to_string())
             })
-            .map_err(|e| load_error(e.to_string()))?;
-            (bundle, BTreeSet::new())
+            .map_err(&load_error)?;
+            (bundle, BTreeSet::new(), None)
         } else {
             let source = source.canonicalize().map_err(|e| Error::io(source, e))?;
-            bundle_discovered(&manifest, &root, &source, &discovery).map_err(&load_error)?
+            if root.starts_with(&source) {
+                return Err(load_error(format!(
+                    "plugin directory {} is inside the pack source directory {}; plugins that \
+                     declare `discover` must live outside `build.source`",
+                    root.display(),
+                    source.display()
+                )));
+            }
+            let (bundle, authoring) =
+                bundle_discovered(&manifest, &root, &source, &discovery, cache_dir)
+                    .map_err(&load_error)?;
+            (bundle, authoring, Some(source))
         };
 
         let limits = Limits {
@@ -172,14 +194,16 @@ impl JsPluginFactory {
         });
         let description = describe(&id, &bundle, limits, &access).map_err(load_error)?;
         let processors = processor_defs(description.processors).map_err(load_error)?;
-        let cache_key = compute_cache_key(
+        let processor_key = compute_processor_key(
             &root,
             &manifest,
             &manifest_source,
             &bundle,
+            source.as_deref(),
             &options,
             &access,
         )?;
+        let cache_key = compute_cache_key(processor_key, &bundle);
 
         Ok(Self {
             shared: Arc::new(Shared {
@@ -190,6 +214,7 @@ impl JsPluginFactory {
                 access,
                 processors,
                 handlers: description.handlers,
+                processor_key,
                 cache_key,
                 discovery,
                 authoring,
@@ -218,6 +243,10 @@ impl PluginFactory for JsPluginFactory {
 
     fn cache_key(&self) -> u64 {
         self.shared.cache_key
+    }
+
+    fn processor_key(&self) -> u64 {
+        self.shared.processor_key
     }
 
     fn processors(&self) -> &[ProcessorDef] {
@@ -290,6 +319,7 @@ fn bundle_discovered(
     plugin_root: &Path,
     source: &Path,
     discovery: &Discovery,
+    cache_dir: Option<&Path>,
 ) -> std::result::Result<(Bundle, BTreeSet<String>), String> {
     let entries = discovery.discover(source)?;
 
@@ -307,13 +337,15 @@ fn bundle_discovered(
     if let Some(config) = &manifest.config {
         packages.insert(format!("#plugins/{}", manifest.id), package(config));
     }
-    let bundle = rpp_js::bundle(&BundleRequest {
+    let request = BundleRequest {
         root: source.to_path_buf(),
         entry: "rpp:entry".into(),
         virtual_modules,
         packages,
-    })
-    .map_err(|e| e.to_string())?;
+    };
+    let bundle = cached_bundle(cache_dir, &manifest.id, &request, || {
+        rpp_js::bundle(&request).map_err(|e| e.to_string())
+    })?;
 
     let authoring = bundle
         .inputs
@@ -367,19 +399,28 @@ fn processor_defs(
         .collect()
 }
 
-fn compute_cache_key(
+fn compute_processor_key(
     root: &Path,
     manifest: &PluginManifest,
     manifest_source: &str,
     bundle: &Bundle,
+    source: Option<&Path>,
     options: &toml::Value,
     access: &RuntimeAccess,
 ) -> Result<u64> {
     let mut writer = HashWriter::new();
 
-    writer.write_str("rpp.js.plugin.v1");
+    writer.write_str("rpp.js.processor.v1");
     writer.write_str(env!("CARGO_PKG_VERSION"));
-    writer.write(bundle.code.as_bytes());
+    writer.write_str("inputs");
+    for (input, hash) in bundle
+        .input_hashes
+        .iter()
+        .filter(|(input, _)| source.is_none_or(|source| !input.starts_with(source)))
+    {
+        writer.write_str(&input.to_string_lossy());
+        writer.write_u64(*hash);
+    }
     writer.write_str("manifest");
     writer.write(manifest_source.as_bytes());
     for (name, component) in &manifest.components {
@@ -399,4 +440,12 @@ fn compute_cache_key(
     writer.write(&access_key);
 
     Ok(writer.finish())
+}
+
+fn compute_cache_key(processor_key: u64, bundle: &Bundle) -> u64 {
+    let mut writer = HashWriter::new();
+    writer.write_str("rpp.js.plugin.v2");
+    writer.write_u64(processor_key);
+    writer.write(bundle.code.as_bytes());
+    writer.finish()
 }

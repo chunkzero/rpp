@@ -9,8 +9,12 @@
 //!   register(plugin); export * from "rpp:runtime";`
 //!
 //! A manifest with `discover` patterns also gets `#rpp/config`, a `#plugins/<id>` package for
-//! its config module, `#plugin` (the entry) and `rpp:discovered`; the bundle root is the source dir (the matched files' namespace objects); `rpp:entry`
-//! then calls `register(plugin, discovered)`.
+//! its config module, `#plugin` (the entry) and `rpp:discovered` (the matched files' namespace
+//! objects); the bundle root is the source dir. `rpp:entry` then calls
+//! `register(plugin, discovered)`. Processors cannot read `ctx.discovered()`.
+//!
+//! Bundles are cached under `<cache dir>/bundles` and reused while the request and every
+//! input file are unchanged.
 //!
 //! The bundle exports these functions, called through [`rpp_js::Runtime::call`]:
 //!
@@ -55,6 +59,7 @@
 //!
 //! [`PluginInstance`]: crate::model::PluginInstance
 
+mod bundle_cache;
 #[cfg(feature = "wasm")]
 mod component;
 mod config;

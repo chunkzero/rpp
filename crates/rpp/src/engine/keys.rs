@@ -49,7 +49,7 @@ pub(crate) fn compile_processors(
             out.push(CompiledProcessor {
                 plugin_index,
                 plugin_id: factory.id().to_string(),
-                plugin_key: factory.cache_key(),
+                plugin_key: factory.processor_key(),
                 processor: def.name.clone(),
                 priority: def.priority,
                 decl_order,
@@ -102,16 +102,15 @@ pub(crate) fn chain_key(chain: &[ChainStep]) -> u64 {
     writer.finish()
 }
 
-/// Compute the global cache key (rpp version + build-relevant config + plugin keys).
-pub(crate) fn global_key(config: &Config, factories: &[Arc<dyn PluginFactory>]) -> u64 {
+/// Compute the global cache key (rpp version + build-relevant config).
+///
+/// Plugin keys are not part of it: processor results are keyed per chain and generator
+/// results per plugin, so a plugin change invalidates only what it affects.
+pub(crate) fn global_key(config: &Config) -> u64 {
     let mut writer = HashWriter::new();
-    writer.write_str("rpp.global.v2");
+    writer.write_str("rpp.global.v3");
     writer.write_str(env!("CARGO_PKG_VERSION"));
     writer.write_u64(canonical::config_digest(config));
-
-    for factory in factories {
-        writer.write_u64(factory.cache_key());
-    }
 
     writer.finish()
 }

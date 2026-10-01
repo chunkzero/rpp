@@ -74,6 +74,11 @@ pub trait PluginFactory: Send + Sync {
     fn id(&self) -> &str;
     /// A hash covering plugin code AND its options; feeds cache invalidation.
     fn cache_key(&self) -> u64;
+    /// A hash covering everything per-file processors depend on. Defaults to `cache_key`;
+    /// plugins whose generator inputs change more often than their processors override it.
+    fn processor_key(&self) -> u64 {
+        self.cache_key()
+    }
     /// The processors this plugin declares.
     fn processors(&self) -> &[ProcessorDef];
     /// Whether this plugin has a generator phase.

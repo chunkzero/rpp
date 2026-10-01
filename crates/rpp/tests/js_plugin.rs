@@ -45,6 +45,7 @@ fn try_load_with(dir: &Path, options: &str, access: RuntimeAccess) -> rpp::Resul
         JsPluginLimits::default(),
         access,
         dir,
+        None,
     )
 }
 
@@ -334,10 +335,13 @@ export default definePlugin({
 #[test]
 fn helper_edit_changes_cache_key() {
     let dir = helper_plugin("one");
-    let before = load(dir.path(), "").cache_key();
-    assert_eq!(load(dir.path(), "").cache_key(), before);
+    let before = load(dir.path(), "");
+    let (processor, generator) = (before.processor_key(), before.cache_key());
+    assert_eq!(load(dir.path(), "").cache_key(), generator);
     write_file(dir.path(), "src/helper.ts", "export const value = \"two\";");
-    assert_ne!(load(dir.path(), "").cache_key(), before);
+    let after = load(dir.path(), "");
+    assert_ne!(after.processor_key(), processor);
+    assert_ne!(after.cache_key(), generator);
 }
 
 #[test]
