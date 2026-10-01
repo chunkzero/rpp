@@ -9,6 +9,8 @@
 //! - [`Lockfile`] — read/write the `rpp.lock` pin file.
 //! - [`search`] — discover plugin repositories via the GitHub `rpp-plugin`
 //!   topic.
+//! - [`registry`] — resolve `rpp.json` dependencies from the plugin registry or
+//!   `path:` directories, pinned in an `rpp.lock` version 3.
 //! - [`parse_manifest_summary`] — read `[plugin] id`/`version` from a
 //!   `plugin.toml`.
 //!
@@ -35,12 +37,15 @@ mod extract;
 mod http;
 mod lockfile;
 mod manifest;
+pub mod registry;
 mod resolver;
 mod search;
 mod source;
 
-pub use error::{Error, Result};
-pub use http::{HttpConfig, DEFAULT_API_BASE, DEFAULT_CODELOAD_BASE, USER_AGENT};
+pub use error::{Error, Incompatibility, Result};
+pub use http::{
+    HttpConfig, DEFAULT_API_BASE, DEFAULT_CODELOAD_BASE, DEFAULT_REGISTRY_BASE, USER_AGENT,
+};
 pub use lockfile::{LockedPlugin, Lockfile, LOCKFILE_VERSION};
 pub use manifest::{parse_manifest_summary, ManifestSummary, MANIFEST_FILE};
 pub use resolver::{Pin, ResolvedPlugin, Resolver};

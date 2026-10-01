@@ -25,6 +25,7 @@ toml.workspace = true
 toml_edit = "0.22"
 serde.workspace = true
 serde_json.workspace = true
+semver.workspace = true
 sha2.workspace = true
 sha1.workspace = true
 

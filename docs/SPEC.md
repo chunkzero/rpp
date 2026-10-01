@@ -480,6 +480,46 @@ returning name/full_name/description/stars. Provide
 tests can run against a local mock (trait or base-URL injection). **Tests must not hit
 the network** — use local fixtures.
 
+### Registry dependencies (`rpp.json`)
+
+Projects that use TypeScript plugins declare them in `rpp.json` instead of `[[plugin]]`
+sources. The legacy `path:`/`github:` sources and `rpp.lock` version 2 remain for
+`rpp.toml` projects until Lua support is removed.
+
+```json
+{
+  "dependencies": {
+    "window": "^0.1.0",
+    "local-tools": "path:../tools"
+  }
+}
+```
+
+- Keys are plugin names (`^[a-z0-9][a-z0-9_-]*$`, at most 64 characters) and must equal
+  the `name` in the package's own `rpp.json`.
+- A value is a semver range against the registry, or `path:<dir>` (relative to the
+  project root). A bare version (`0.1.4`) means exactly that version; `*` is rejected.
+- The registry is the git repository `chunkzero/rpp-registry`, read over HTTP from
+  `https://raw.githubusercontent.com/chunkzero/rpp-registry/main` (`RPP_REGISTRY`
+  overrides it). `plugins/<name>.json` lists a plugin's `repository`, `description` and
+  `versions`, each with `version`, `url` (a release archive), `sha256`, the supported
+  `rpp` range, and `yanked`. `index.json` lists every plugin's `name`, `description`,
+  `repository` and `latest` version for search.
+- Resolution picks the newest non-yanked version matching the range whose `rpp` range
+  accepts the running rpp version, ignoring rpp's pre-release suffix.
+- Archives are gzipped tars with entries at the root, including `rpp.json`. They are
+  verified against `sha256`, extracted under `<cache>/registry/<name>/<version>-<hash>/`
+  (`<cache>` is `RPP_CACHE_DIR` or `~/.cache/rpp`), and their manifest must declare the
+  requested name and version.
+- `rpp.lock` version 3 pins each registry dependency's `name`, `requested` spec,
+  `version`, `rpp` range, `url` and `sha256`. A pin is reused while its `requested`
+  spec is unchanged; reused pins with a cached archive make no network requests.
+  Yanked versions still install when pinned. `path:` dependencies are never locked.
+- `rpp add <name>[@range] | path:<dir>` adds a dependency (a bare name records
+  `^<selected version>`), `rpp remove <name>` removes one, `rpp update [name...]`
+  re-selects pinned versions within their ranges, and `rpp search <query>` searches
+  `index.json`.
+
 ## 7. Incremental compilation (cache v3, in `crates/rpp`)
 
 Layout: `.rpp/cache/manifest.bin` (bincode) + `.rpp/cache/objects/<xxh3-hex>` (CAS of

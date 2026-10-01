@@ -6,4 +6,5 @@ pub mod ui;
 
 mod atomic;
 mod luals;
+mod ordered_json;
 mod user_plugins;

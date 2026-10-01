@@ -27,8 +27,8 @@ pub enum Error {
     #[error("plugin directory `{0}` does not contain a plugin.toml")]
     MissingManifest(PathBuf),
 
-    /// A `plugin.toml` manifest could not be parsed.
-    #[error("failed to parse plugin.toml at `{path}`: {reason}")]
+    /// A `plugin.toml` or `rpp.json` manifest could not be parsed.
+    #[error("failed to parse `{path}`: {reason}")]
     InvalidManifest {
         /// Path to the manifest that failed to parse.
         path: PathBuf,
@@ -67,6 +67,71 @@ pub enum Error {
     #[error("refusing to extract tar entry `{0}`: path escapes archive root")]
     UnsafeTarEntry(String),
 
+    /// A package directory is missing its `rpp.json` manifest.
+    #[error("`{0}` does not contain an rpp.json")]
+    MissingPackageManifest(PathBuf),
+
+    /// A registry request failed or returned malformed data.
+    #[error("registry request to `{url}` failed: {reason}")]
+    Registry {
+        /// The URL that was requested.
+        url: String,
+        /// Failure detail.
+        reason: String,
+    },
+
+    /// The registry has no plugin with this name.
+    #[error("plugin `{0}` is not in the registry")]
+    UnknownPackage(String),
+
+    /// A dependency in `rpp.json` has an invalid name or spec.
+    #[error("invalid dependency `{name}` = `{spec}`: {reason}")]
+    InvalidDependency {
+        /// Dependency name.
+        name: String,
+        /// The spec as written.
+        spec: String,
+        /// Why it is invalid.
+        reason: String,
+    },
+
+    /// No published, non-yanked version satisfies the requested range.
+    #[error("no published version of `{name}` matches `{requested}`")]
+    NoMatchingVersion {
+        /// Dependency name.
+        name: String,
+        /// The requested range.
+        requested: String,
+    },
+
+    /// A matching version exists but doesn't support this rpp version.
+    #[error(transparent)]
+    Incompatible(Box<Incompatibility>),
+
+    /// A downloaded archive did not match its recorded SHA-256.
+    #[error("archive for `{name}` {version} has SHA-256 {actual}, expected {expected}")]
+    HashMismatch {
+        /// Package name.
+        name: String,
+        /// Package version.
+        version: semver::Version,
+        /// The recorded hash.
+        expected: String,
+        /// The hash of the downloaded bytes.
+        actual: String,
+    },
+
+    /// A package's `rpp.json` doesn't declare the expected name or version.
+    #[error("package at `{path}` is `{found}`, expected `{expected}`")]
+    PackageMismatch {
+        /// The package directory.
+        path: PathBuf,
+        /// Expected `name` (and version, for registry packages).
+        expected: String,
+        /// What the manifest declares.
+        found: String,
+    },
+
     /// An I/O error occurred.
     #[error("{context}: {source}")]
     Io {
@@ -86,4 +151,20 @@ impl Error {
             source,
         }
     }
+}
+
+/// Why a plugin version can't be used with the running rpp.
+#[derive(Debug, Error)]
+#[error("`{name}` {version} requires rpp {requires}, but this is rpp {rpp}; {hint}")]
+pub struct Incompatibility {
+    /// Dependency name.
+    pub name: String,
+    /// The newest matching (or pinned) version.
+    pub version: semver::Version,
+    /// The rpp range that version supports.
+    pub requires: semver::VersionReq,
+    /// The running rpp version.
+    pub rpp: semver::Version,
+    /// What the user can do about it.
+    pub hint: String,
 }
