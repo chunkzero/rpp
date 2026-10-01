@@ -163,7 +163,9 @@ export const path = {
     const slash = p.lastIndexOf("/");
     return slash < 0 ? "" : p.slice(0, slash);
   },
-  basename: baseName,
+  basename(p: string): string {
+    return baseName(p);
+  },
   ext(p: string): string {
     const base = baseName(p);
     const dot = dotIndex(base);
@@ -238,31 +240,29 @@ function camelCase(name: string): string {
 
 /** A component call that failed inside the component and returned `err`. */
 export class ComponentError extends Error {
+  readonly component: string;
   readonly export: string;
+  readonly payload: unknown;
 
-  constructor(
-    readonly component: string,
-    exportName: string,
-    readonly payload: unknown,
-  ) {
+  constructor(component: string, exportName: string, payload: unknown) {
     super(
       `component \`${component}\` export \`${exportName}\` failed: ${describePayload(payload)}`,
     );
     this.name = "ComponentError";
+    this.component = component;
     this.export = exportName;
+    this.payload = payload;
   }
 }
 
 /** The component trapped. The handle is unusable afterwards. */
 export class ComponentTrapError extends Error {
+  readonly component: string;
   readonly export: string;
 
-  constructor(
-    readonly component: string,
-    exportName: string,
-    message: string,
-  ) {
+  constructor(component: string, exportName: string, message: string) {
     super(`component \`${component}\` export \`${exportName}\` trapped: ${message}`);
+    this.component = component;
     this.name = "ComponentTrapError";
     this.export = exportName;
   }
@@ -270,14 +270,12 @@ export class ComponentTrapError extends Error {
 
 /** The component exceeded its execution deadline. The handle is unusable afterwards. */
 export class ComponentTimeoutError extends Error {
+  readonly component: string;
   readonly export: string;
 
-  constructor(
-    readonly component: string,
-    exportName: string,
-    message: string,
-  ) {
+  constructor(component: string, exportName: string, message: string) {
     super(`component \`${component}\` export \`${exportName}\` timed out: ${message}`);
+    this.component = component;
     this.name = "ComponentTimeoutError";
     this.export = exportName;
   }
@@ -285,7 +283,7 @@ export class ComponentTimeoutError extends Error {
 
 const describePayload = (payload: unknown): string => {
   if (typeof payload === "string") return payload;
-  if (isObject(payload) && typeof payload.message === "string") return payload.message;
+  if (isObject(payload) && typeof payload["message"] === "string") return payload["message"];
   try {
     return JSON.stringify(payload, (_key, value) =>
       typeof value === "bigint" ? value.toString() : value,
@@ -447,7 +445,7 @@ function decode(ty: TypeDesc, wire: any, bytes: Uint8Array): unknown {
   }
   if ("result" in ty) {
     const tag = "ok" in wire ? "ok" : "err";
-    const payload = ty.result[tag];
+    const payload = tag === "ok" ? ty.result.ok : ty.result.err;
     return payload === null ? { tag } : { tag, val: decode(payload, wire[tag], bytes) };
   }
   if ("flags" in ty) {
@@ -485,7 +483,7 @@ const buildExports = (functions: FunctionDesc[]) => (invoke: Invoke) => {
       continue;
     }
     const iface = desc.path.slice(0, hash);
-    const namespace = camelCase(iface.slice(iface.lastIndexOf("/") + 1).split("@")[0]);
+    const namespace = camelCase(iface.slice(iface.lastIndexOf("/") + 1).split("@")[0] ?? "");
     if (!Object.hasOwn(exports, namespace)) exports[namespace] = Object.create(null);
     exports[namespace][camelCase(desc.path.slice(hash + 1))] = fn;
   }
@@ -547,4 +545,4 @@ function load(name: string): Component {
 }
 
 /** WASM components declared in the plugin manifest. Only usable inside handlers. */
-export const components = { load };
+export const components: { load: typeof load } = { load };

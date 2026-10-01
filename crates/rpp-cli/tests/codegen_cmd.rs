@@ -324,3 +324,45 @@ export default definePlugin({
         "HELLO"
     );
 }
+
+const STRICT_TSCONFIG: &str = r#"{
+  "extends": "./.rpp/tsconfig.json",
+  "compilerOptions": {
+    "exactOptionalPropertyTypes": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "noPropertyAccessFromIndexSignature": true,
+    "noImplicitReturns": true,
+    "noFallthroughCasesInSwitch": true,
+    "erasableSyntaxOnly": true,
+    "declaration": true,
+    "isolatedDeclarations": true,
+    "useUnknownInCatchVariables": true
+  },
+  "include": [".rpp/sdk/*.ts"]
+}
+"#;
+
+#[test]
+fn generated_sdk_type_checks_under_strict_flags() {
+    let Some(tsc) = std::env::var_os("RPP_TEST_TSC") else {
+        eprintln!("skipping: set RPP_TEST_TSC to a tsc binary to type-check the generated SDK");
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    project(root);
+    std::fs::write(root.join("tsconfig.json"), STRICT_TSCONFIG).unwrap();
+    assert!(run(root, &["codegen"]).status.success());
+
+    let out = std::process::Command::new(tsc)
+        .args(["-p", "tsconfig.json", "--noEmit"])
+        .current_dir(root)
+        .output()
+        .expect("run tsc");
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+}
