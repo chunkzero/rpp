@@ -1,0 +1,17 @@
+{
+  "extends": "./.rpp/tsconfig.json",
+  "compilerOptions": {
+    "exactOptionalPropertyTypes": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "noPropertyAccessFromIndexSignature": true,
+    "noImplicitReturns": true,
+    "noFallthroughCasesInSwitch": true,
+    "erasableSyntaxOnly": true,
+    "declaration": true,
+    "isolatedDeclarations": true,
+    "useUnknownInCatchVariables": true
+  },
+  "include": ["**/*.ts", "**/*.mts", ".rpp/sdk/*.ts", ".rpp/generated/*.d.ts"],
+  "exclude": ["dist", ".rpp/cache"]
+}

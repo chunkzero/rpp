@@ -1,6 +1,6 @@
-import { definePlugin } from "#rpp";
+import { definePlugin, type Plugin } from "#rpp";
 
-export default definePlugin({
+const plugin: Plugin = definePlugin({
   processors: {
     upper: {
       files: ["*.txt"],
@@ -10,3 +10,5 @@ export default definePlugin({
     },
   },
 });
+
+export default plugin;
