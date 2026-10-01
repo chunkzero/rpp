@@ -1,10 +1,40 @@
 //! Per-instance wasmtime store state.
 
+use std::time::Duration;
+
 use wasmtime::component::ResourceTable;
 use wasmtime::{StoreLimits, StoreLimitsBuilder};
-use wasmtime_wasi::{FsPerms, WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView};
+use wasmtime_wasi::{
+    FsPerms, HostMonotonicClock, HostWallClock, WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView,
+};
 
 use crate::types::Permissions;
+
+/// Wall clock fixed at the Unix epoch.
+struct FixedWallClock;
+
+impl HostWallClock for FixedWallClock {
+    fn resolution(&self) -> Duration {
+        Duration::from_nanos(1)
+    }
+
+    fn now(&self) -> Duration {
+        Duration::ZERO
+    }
+}
+
+/// Monotonic clock fixed at zero.
+struct FixedMonotonicClock;
+
+impl HostMonotonicClock for FixedMonotonicClock {
+    fn resolution(&self) -> u64 {
+        1
+    }
+
+    fn now(&self) -> u64 {
+        0
+    }
+}
 
 pub(crate) struct StoreData {
     pub(crate) wasi: WasiCtx,
@@ -24,6 +54,14 @@ impl StoreData {
                 .secure_random(wasmtime_wasi::Deterministic::new(vec![0x52, 0x50, 0x50]))
                 .insecure_random(wasmtime_wasi::Deterministic::new(vec![0x50, 0x50, 0x52]))
                 .insecure_random_seed(0);
+        }
+        if !permissions.clocks {
+            // Rust WASIp2 components import the clock interfaces even when
+            // they never read time; fixed clocks keep them instantiable and
+            // reproducible.
+            builder
+                .wall_clock(FixedWallClock)
+                .monotonic_clock(FixedMonotonicClock);
         }
         if permissions.stdio {
             builder.inherit_stdout().inherit_stderr();
@@ -68,5 +106,18 @@ impl WasiView for StoreData {
             ctx: &mut self.wasi,
             table: &mut self.table,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fixed_clocks_report_constants() {
+        assert_eq!(FixedWallClock.now(), Duration::ZERO);
+        assert_eq!(FixedWallClock.resolution(), Duration::from_nanos(1));
+        assert_eq!(FixedMonotonicClock.now(), 0);
+        assert_eq!(FixedMonotonicClock.resolution(), 1);
     }
 }

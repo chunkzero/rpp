@@ -40,7 +40,7 @@ pub struct Preopen {
 /// Capabilities available to one component instance.
 #[derive(Debug, Clone, Default)]
 pub struct Permissions {
-    /// Permit wall and monotonic clocks.
+    /// Real wall and monotonic clocks instead of fixed ones.
     pub clocks: bool,
     /// Permit secure and insecure random sources.
     pub random: bool,

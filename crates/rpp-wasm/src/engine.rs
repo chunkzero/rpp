@@ -306,16 +306,15 @@ fn value_type(ty: Type) -> ValueType {
 
 fn validate_imports(imports: &[String], permissions: &Permissions) -> Result<()> {
     for import in imports {
-        let allowed = if import.starts_with("wasi:clocks/") {
-            permissions.clocks
-        } else if import.starts_with("wasi:sockets/") {
+        let allowed = if import.starts_with("wasi:sockets/") {
             permissions.network
         } else if import.starts_with("wasi:filesystem/") {
             !permissions.preopens.is_empty()
         } else {
-            // Random imports receive deterministic streams unless granted;
-            // cli/io are always linked.
-            import.starts_with("wasi:random/")
+            // Clock and random imports receive deterministic values unless
+            // granted; cli/io are always linked.
+            import.starts_with("wasi:clocks/")
+                || import.starts_with("wasi:random/")
                 || import.starts_with("wasi:cli/environment")
                 || import.starts_with("wasi:cli/exit")
                 || import.starts_with("wasi:cli/std")
@@ -327,4 +326,15 @@ fn validate_imports(imports: &[String], permissions: &Permissions) -> Result<()>
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn clock_imports_are_allowed_without_permission() {
+        let imports = vec!["wasi:clocks/monotonic-clock@0.2.6".to_string()];
+        assert!(validate_imports(&imports, &Permissions::default()).is_ok());
+    }
 }
