@@ -1,0 +1,35 @@
+[package]
+name = "rpp-js"
+description = "TypeScript bundling and sandboxed V8 execution for rpp plugins"
+
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+deno_core = "=0.412.0"
+deno_error = "=0.7.1"
+deno_web = "=0.290.0"
+deno_webidl = "=0.259.0"
+rolldown = "=1.2.12"
+rolldown_common = "=1.2.12"
+rolldown_plugin = "=1.2.12"
+rolldown_sourcemap = "=1.2.12"
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { version = "1", features = ["rt", "time", "sync", "macros"] }
+
+[build-dependencies]
+deno_core = "=0.412.0"
+deno_web = "=0.290.0"
+deno_webidl = "=0.259.0"
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true
