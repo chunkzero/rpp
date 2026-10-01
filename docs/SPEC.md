@@ -184,6 +184,10 @@ entry = "init.lua"          # Lua entry script relative to plugin root (default 
 module = "compiler.wasm"
 ```
 
+`overrides = ["assets/*/textures/**"]` (in `[plugin]`; a top-level key in `rpp.json`) lists
+pack-path globs the plugin's generator may emit over or remove even when another source or
+plugin owns them. Entries are validated like other pack paths and globs.
+
 ### `rpp.json` plugin packages
 
 A package may declare itself with `rpp.json` instead of `plugin.toml`; `rpp.json` is
@@ -592,6 +596,11 @@ Build flow:
    Dirty files go to the worker pool.
 3. Generators re-run iff their read-set replays to different hashes (or global_key
    changed). Their reads during the run are recorded for next time.
+   Every pack path has an owner: the source file whose processors produced it, or the
+   generator plugin that last emitted it. A generator may emit or remove a path only if it is
+   unowned, owned by that plugin, or matched by the plugin's `overrides` (ownership then moves
+   to it or is cleared). Anything else is a build error naming the owner. Cache replay applies
+   recorded emits/removes through the same check against the current state.
 4. Output dir is synced exactly: stale files removed (the engine owns `output`).
 5. CAS objects garbage-collected when unreferenced by the new manifest.
 6. Corrupt/old-version manifest → silently treated as empty (full rebuild).
@@ -599,7 +608,9 @@ Build flow:
 Declared external outputs use a separate `.rpp/external-outputs.bin` ownership
 manifest, so stale generated files can still be removed after cache deletion,
 configuration/plugin changes, and `rpp clean`. Only paths recorded as RPP-owned are
-removed; unrelated files beside generated artifacts are preserved. Replacements are
+removed; unrelated files beside generated artifacts are preserved. An existing unowned file
+at an emitted path is adopted when its bytes already match; otherwise the build fails with
+`refusing to overwrite unowned file`. Replacements are
 published atomically from sibling temporary files and are never hard-linked to the
 immutable CAS. External-output collisions are build errors with both plugin ids in the
 diagnostic. Before pack synchronization, RPP validates external destinations and

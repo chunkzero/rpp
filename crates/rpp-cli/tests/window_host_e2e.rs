@@ -131,6 +131,7 @@ kotlin = "server/generated"
 id = "window-host"
 version = "0.1.0"
 entry = "init.lua"
+overrides = ["window/**"]
 
 [component.compiler]
 module = "compiler.wasm"

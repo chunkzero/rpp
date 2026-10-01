@@ -5,9 +5,11 @@ use std::path::Path;
 
 use crate::cache::{FileEntry, GeneratorMutation, ObjectStore};
 use crate::error::{Error, Result};
+use crate::util::glob::GlobSet;
 use crate::util::hash::xxh3;
+use crate::util::path::validate_relative;
 
-use super::generator::{claim_output, ClaimError, OutputContent, OutputSet};
+use super::generator::{apply_mutation, claim_output, ClaimError, OutputContent, OutputSet, Owner};
 
 /// Resolve a cached object for `rel`: `Linked` when the output directory
 /// already holds its bytes (one read of the destination, none of the CAS),
@@ -41,7 +43,6 @@ pub(crate) fn materialize_file_entry(
     output_dir: &Path,
     entry: &FileEntry,
     output: &mut OutputSet,
-    source_owners: &mut BTreeMap<String, String>,
     source_rel: &str,
 ) -> Result<bool> {
     let mut contents = Vec::with_capacity(entry.outputs.len());
@@ -52,7 +53,7 @@ pub(crate) fn materialize_file_entry(
         }
     }
     for (out, content) in entry.outputs.iter().zip(contents) {
-        claim_source_output(source_owners, &out.path, source_rel)?;
+        claim_source_output(&mut output.owners, &out.path, source_rel)?;
         output.files.insert(out.path.clone(), content);
     }
     Ok(true)
@@ -67,6 +68,8 @@ pub(crate) fn materialize_generator_mutations(
     output_dir: &Path,
     mutations: &[GeneratorMutation],
     output: &mut OutputSet,
+    plugin: &str,
+    overrides: &GlobSet,
 ) -> Result<bool> {
     let mut emits = BTreeMap::new();
     for mutation in mutations {
@@ -87,34 +90,43 @@ pub(crate) fn materialize_generator_mutations(
     }
 
     for mutation in mutations {
-        match mutation {
+        let (path, content) = match mutation {
             GeneratorMutation::Emit(out) => {
-                crate::util::path::validate_relative(&out.path).map_err(Error::Build)?;
                 let content = emits
                     .get(&out.path)
                     .cloned()
                     .unwrap_or(OutputContent::Object(out.object));
-                output.files.insert(out.path.clone(), content);
+                (&out.path, Some(content))
             }
-            GeneratorMutation::Remove(path) => {
-                output.files.remove(path);
+            GeneratorMutation::Remove(path) => (path, None),
+            GeneratorMutation::EmitExternal { .. } => continue,
+        };
+        validate_relative(path).map_err(Error::Build)?;
+        apply_mutation(output, plugin, overrides, path, content).map_err(|message| {
+            Error::Generator {
+                plugin: plugin.to_string(),
+                message,
             }
-            GeneratorMutation::EmitExternal { .. } => {}
-        }
+        })?;
     }
     Ok(true)
 }
 
 /// Claim `output` for the processor chain of `source`.
 pub(crate) fn claim_source_output(
-    owners: &mut BTreeMap<String, String>,
+    owners: &mut BTreeMap<String, Owner>,
     output: &str,
     source: &str,
 ) -> Result<()> {
-    claim_output(owners, output, source).map_err(|error| match error {
+    claim_output(owners, output, Owner::Source(source.to_string())).map_err(|error| match error {
         ClaimError::InvalidPath(message) => Error::Build(message),
-        ClaimError::Taken { previous } => Error::Build(format!(
-            "source files `{previous}` and `{source}` both produce `{output}`"
-        )),
+        ClaimError::Taken { previous } => {
+            let Owner::Source(previous) = previous else {
+                unreachable!("only sources claim outputs during the file phase")
+            };
+            Error::Build(format!(
+                "source files `{previous}` and `{source}` both produce `{output}`"
+            ))
+        }
     })
 }

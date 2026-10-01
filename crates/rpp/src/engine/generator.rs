@@ -5,7 +5,7 @@ use std::path::PathBuf;
 
 use crate::cache::{ObjectStore, ReadRecord};
 use crate::model::{GeneratorHost, ReadKind};
-use crate::util::glob;
+use crate::util::glob::{self, GlobSet};
 use crate::util::hash::xxh3;
 use crate::util::path::validate_relative;
 
@@ -42,9 +42,29 @@ impl OutputContent {
 /// The accumulated output of the processing phase, fed to generators.
 ///
 /// Maps relative output path -> contents. Generators read from and write to it.
-#[derive(Clone)]
+/// Every path in `files` has an entry in `owners`.
+#[derive(Clone, Default)]
 pub(crate) struct OutputSet {
     pub(crate) files: BTreeMap<String, OutputContent>,
+    pub(crate) owners: BTreeMap<String, Owner>,
+}
+
+/// Who produced an output path.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum Owner {
+    /// The processor chain of this source file (relative to the source directory).
+    Source(String),
+    /// A generator plugin.
+    Plugin(String),
+}
+
+impl Owner {
+    fn describe(&self) -> String {
+        match self {
+            Self::Source(rel) => format!("source `{rel}`"),
+            Self::Plugin(id) => format!("plugin `{id}`"),
+        }
+    }
 }
 
 /// One generator-side output mutation.
@@ -64,20 +84,57 @@ pub(crate) enum RecordedMutation {
 /// Why an output path could not be claimed.
 pub(crate) enum ClaimError {
     InvalidPath(String),
-    Taken { previous: String },
+    Taken { previous: Owner },
 }
 
 /// Record `owner` as the producer of `path`.
 pub(crate) fn claim_output(
-    owners: &mut BTreeMap<String, String>,
+    owners: &mut BTreeMap<String, Owner>,
     path: &str,
-    owner: &str,
+    owner: Owner,
 ) -> Result<(), ClaimError> {
     validate_relative(path).map_err(ClaimError::InvalidPath)?;
-    match owners.insert(path.to_string(), owner.to_string()) {
+    match owners.insert(path.to_string(), owner) {
         Some(previous) => Err(ClaimError::Taken { previous }),
         None => Ok(()),
     }
+}
+
+/// Apply one generator emit (`Some`) or removal (`None`) of `path` for `plugin`.
+///
+/// A path owned by another source or plugin may only be changed when `overrides` matches it;
+/// ownership then moves to `plugin` on emit and is cleared on removal.
+pub(crate) fn apply_mutation(
+    output: &mut OutputSet,
+    plugin: &str,
+    overrides: &GlobSet,
+    path: &str,
+    content: Option<OutputContent>,
+) -> Result<(), String> {
+    if let Some(owner) = output.owners.get(path) {
+        let own = matches!(owner, Owner::Plugin(id) if id == plugin);
+        if !own && !overrides.is_match(path) {
+            let verb = if content.is_some() { "emit" } else { "remove" };
+            return Err(format!(
+                "cannot {verb} `{path}`: owned by {}; add a matching glob to `overrides` in the \
+                 plugin manifest",
+                owner.describe()
+            ));
+        }
+    }
+    match content {
+        Some(content) => {
+            output.files.insert(path.to_string(), content);
+            output
+                .owners
+                .insert(path.to_string(), Owner::Plugin(plugin.to_string()));
+        }
+        None => {
+            output.files.remove(path);
+            output.owners.remove(path);
+        }
+    }
+    Ok(())
 }
 
 /// A generator host bound to one generator run.
@@ -86,6 +143,8 @@ pub(crate) fn claim_output(
 /// invalidation, and applies emits/removes to the shared output set.
 pub(crate) struct RecordingHost<'a> {
     output: &'a mut OutputSet,
+    plugin: &'a str,
+    overrides: &'a GlobSet,
     read_view: OutputSet,
     source_root: PathBuf,
     source_files: Vec<String>,
@@ -100,6 +159,8 @@ impl<'a> RecordingHost<'a> {
     /// Create a host over `output`, reading raw sources from `source_root`.
     pub(crate) fn new(
         output: &'a mut OutputSet,
+        plugin: &'a str,
+        overrides: &'a GlobSet,
         source_root: PathBuf,
         source_files: Vec<String>,
         store: &'a ObjectStore,
@@ -108,6 +169,8 @@ impl<'a> RecordingHost<'a> {
         Self {
             read_view: output.clone(),
             output,
+            plugin,
+            overrides,
             source_root,
             source_files,
             store,
@@ -182,8 +245,6 @@ impl GeneratorHost for RecordingHost<'_> {
     }
 
     fn emit(&mut self, path: &str, contents: Vec<u8>) {
-        // Generators overwrite: a later generator (or this one, emitting the
-        // same path twice) replaces processor output and earlier emits.
         if let Err(message) = validate_relative(path) {
             self.errors
                 .push(format!("invalid emit path `{path}`: {message}"));
@@ -197,9 +258,17 @@ impl GeneratorHost for RecordingHost<'_> {
                 return;
             }
         };
-        self.output
-            .files
-            .insert(path.to_string(), OutputContent::Object(object));
+        let content = OutputContent::Object(object);
+        if let Err(message) = apply_mutation(
+            self.output,
+            self.plugin,
+            self.overrides,
+            path,
+            Some(content),
+        ) {
+            self.errors.push(message);
+            return;
+        }
         self.mutations.push(RecordedMutation::Emit {
             path: path.to_string(),
             object,
@@ -212,7 +281,10 @@ impl GeneratorHost for RecordingHost<'_> {
                 .push(format!("invalid remove path `{path}`: {message}"));
             return;
         }
-        self.output.files.remove(path);
+        if let Err(message) = apply_mutation(self.output, self.plugin, self.overrides, path, None) {
+            self.errors.push(message);
+            return;
+        }
         self.mutations
             .push(RecordedMutation::Remove(path.to_string()));
     }

@@ -61,6 +61,7 @@ pub(super) struct Shared {
     discovery: Discovery,
     /// Source-relative files bundled into the plugin that are not pack content.
     authoring: BTreeSet<String>,
+    overrides: Vec<String>,
 }
 
 /// Which optional handlers the plugin registered.
@@ -192,6 +193,7 @@ impl JsPluginFactory {
                 cache_key,
                 discovery,
                 authoring,
+                overrides: manifest.overrides.clone(),
             }),
         })
     }
@@ -236,6 +238,10 @@ impl PluginFactory for JsPluginFactory {
 
     fn output_roots(&self) -> BTreeMap<String, PathBuf> {
         self.shared.access.outputs.clone()
+    }
+
+    fn overrides(&self) -> &[String] {
+        &self.shared.overrides
     }
 
     fn is_authoring_source(&self, rel: &str) -> bool {

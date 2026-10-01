@@ -26,7 +26,6 @@ mod keys;
 mod result;
 mod worker;
 
-use std::collections::BTreeMap;
 use std::path::Component;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -36,6 +35,7 @@ use crate::cache::{GeneratorEntry, GeneratorMutation, Manifest, ObjectStore};
 use crate::config::Config;
 use crate::error::{Error, Result};
 use crate::model::{BuildStats, PluginFactory};
+use crate::util::glob::GlobSet;
 
 use self::cache_replay::materialize_generator_mutations;
 use self::generator::{read_set_matches, OutputSet, RecordedMutation, RecordingHost};
@@ -86,6 +86,17 @@ impl EngineBuilder {
             }
         }
 
+        let overrides = self
+            .factories
+            .iter()
+            .map(|factory| {
+                GlobSet::new(factory.overrides()).map_err(|message| Error::Generator {
+                    plugin: factory.id().to_string(),
+                    message,
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+
         let source = self.project_root.join(&self.config.build.source);
         let output = self.project_root.join(&self.config.build.output);
         let cache_dir = self.project_root.join(".rpp/cache");
@@ -104,6 +115,7 @@ impl EngineBuilder {
             cache_dir,
             factories: Arc::new(self.factories),
             compiled,
+            overrides,
             pool: parking_lot::Mutex::new(None),
         })
     }
@@ -149,6 +161,8 @@ pub struct Engine {
     cache_dir: PathBuf,
     factories: Arc<Vec<Arc<dyn PluginFactory>>>,
     compiled: Vec<CompiledProcessor>,
+    /// Compiled `overrides` globs, parallel to `factories`.
+    overrides: Vec<GlobSet>,
     /// Worker threads reused across builds (see `file_phase`).
     pub(crate) pool: parking_lot::Mutex<Option<worker::WorkerPool>>,
 }
@@ -222,10 +236,7 @@ impl Engine {
         }
 
         let mut new_manifest = Manifest::empty(global_key);
-        let mut output = OutputSet {
-            files: BTreeMap::new(),
-        };
-        let mut source_owners = BTreeMap::<String, String>::new();
+        let mut output = OutputSet::default();
 
         let file_stats = file_phase::process_files(file_phase::FilePhaseCtx {
             engine: self,
@@ -235,7 +246,6 @@ impl Engine {
             prev: prev.as_ref(),
             new_manifest: &mut new_manifest,
             output: &mut output,
-            source_owners: &mut source_owners,
             factories: &self.factories,
         })?;
 
@@ -314,6 +324,7 @@ impl Engine {
                 continue;
             }
             let plugin_id = factory.id().to_string();
+            let overrides = &self.overrides[index];
             let plugin_key = factory.cache_key();
 
             let replayable = prev
@@ -335,6 +346,8 @@ impl Engine {
                     &self.output,
                     &prev_entry.mutations,
                     output,
+                    &plugin_id,
+                    overrides,
                 )?;
                 if materialized {
                     new_manifest
@@ -346,6 +359,8 @@ impl Engine {
 
             let mut host = RecordingHost::new(
                 output,
+                &plugin_id,
+                overrides,
                 self.source.clone(),
                 source_files.to_vec(),
                 store,
@@ -354,7 +369,7 @@ impl Engine {
             instances[index].generate(&mut host)?;
             if !host.errors.is_empty() {
                 return Err(Error::Generator {
-                    plugin: plugin_id,
+                    plugin: factory.id().to_string(),
                     message: host.errors.join("; "),
                 });
             }
