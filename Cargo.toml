@@ -44,3 +44,8 @@ unsafe_op_in_unsafe_fn = "deny"
 
 [workspace.lints.clippy]
 dbg_macro = "warn"
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+strip = true

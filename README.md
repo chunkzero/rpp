@@ -8,6 +8,19 @@ plugins, Wasmtime-hosted component plugins, content-addressed incremental
 builds, GitHub plugin locking, deterministic release archives, and a watch
 server with live-reload events.
 
+## Install
+
+Linux x64 release archives bundle the native TypeScript compiler used by `rpp check`.
+Install a version with its checksum-verified archive:
+
+```bash
+curl -fsSLO https://github.com/chunkzero/rpp/releases/download/v0.1.0-alpha.0/install.sh
+sh install.sh 0.1.0-alpha.0
+```
+
+This installs under `~/.local/share/rpp/<version>` and links `~/.local/bin/rpp`;
+set `RPP_INSTALL_DIR` to use another prefix. No Rust toolchain is needed.
+
 ## Quick Start
 
 First complete the [development setup](#development) to install the pinned tools.

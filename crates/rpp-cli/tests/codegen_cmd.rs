@@ -221,6 +221,62 @@ fn check_runs_configured_compiler() {
     assert!(String::from_utf8_lossy(&failed.stderr).contains("type checking failed"));
 }
 
+#[cfg(unix)]
+#[test]
+fn check_uses_compiler_bundled_beside_executable() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("project");
+    std::fs::create_dir(&root).unwrap();
+    project(&root);
+    let install = dir.path().join("install");
+    let toolchain = install.join("toolchain/typescript/7.0.2");
+    std::fs::create_dir_all(&toolchain).unwrap();
+    let rpp = install.join("rpp");
+    std::fs::copy(env!("CARGO_BIN_EXE_rpp"), &rpp).unwrap();
+    let record = dir.path().join("args.txt");
+    for (name, tag) in [("tsc", "bundled"), ("other-tsc", "env")] {
+        let script = toolchain.join(name);
+        std::fs::write(
+            &script,
+            format!("#!/bin/sh\necho {tag} > '{}'\n", record.display()),
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    let check = |tsc: Option<&Path>| {
+        let mut command = std::process::Command::new(&rpp);
+        command
+            .current_dir(&root)
+            .env("RPP_HOME", dir.path().join("home"))
+            .env("RPP_CACHE_DIR", dir.path().join("cache"))
+            .env_remove("RPP_TSC")
+            .env("PATH", "/nonexistent")
+            .arg("check");
+        if let Some(tsc) = tsc {
+            command.env("RPP_TSC", tsc);
+        }
+        command.output().unwrap()
+    };
+    let out = check(None);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(std::fs::read_to_string(&record).unwrap().trim(), "bundled");
+
+    let out = check(Some(&toolchain.join("other-tsc")));
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(std::fs::read_to_string(&record).unwrap().trim(), "env");
+}
+
 #[test]
 fn build_runs_typescript_plugin() {
     let dir = tempfile::tempdir().unwrap();

@@ -396,7 +396,7 @@ function encode(ty: TypeDesc, value: any, sink: ByteSink): unknown {
   if ("result" in ty) {
     const tag = field(value, "tag", ty);
     if (tag !== "ok" && tag !== "err") throw mismatch(ty, value);
-    const payload = ty.result[tag];
+    const payload = tag === "ok" ? ty.result.ok : ty.result.err;
     return { [tag]: payload === null ? null : encode(payload, value.val, sink) };
   }
   if ("flags" in ty) {
