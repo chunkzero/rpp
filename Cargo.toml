@@ -14,7 +14,7 @@ version = "0.1.0-alpha.0"
 edition = "2021"
 rust-version = "1.96.0"
 license = "MIT OR Apache-2.0"
-authors = ["oglass <him@oglass.dev>"]
+authors = ["chunkzero"]
 repository = "https://github.com/chunkzero/rpp"
 description = "Tools and libraries for processing Minecraft resource packs"
 
