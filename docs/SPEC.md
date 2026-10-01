@@ -213,7 +213,8 @@ preferred when both exist.
   segment matched by the pattern's first whole `*` segment when all earlier segments are
   literal, and must match `^[a-z0-9_.-]+$`. Authoring files import the plugin's `config`
   module as `#plugins/<name>`. Discovered files and the source files they import are
-  authoring inputs: they are excluded from processors, `sourceFiles()` and pack output.
+  authoring inputs: they are excluded from processors, `sourceFiles()` and pack output, as is
+  every `.ts`, `.mts` or `.cts` file under the source directory (TypeScript is never pack content).
 - `dependencies` is accepted and ignored; other unknown keys are rejected.
 
 ## 3. Core plugin model (in `crates/rpp`)

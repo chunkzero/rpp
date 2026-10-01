@@ -50,6 +50,10 @@ impl Discovery {
         Ok(Self { patterns })
     }
 
+    pub(crate) fn is_empty(&self) -> bool {
+        self.patterns.is_empty()
+    }
+
     /// Whether `rel` matches any pattern.
     pub(crate) fn matches(&self, rel: &str) -> bool {
         self.patterns.iter().any(|p| p.glob.matches(rel))

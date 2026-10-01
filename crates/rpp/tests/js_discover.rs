@@ -155,6 +155,16 @@ fn helpers_bundled_through_imports_and_marked_authoring() {
 }
 
 #[test]
+fn typescript_sources_are_authoring_when_discovering() {
+    let project = Project::new(PLUGIN);
+    let factory = project.load().unwrap();
+    assert!(factory.is_authoring_source("lib/types.ts"));
+    assert!(factory.is_authoring_source("a/b.mts"));
+    assert!(factory.is_authoring_source("a/b.cts"));
+    assert!(!factory.is_authoring_source("a/b.json"));
+}
+
+#[test]
 fn definitions_import_plugin_api_via_plugins_specifier() {
     let project = Project::new(PLUGIN);
     project.write(

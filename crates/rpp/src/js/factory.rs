@@ -239,12 +239,22 @@ impl PluginFactory for JsPluginFactory {
     }
 
     fn is_authoring_source(&self, rel: &str) -> bool {
-        self.shared.discovery.matches(rel) || self.shared.authoring.contains(rel)
+        let discovery = &self.shared.discovery;
+        discovery.matches(rel)
+            || self.shared.authoring.contains(rel)
+            || (!discovery.is_empty() && is_typescript(rel))
     }
 
     fn instantiate(&self) -> Result<Box<dyn PluginInstance>> {
         Ok(Box::new(JsPluginInstance::new(self.clone())?))
     }
+}
+
+/// TypeScript sources are never pack content; type-only imports are erased before bundling,
+/// so the bundle's inputs alone would miss them.
+fn is_typescript(rel: &str) -> bool {
+    rel.rsplit_once('.')
+        .is_some_and(|(_, ext)| matches!(ext, "ts" | "mts" | "cts"))
 }
 
 fn virtual_modules(entry: &str, discovered: bool) -> BTreeMap<String, String> {
