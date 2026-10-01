@@ -704,6 +704,23 @@ pub fn run_packsquash(binary: &str, pack_dir: &Path, zip_path: &Path, options_fi
   `update [id] [--global]` / `search <query>` — manages `[[plugin]]` entries
   (toml_edit, preserve formatting) and the corresponding lockfile.
 
+- `rpp plugin pack [dir] [--out <dir>] [--json]` — bundles a plugin with `rpp.json` into
+  `<name>-<version>.rpp.tgz` plus `<file>.sha256` (`<hex>  <file>`), written to `--out`
+  (default: the plugin directory). `--json` prints `{name, version, rpp, description, file,
+sha256}` on stdout. `rpp.json` must set `rpp`. The archive holds the manifest with
+  `entry: "dist/plugin.js"`, `config: "dist/config.js"` and `dependencies` removed;
+  `dist/*.js` with `.js.map` files (shared code in `dist/chunk-<hash>.js`); every
+  `components` module; and, for a TypeScript config, `types/**.d.ts` from isolated
+  declarations plus `dist/config.d.ts`. npm dependencies are inlined from `node_modules`
+  (including hoisted ones outside the plugin directory, resolved through `module` then
+  `main`); `#rpp` and `#rpp/*` stay imports; `node:` imports are rejected. Source maps
+  list the original files (`../src/plugin.ts`, `../node_modules/dep/index.js`), and a
+  loaded file's `//# sourceMappingURL=` map is chained, so installed plugins report stacks
+  at their original sources. Config modules must support isolated declarations and their
+  public types must not reference dependency types. Archives are deterministic (sorted
+  entries, mtime 0, owner 0, mode 0644) and are checked by unpacking and bundling them
+  as an installing rpp does.
+
 Prompts and command status use cliclack on stderr. Redirected stderr and `TERM=dumb`
 receive plain status lines; command results such as plugin listings and search hits
 stay on stdout. Prompts require both stdin and stderr to be terminals. Otherwise,

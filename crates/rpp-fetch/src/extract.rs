@@ -15,9 +15,12 @@ use tar::Archive;
 
 use crate::error::{Error, Result};
 
-const MAX_ENTRIES: usize = 20_000;
-const MAX_FILE_BYTES: u64 = 64 * 1024 * 1024;
-const MAX_TOTAL_BYTES: u64 = 512 * 1024 * 1024;
+/// The most entries an installed archive may have.
+pub const MAX_ENTRIES: usize = 20_000;
+/// The largest file an installed archive may contain, in bytes.
+pub const MAX_FILE_BYTES: u64 = 64 * 1024 * 1024;
+/// The most bytes an installed archive may unpack to.
+pub const MAX_TOTAL_BYTES: u64 = 512 * 1024 * 1024;
 
 /// Extract a gzipped tarball (`bytes`) into `dest`, stripping the single
 /// top-level directory GitHub adds.

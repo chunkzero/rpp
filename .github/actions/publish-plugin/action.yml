@@ -1,0 +1,127 @@
+name: Publish rpp plugin
+description: Pack an rpp plugin, upload it to the tag's GitHub release and open a registry pull request.
+
+inputs:
+  rpp-version:
+    description: rpp release to install, without the leading v.
+    required: true
+  registry-token:
+    description: Personal access token that can fork chunkzero/rpp-registry and open pull requests there.
+    required: true
+  install-command:
+    description: Command that installs the plugin's dependencies. Detected from the lockfile when empty.
+    default: ""
+  working-directory:
+    description: Plugin directory, relative to the repository root.
+    default: .
+
+runs:
+  using: composite
+  steps:
+    - name: Install dependencies
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        INSTALL_COMMAND: ${{ inputs.install-command }}
+      run: |
+        if [ -n "$INSTALL_COMMAND" ]; then
+          bash -c "$INSTALL_COMMAND"
+        elif [ -f package-lock.json ]; then npm ci
+        elif [ -f pnpm-lock.yaml ]; then pnpm i --frozen-lockfile
+        elif [ -f yarn.lock ]; then yarn --immutable
+        elif [ -f bun.lock ] || [ -f bun.lockb ]; then bun i --frozen-lockfile
+        elif [ -f package.json ]; then echo "::error::package.json has no lockfile; set install-command" && exit 1
+        fi
+
+    - name: Install rpp
+      shell: bash
+      env:
+        RPP_VERSION: ${{ inputs.rpp-version }}
+      run: |
+        curl -fsSL "https://github.com/chunkzero/rpp/releases/download/v${RPP_VERSION}/install.sh" | sh -s -- "$RPP_VERSION"
+        echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+    - name: Pack plugin
+      id: pack
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: |
+        out="$RUNNER_TEMP/rpp-pack"
+        mkdir -p "$out"
+        rpp plugin pack --json --out "$out" > "$out/packed.json"
+        version=$(jq -r .version "$out/packed.json")
+        if [ "$GITHUB_REF_NAME" != "v$version" ]; then
+          echo "::error::tag $GITHUB_REF_NAME does not match plugin version v$version"
+          exit 1
+        fi
+        echo "out=$out" >> "$GITHUB_OUTPUT"
+        echo "file=$(jq -r .file "$out/packed.json")" >> "$GITHUB_OUTPUT"
+        echo "sha256=$(jq -r .sha256 "$out/packed.json")" >> "$GITHUB_OUTPUT"
+
+    - name: Prepare registry update
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.registry-token }}
+        OUT: ${{ steps.pack.outputs.out }}
+        UPDATE_ENTRY: ${{ github.action_path }}/update_entry.py
+      run: |
+        registry=chunkzero/rpp-registry
+        name=$(jq -r .name "$OUT/packed.json")
+        version=$(jq -r .version "$OUT/packed.json")
+
+        gh repo fork "$registry" --clone=false
+        gh auth setup-git
+        git clone "https://github.com/$registry" "$RUNNER_TEMP/registry"
+        cd "$RUNNER_TEMP/registry"
+        git checkout -b "$name-$version"
+
+        python3 "$UPDATE_ENTRY" --registry . --repository "https://github.com/$GITHUB_REPOSITORY" \
+          --tag "$GITHUB_REF_NAME" --packed "$OUT/packed.json"
+        python3 scripts/registry.py index
+        python3 scripts/registry.py check --base origin/main
+
+    - name: Upload release asset
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        OUT: ${{ steps.pack.outputs.out }}
+        FILE: ${{ steps.pack.outputs.file }}
+        SHA256: ${{ steps.pack.outputs.sha256 }}
+      run: |
+        gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 \
+          || gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes
+        published=$(gh release view "$GITHUB_REF_NAME" --json assets --jq ".assets[].name | select(. == \"$FILE\")")
+        if [ -n "$published" ]; then
+          existing="$RUNNER_TEMP/published"
+          mkdir -p "$existing"
+          gh release download "$GITHUB_REF_NAME" --pattern "$FILE" --dir "$existing" --clobber
+          if [ "$(sha256sum "$existing/$FILE" | cut -d' ' -f1)" != "$SHA256" ]; then
+            echo "::error::$FILE is already published for $GITHUB_REF_NAME with different bytes; bump the version"
+            exit 1
+          fi
+          echo "$FILE is already published with identical bytes; skipping upload"
+        else
+          gh release upload "$GITHUB_REF_NAME" "$OUT/$FILE" "$OUT/$FILE.sha256"
+        fi
+
+    - name: Open registry pull request
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.registry-token }}
+        OUT: ${{ steps.pack.outputs.out }}
+      run: |
+        name=$(jq -r .name "$OUT/packed.json")
+        version=$(jq -r .version "$OUT/packed.json")
+        branch="$name-$version"
+        login=$(gh api user --jq .login)
+
+        cd "$RUNNER_TEMP/registry"
+        git remote add fork "https://github.com/$login/rpp-registry"
+        git config user.name "github-actions[bot]"
+        git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+        git add plugins index.json
+        git commit -m "feat: add $name $version"
+        git push --force fork "$branch"
+        gh pr create --repo chunkzero/rpp-registry --head "$login:$branch" \
+          --title "feat: add $name $version" \
+          --body "Publishes $name $version from https://github.com/$GITHUB_REPOSITORY/releases/tag/$GITHUB_REF_NAME."

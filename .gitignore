@@ -25,3 +25,4 @@ integrations/jvm/.gradle/
 integrations/jvm/**/build/
 integrations/jvm/examples/pack/.rpp/
 integrations/jvm/examples/pack/dist/
+__pycache__/

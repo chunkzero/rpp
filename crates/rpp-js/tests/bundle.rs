@@ -383,3 +383,69 @@ fn package_sources_are_labelled_by_specifier() {
         ]
     );
 }
+
+fn mapped_library(root: &Path) -> BundleRequest {
+    write(root, "src/lib.ts", "export const lib = 1;\n");
+    write(
+        root,
+        "dist/lib.js",
+        "export const lib = 1;\n//# sourceMappingURL=lib.js.map\n",
+    );
+    write(
+        root,
+        "dist/lib.js.map",
+        r#"{"version":3,"sources":["../src/lib.ts"],"names":[],"mappings":"AAAA"}"#,
+    );
+    write(root, "main.ts", "export { lib } from './dist/lib.js';\n");
+    request(root, "main.ts")
+}
+
+#[test]
+fn bundle_chains_input_source_maps() {
+    let dir = TempDir::new().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    let req = mapped_library(&root);
+
+    let bundle = bundle(&req).unwrap();
+
+    let sources = source_list(&bundle.source_map);
+    assert!(sources.contains(&"src/lib.ts".to_string()), "{sources:?}");
+    assert!(!sources.contains(&"dist/lib.js".to_string()), "{sources:?}");
+}
+
+#[test]
+fn bundle_records_source_map_inputs() {
+    let dir = TempDir::new().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    let req = mapped_library(&root);
+
+    let bundle = bundle(&req).unwrap();
+
+    assert!(bundle.inputs.contains(&root.join("dist/lib.js.map")));
+}
+
+#[test]
+fn bundle_still_rejects_outside_node_modules_by_default() {
+    let dir = TempDir::new().unwrap();
+    let parent = dir.path().canonicalize().unwrap();
+    write(
+        &parent,
+        "node_modules/dep/package.json",
+        r#"{"name":"dep","version":"1.0.0","exports":"./index.js"}"#,
+    );
+    write(
+        &parent,
+        "node_modules/dep/index.js",
+        "export const dep = 1;\n",
+    );
+    let root = parent.join("app");
+    write(
+        &root,
+        "main.ts",
+        "import { dep } from 'dep';\nexport const out = dep;\n",
+    );
+
+    let message = bundle_error(&request(&root, "main.ts"));
+
+    assert!(message.contains("outside the root"), "{message}");
+}

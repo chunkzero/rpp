@@ -27,6 +27,7 @@ jobs:
         with:
           version: 2026.9.1
       - run: mise exec -- just fmt-check
+      - run: mise exec -- just test-actions
 
   verify:
     name: Rust lint, features, and tests (including WASM)

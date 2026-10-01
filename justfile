@@ -121,3 +121,7 @@ clean:
 example-wasm: require-wasm
     cargo build --locked --release --target wasm32-wasip2 --manifest-path examples/plugins/grayscale-wasm/guest/Cargo.toml
     cp examples/plugins/grayscale-wasm/guest/target/wasm32-wasip2/release/grayscale_wasm_guest.wasm examples/plugins/grayscale-wasm/grayscale.wasm
+
+# Test the publish-plugin action's helper script
+test-actions:
+    python3 -m unittest discover -s .github/actions/publish-plugin -p 'test_*.py'
