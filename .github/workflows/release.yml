@@ -145,7 +145,11 @@ jobs:
 
   # The artifact only hands the archive between jobs; keeping it counts against Actions storage.
   cleanup:
-    if: always() && needs.package.outputs.artifact-id != ''
+    if: >-
+      always() && needs.package.outputs.artifact-id != '' &&
+      github.actor != 'dependabot[bot]' &&
+      (github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository)
     needs: [package, verify, publish]
     runs-on: ubuntu-latest
     timeout-minutes: 5

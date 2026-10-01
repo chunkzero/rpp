@@ -27,24 +27,56 @@ fi
 
 name="rpp-$version-linux-x64"
 temporary=$(mktemp -d)
-trap 'rm -rf "$temporary"' EXIT
+installed=
+cleanup() {
+  rm -rf "$temporary"
+  if [ -n "$installed" ]; then rm -rf "$destination"; fi
+}
+trap cleanup EXIT
 trap 'exit 1' HUP INT TERM
 if [ "$#" -ge 2 ]; then
   cp "$2" "$temporary/$name.tar.gz"
   cp "$2.sha256" "$temporary/$name.tar.gz.sha256"
 else
   url=${RPP_RELEASE_URL:-"https://github.com/chunkzero/rpp/releases/download/v$version"}
+  authority=${url#*://}
+  authority=${authority%%/*}
+  case "$authority" in
+    *@*) echo "RPP_RELEASE_URL must not contain credentials." >&2; exit 1 ;;
+  esac
   case "$url" in
-    https://* | http://127.0.0.1[:/]*) ;;
+    https://*) transport="--location --proto =https --proto-redir =https --tlsv1.2" ;;
+    http://*)
+      host=${authority%%:*}
+      port=${authority#"$host"}
+      port=${port#:}
+      case "$host:$port" in
+        127.0.0.1: | localhost: | 127.0.0.1:[0-9]* | localhost:[0-9]*) ;;
+        *) echo "RPP_RELEASE_URL must use https:// (or http://127.0.0.1)." >&2; exit 1 ;;
+      esac
+      case "$port" in
+        *[!0-9]*) echo "RPP_RELEASE_URL has an invalid port." >&2; exit 1 ;;
+      esac
+      transport="--proto =http --max-redirs 0" ;;
     *) echo "RPP_RELEASE_URL must use https:// (or http://127.0.0.1)." >&2; exit 1 ;;
   esac
-  curl --fail --location --tlsv1.2 "$url/$name.tar.gz" -o "$temporary/$name.tar.gz"
-  curl --fail --location --tlsv1.2 "$url/$name.tar.gz.sha256" -o "$temporary/$name.tar.gz.sha256"
+  # shellcheck disable=SC2086
+  curl --fail $transport "$url/$name.tar.gz" -o "$temporary/$name.tar.gz"
+  # shellcheck disable=SC2086
+  curl --fail $transport "$url/$name.tar.gz.sha256" -o "$temporary/$name.tar.gz.sha256"
 fi
 
 cd "$temporary"
 expected=$(cut -d ' ' -f 1 "$name.tar.gz.sha256")
-actual=$(sha256sum "$name.tar.gz" | cut -d ' ' -f 1)
+case "$expected" in
+  *[!0-9a-f]*) expected= ;;
+esac
+if [ "${#expected}" -ne 64 ]; then
+  echo "rpp checksum file is invalid." >&2
+  exit 1
+fi
+actual=$(sha256sum "$name.tar.gz") || { echo "Could not compute the rpp checksum." >&2; exit 1; }
+actual=${actual%% *}
 if [ "$expected" != "$actual" ]; then
   echo "rpp checksum does not match." >&2
   exit 1
@@ -55,6 +87,8 @@ if [ "$("$temporary/$name/rpp" --version)" != "rpp $version" ]; then
   exit 1
 fi
 mkdir -p "$prefix/share/rpp" "$prefix/bin"
+installed=1
 mv "$name" "$destination"
 ln -sfn "$destination/rpp" "$prefix/bin/rpp"
+installed=
 echo "Installed rpp $version. Add $prefix/bin to PATH."

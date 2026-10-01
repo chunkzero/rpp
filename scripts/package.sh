@@ -66,6 +66,7 @@ fi
 cp "$work"/native/lib/* "$compiler/"
 install -m 644 "$work/typescript/LICENSE" "$work/typescript/NOTICE.txt" "$compiler/"
 chmod 755 "$compiler/tsc"
+find "$root" -type d -exec chmod 755 {} +
 find "$root" -type f ! -perm /111 -exec chmod 644 {} +
 
 tar --sort=name --owner=0 --group=0 --numeric-owner --mtime=@0 -C "$work" -cf - "$name" |
