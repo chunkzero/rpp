@@ -455,8 +455,15 @@ impl Project {
                 execution_limit: std::time::Duration::from_secs(lua.execution_deadline_seconds),
             };
             Arc::new(
-                JsPluginFactory::load(&root, plugin_cfg.options.clone(), pack, limits, access)
-                    .with_context(|| format!("loading TypeScript plugin `{id}`"))?,
+                JsPluginFactory::load(
+                    &root,
+                    plugin_cfg.options.clone(),
+                    pack,
+                    limits,
+                    access,
+                    &self.source_dir(),
+                )
+                .with_context(|| format!("loading TypeScript plugin `{id}`"))?,
             )
         } else {
             Arc::new(

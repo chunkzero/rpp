@@ -1,16 +1,17 @@
 //! [`JsPluginFactory`]: bundling and validation on the main thread.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use rpp_js::{Bundle, BundleRequest, Call, Cancellation, Engine, Limits};
+use rpp_js::{Bundle, BundlePackage, BundleRequest, Call, Cancellation, Engine, Limits};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::error::{Error, Result};
 use crate::host::{PackInfo, PhaseCell, RuntimeAccess};
+use crate::js::discover::{discovered_module, Discovery};
 use crate::js::host::JsHost;
 use crate::js::instance::{self, JsPluginInstance};
 use crate::manifest::PluginManifest;
@@ -19,8 +20,10 @@ use crate::util::canonical::canonical_options_json;
 use crate::util::glob::GlobSet;
 use crate::util::hash::HashWriter;
 use crate::util::json_toml::{toml_to_json, Datetimes};
+use crate::util::path::to_forward_slash;
 
 const RUNTIME_SOURCE: &str = include_str!("sdk/runtime.ts");
+const CONFIG_SDK: &str = include_str!("sdk/config.ts");
 
 /// Resource limits applied to each JavaScript runtime.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -55,6 +58,9 @@ pub(super) struct Shared {
     processors: Vec<ProcessorDef>,
     pub(super) handlers: Handlers,
     cache_key: u64,
+    discovery: Discovery,
+    /// Source-relative files bundled into the plugin that are not pack content.
+    authoring: BTreeSet<String>,
 }
 
 /// Which optional handlers the plugin registered.
@@ -85,6 +91,11 @@ impl JsPluginFactory {
     /// Read `rpp.json` (or `plugin.toml`) in `dir`, bundle its entry, evaluate it once to read its
     /// processors and handlers, and compute the cache key.
     ///
+    /// When the manifest declares `discover` patterns, the files they match under `source`
+    /// (the absolute pack source directory) are bundled with the plugin and exposed through
+    /// `ctx.discovered(name)`. Those files and everything they import from `source` are not
+    /// part of the pack ([`PluginFactory::is_authoring_source`]).
+    ///
     /// The cache key covers the bundled code, the manifest, declared component
     /// bytes, canonical `options`, host access and the rpp version.
     ///
@@ -99,6 +110,7 @@ impl JsPluginFactory {
         pack: PackInfo,
         limits: JsPluginLimits,
         access: RuntimeAccess,
+        source: &Path,
     ) -> Result<Self> {
         let dir = dir.as_ref();
         let (manifest, manifest_source) = PluginManifest::load_with_source(dir)?;
@@ -126,13 +138,20 @@ impl JsPluginFactory {
             )));
         }
 
-        let bundle = rpp_js::bundle(&BundleRequest {
-            root: root.clone(),
-            entry: "rpp:entry".into(),
-            virtual_modules: virtual_modules(&manifest.entry),
-            ..Default::default()
-        })
-        .map_err(|e| load_error(e.to_string()))?;
+        let discovery = Discovery::new(&manifest.discover).map_err(&load_error)?;
+        let (bundle, authoring) = if manifest.discover.is_empty() {
+            let bundle = rpp_js::bundle(&BundleRequest {
+                root: root.clone(),
+                entry: "rpp:entry".into(),
+                virtual_modules: virtual_modules(&format!("./{}", manifest.entry), false),
+                ..Default::default()
+            })
+            .map_err(|e| load_error(e.to_string()))?;
+            (bundle, BTreeSet::new())
+        } else {
+            let source = source.canonicalize().map_err(|e| Error::io(source, e))?;
+            bundle_discovered(&manifest, &root, &source, &discovery).map_err(&load_error)?
+        };
 
         let limits = Limits {
             heap_bytes: limits.memory_limit,
@@ -171,6 +190,8 @@ impl JsPluginFactory {
                 processors,
                 handlers: description.handlers,
                 cache_key,
+                discovery,
+                authoring,
             }),
         })
     }
@@ -217,21 +238,84 @@ impl PluginFactory for JsPluginFactory {
         self.shared.access.outputs.clone()
     }
 
+    fn is_authoring_source(&self, rel: &str) -> bool {
+        let discovery = &self.shared.discovery;
+        discovery.matches(rel)
+            || self.shared.authoring.contains(rel)
+            || (!discovery.is_empty() && is_typescript(rel))
+    }
+
     fn instantiate(&self) -> Result<Box<dyn PluginInstance>> {
         Ok(Box::new(JsPluginInstance::new(self.clone())?))
     }
 }
 
-fn virtual_modules(entry: &str) -> BTreeMap<String, String> {
+/// TypeScript sources are never pack content; type-only imports are erased before bundling,
+/// so the bundle's inputs alone would miss them.
+fn is_typescript(rel: &str) -> bool {
+    rel.rsplit_once('.')
+        .is_some_and(|(_, ext)| matches!(ext, "ts" | "mts" | "cts"))
+}
+
+fn virtual_modules(entry: &str, discovered: bool) -> BTreeMap<String, String> {
+    let (import, register) = if discovered {
+        (
+            "import discovered from \"rpp:discovered\";\n",
+            "register(plugin, discovered);",
+        )
+    } else {
+        ("", "register(plugin);")
+    };
     let entry_module = format!(
-        "import plugin from {};\nimport {{ register }} from \"rpp:runtime\";\nregister(plugin);\nexport * from \"rpp:runtime\";\n",
-        Value::String(format!("./{entry}"))
+        "import plugin from {};\nimport {{ register }} from \"rpp:runtime\";\n{import}{register}\nexport * from \"rpp:runtime\";\n",
+        Value::String(entry.to_string())
     );
     BTreeMap::from([
         ("#rpp".to_string(), super::SDK_FILES[0].1.to_string()),
         ("rpp:runtime".to_string(), RUNTIME_SOURCE.to_string()),
         ("rpp:entry".to_string(), entry_module),
     ])
+}
+
+/// Bundle the plugin together with the files its patterns match under `source`. The bundle
+/// root is `source`; the plugin's own files are the package `#plugin`.
+fn bundle_discovered(
+    manifest: &PluginManifest,
+    plugin_root: &Path,
+    source: &Path,
+    discovery: &Discovery,
+) -> std::result::Result<(Bundle, BTreeSet<String>), String> {
+    let entries = discovery.discover(source)?;
+
+    let mut virtual_modules = virtual_modules("#plugin", true);
+    virtual_modules.insert("#rpp/config".into(), CONFIG_SDK.into());
+    virtual_modules.insert(
+        "rpp:discovered".into(),
+        discovered_module("", discovery, &entries),
+    );
+    let package = |entry: &str| BundlePackage {
+        dir: plugin_root.to_path_buf(),
+        entry: entry.to_string(),
+    };
+    let mut packages = BTreeMap::from([("#plugin".to_string(), package(&manifest.entry))]);
+    if let Some(config) = &manifest.config {
+        packages.insert(format!("#plugins/{}", manifest.id), package(config));
+    }
+    let bundle = rpp_js::bundle(&BundleRequest {
+        root: source.to_path_buf(),
+        entry: "rpp:entry".into(),
+        virtual_modules,
+        packages,
+    })
+    .map_err(|e| e.to_string())?;
+
+    let authoring = bundle
+        .inputs
+        .iter()
+        .filter_map(|input| input.strip_prefix(source).ok())
+        .map(to_forward_slash)
+        .collect();
+    Ok((bundle, authoring))
 }
 
 /// Evaluate the bundle once and read what the plugin registered.

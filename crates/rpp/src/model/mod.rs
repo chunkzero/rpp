@@ -90,6 +90,11 @@ pub trait PluginFactory: Send + Sync {
     fn output_roots(&self) -> BTreeMap<String, PathBuf> {
         BTreeMap::new()
     }
+    /// Whether a source file is authoring input of this plugin (a discovered definition or
+    /// an imported helper) and therefore not part of the pack.
+    fn is_authoring_source(&self, _rel: &str) -> bool {
+        false
+    }
     /// Instantiate a live instance for one worker thread.
     fn instantiate(&self) -> Result<Box<dyn PluginInstance>>;
 }

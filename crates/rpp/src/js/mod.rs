@@ -8,6 +8,10 @@
 //! - `rpp:entry`: `import plugin from "./<entry>"; import { register } from "rpp:runtime";
 //!   register(plugin); export * from "rpp:runtime";`
 //!
+//! A manifest with `discover` patterns also gets `#rpp/config`, a `#plugins/<id>` package for
+//! its config module, `#plugin` (the entry) and `rpp:discovered`; the bundle root is the source dir (the matched files' namespace objects); `rpp:entry`
+//! then calls `register(plugin, discovered)`.
+//!
 //! The bundle exports these functions, called through [`rpp_js::Runtime::call`]:
 //!
 //! | export | args | bytes | returns |
@@ -50,6 +54,7 @@
 //! [`PluginInstance`]: crate::model::PluginInstance
 
 mod config;
+mod discover;
 mod factory;
 mod host;
 mod instance;

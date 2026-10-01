@@ -17,7 +17,7 @@
 
 mod boundary;
 mod cache_replay;
-mod discovery;
+pub(crate) mod discovery;
 mod external;
 mod file_phase;
 mod finalize;
@@ -168,6 +168,14 @@ impl Engine {
         self.factories.len()
     }
 
+    /// Whether `rel` (a forward-slash path under the source directory) is an authoring input
+    /// of any plugin, and so excluded from the pack.
+    pub fn is_authoring_source(&self, rel: &str) -> bool {
+        self.factories
+            .iter()
+            .any(|factory| factory.is_authoring_source(rel))
+    }
+
     /// Remove the output directory and the entire `.rpp` cache directory.
     pub fn clean(&self) -> Result<()> {
         clean_project_artifacts(&self.config, &self.project_root)
@@ -196,7 +204,13 @@ impl Engine {
             .unwrap_or(false);
         let prev = prev.filter(|_| global_match);
 
-        let sources = discovery::discover(&self.source)?;
+        let mut sources = discovery::discover(&self.source)?;
+        sources.retain(|source| {
+            !self
+                .factories
+                .iter()
+                .any(|factory| factory.is_authoring_source(&source.rel))
+        });
         let source_files = sources
             .iter()
             .map(|source| source.rel.clone())

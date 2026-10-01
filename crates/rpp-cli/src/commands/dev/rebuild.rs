@@ -110,12 +110,31 @@ impl DevSession {
         Ok(())
     }
 
+    /// Whether a changed source path is a plugin authoring input, which the engine only
+    /// reads when its plugins are loaded.
+    fn touches_authoring_source(&self, batch: &ChangeBatch) -> bool {
+        let Runtime::Ready(engine) = &self.runtime else {
+            return false;
+        };
+        let source_dir = self.project.source_dir();
+        batch.paths.iter().any(|path| {
+            path.strip_prefix(&source_dir).is_ok_and(|rel| {
+                let rel = rel
+                    .components()
+                    .map(|c| c.as_os_str().to_string_lossy())
+                    .collect::<Vec<_>>()
+                    .join("/");
+                engine.is_authoring_source(&rel)
+            })
+        })
+    }
+
     /// Perform one rebuild for a change batch. Returns the SSE payload when
     /// output files changed or archive publication recovered, otherwise `None`.
     pub fn rebuild_once(&mut self, batch: &ChangeBatch) -> Result<Option<String>> {
         let started = std::time::Instant::now();
 
-        if batch.needs_engine_rebuild() {
+        if batch.needs_engine_rebuild() || self.touches_authoring_source(batch) {
             let config =
                 batch.kind_config || matches!(self.runtime, Runtime::NeedsReload { config: true });
             self.runtime = Runtime::NeedsReload { config };

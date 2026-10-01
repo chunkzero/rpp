@@ -8,7 +8,7 @@ use std::sync::Arc;
 use common::{PluginDir, Project};
 use rpp::engine::Engine;
 use rpp::lua::{LuaPluginFactory, LuaPluginLimits, PackInfo, RuntimeAccess};
-use rpp::model::PluginFactory;
+use rpp::model::{PluginFactory, PluginInstance, ProcessorDef};
 
 fn build(project: &Project, plugins: Vec<Arc<dyn PluginFactory>>) -> rpp::engine::BuildResult {
     let engine = Engine::builder(project.config())
@@ -36,6 +36,64 @@ fn external_factory(plugin: &PluginDir, root: &std::path::Path) -> Arc<dyn Plugi
         )
         .unwrap(),
     )
+}
+
+/// Delegates to `inner`, marking `authoring.json` as an authoring source.
+struct AuthoringFactory(Arc<dyn PluginFactory>);
+
+impl PluginFactory for AuthoringFactory {
+    fn id(&self) -> &str {
+        self.0.id()
+    }
+    fn cache_key(&self) -> u64 {
+        self.0.cache_key()
+    }
+    fn processors(&self) -> &[ProcessorDef] {
+        self.0.processors()
+    }
+    fn has_generator(&self) -> bool {
+        self.0.has_generator()
+    }
+    fn is_authoring_source(&self, rel: &str) -> bool {
+        rel == "authoring.json"
+    }
+    fn instantiate(&self) -> rpp::Result<Box<dyn PluginInstance>> {
+        self.0.instantiate()
+    }
+}
+
+#[test]
+fn authoring_sources_are_excluded_from_output_and_processors() {
+    let project = Project::new();
+    project.write_src("authoring.json", "{}");
+    project.write_src("keep.json", "{}");
+
+    let plugin = PluginDir::lua(
+        "authoring",
+        r#"
+local rpp = require("rpp")
+local plugin = rpp.plugin()
+plugin:processor("mark", { files = { "**/*.json" } }, function(ctx, file)
+    file.text = "processed"
+end)
+plugin:generator("g", function(ctx)
+    ctx:emit("sources.txt", table.concat(ctx:source_files(), ","))
+end)
+return plugin
+"#,
+    );
+
+    let result = build(
+        &project,
+        vec![Arc::new(AuthoringFactory(plugin.factory_arc("")))],
+    );
+    assert_eq!(result.processed, 1);
+    assert!(!project.out_exists("authoring.json"));
+    assert_eq!(project.read_out("keep.json").as_deref(), Some("processed"));
+    assert_eq!(
+        project.read_out("sources.txt").as_deref(),
+        Some("keep.json")
+    );
 }
 
 #[test]
