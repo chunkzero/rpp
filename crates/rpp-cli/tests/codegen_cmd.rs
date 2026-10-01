@@ -95,6 +95,60 @@ fn codegen_works_in_json_plugin_dir() {
     );
 }
 
+fn component_wasm() -> Vec<u8> {
+    use wit_component::{ComponentEncoder, StringEncoding};
+    use wit_parser::{ManglingAndAbi, Resolve};
+
+    let mut resolve = Resolve::default();
+    let package = resolve
+        .push_str(
+            "c.wit",
+            "package t:c;\nworld w { export add: func(a: u32, b: u32) -> u32; }",
+        )
+        .unwrap();
+    let world = resolve.select_world(&[package], None).unwrap();
+    let mut module = wit_component::dummy_module(&resolve, world, ManglingAndAbi::Standard32);
+    wit_component::embed_component_metadata(&mut module, &resolve, world, StringEncoding::UTF8)
+        .unwrap();
+    ComponentEncoder::default()
+        .module(&module)
+        .unwrap()
+        .encode()
+        .unwrap()
+}
+
+#[test]
+fn codegen_writes_generated_component_dts() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    std::fs::write(
+        root.join("plugin.toml"),
+        "[plugin]\nid = \"p\"\nversion = \"0.1.0\"\nentry = \"src/plugin.ts\"\n\n[component.calc]\nmodule = \"calc.wasm\"\n",
+    )
+    .unwrap();
+
+    let out = run(root, &["codegen"]);
+    assert!(out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("calc"));
+    assert!(!root.join(".rpp/generated/calc.d.ts").exists());
+    let root_config = std::fs::read_to_string(root.join("tsconfig.json")).unwrap();
+    assert!(root_config.contains(".rpp/generated/*.d.ts"));
+
+    std::fs::write(root.join("calc.wasm"), component_wasm()).unwrap();
+    let out = run(root, &["codegen"]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let dts = std::fs::read_to_string(root.join(".rpp/generated/calc.d.ts")).unwrap();
+    assert!(
+        dts.contains("add: (a: number, b: number) => number;"),
+        "{dts}"
+    );
+    assert!(dts.contains("calc: Calc;"), "{dts}");
+}
+
 #[test]
 fn check_reports_missing_compiler() {
     let dir = tempfile::tempdir().unwrap();

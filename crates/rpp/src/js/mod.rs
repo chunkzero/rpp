@@ -39,9 +39,11 @@
 //! | `hash` | `{ algorithm: "xxh3" \| "sha256" \| "md5" \| "crc32" }` | data | string, or number for crc32 |
 //! | `glob.match` | `{ pattern, path }` | – | boolean |
 //! | `process.run` | `{ program, args, cwd?, env, timeout_ms? }` | stdin | `{ status, stderr }` + stdout |
+//! | `component.load` | `{ name }` | – | `{ handle, functions: [{ path, params: [[name, type]], results: [type] }] }` |
+//! | `component.call` | `{ handle, path, args }` | byte lists, by `[offset, len]` | `{ results }` + byte lists, or `{ failure: { kind: "trap" \| "timeout", message } }` |
 //!
 //! Generator host calls fail outside `generate`; `process.run` follows the Lua phase
-//! and permission rules. Paths are validated as relative pack paths.
+//! and permission rules. Component instances live until the call's host is dropped. Paths are validated as relative pack paths.
 //!
 //! Bundle evaluation and `init` always run on a fixed clock seeded by the plugin id;
 //! calls use real time and randomness only in `native` mode or when both
@@ -53,6 +55,8 @@
 //!
 //! [`PluginInstance`]: crate::model::PluginInstance
 
+#[cfg(feature = "wasm")]
+mod component;
 mod config;
 mod discover;
 mod factory;

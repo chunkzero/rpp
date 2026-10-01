@@ -35,6 +35,7 @@ fmt-rust *ARGS:
     cargo fmt --all -- {{ ARGS }}
     cargo fmt --manifest-path crates/rpp-wasm/tests/fixtures/math-component/Cargo.toml -- {{ ARGS }}
     cargo fmt --manifest-path crates/rpp-cli/tests/fixtures/window-host-component/Cargo.toml -- {{ ARGS }}
+    cargo fmt --manifest-path crates/rpp-cli/tests/fixtures/js-component/Cargo.toml -- {{ ARGS }}
     cargo fmt --manifest-path examples/plugins/grayscale-wasm/guest/Cargo.toml -- {{ ARGS }}
 
 # Format Java and Gradle Kotlin scripts
@@ -85,7 +86,7 @@ require-wasm:
 # Exercise the component host and its CLI integrations
 verify-wasm: require-wasm
     cargo test --locked -p rpp-wasm --test integration
-    cargo test --locked -p rpp-cli --test example_wasm_plugin --test window_host_e2e
+    cargo test --locked -p rpp-cli --test example_wasm_plugin --test window_host_e2e --test js_component_e2e
 
 # Build release binaries
 build:

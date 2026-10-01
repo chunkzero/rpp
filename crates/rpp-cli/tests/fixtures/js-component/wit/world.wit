@@ -1,0 +1,41 @@
+package test:js-component;
+
+interface tools {
+    frob: func(x: u64) -> u64;
+}
+
+world js-component {
+    enum color {
+        red,
+        dark-blue,
+    }
+
+    flags perms {
+        read,
+        write-all,
+    }
+
+    variant shape {
+        empty,
+        circle(f64),
+    }
+
+    record shape-info {
+        fill-color: color,
+        perms: perms,
+        shape: shape,
+    }
+
+    record parse-error {
+        code: u32,
+        message: string,
+    }
+
+    export echo-bytes: func(b: list<u8>) -> list<u8>;
+    export wide: func(a: u64, b: s64) -> tuple<u64, s64>;
+    export nest: func(x: option<option<u32>>) -> option<option<u32>>;
+    export describe: func(s: shape-info) -> shape-info;
+    export parse: func(s: string) -> result<u32, parse-error>;
+    export spin: func();
+    export tools;
+}

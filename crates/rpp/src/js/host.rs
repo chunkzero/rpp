@@ -7,6 +7,8 @@ use serde::de::DeserializeOwned;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
+#[cfg(feature = "wasm")]
+use super::component::Components;
 use crate::host::process::{self, ProcessRequest};
 use crate::host::{hash, Phase, RuntimeAccess};
 use crate::model::GeneratorHost;
@@ -21,6 +23,8 @@ pub(super) struct JsHost<'a> {
     generator: Option<&'a mut dyn GeneratorHost>,
     /// The final path and drop flag reported by the `file` call.
     pub(super) file: Option<(String, bool)>,
+    #[cfg(feature = "wasm")]
+    components: Components,
 }
 
 #[derive(Deserialize)]
@@ -114,6 +118,8 @@ impl<'a> JsHost<'a> {
             deadline,
             generator,
             file: None,
+            #[cfg(feature = "wasm")]
+            components: Components::new(),
         }
     }
 
@@ -259,6 +265,16 @@ impl Host for JsHost<'_> {
             "process.run" => {
                 let args: RunArgs = parse(name, value)?;
                 self.run_process(args, bytes.unwrap_or_default())
+            }
+            #[cfg(feature = "wasm")]
+            "component.load" => self.components.load(self.access, value),
+            #[cfg(feature = "wasm")]
+            "component.call" => self
+                .components
+                .call(self.access, self.deadline, value, bytes),
+            #[cfg(not(feature = "wasm"))]
+            "component.load" | "component.call" => {
+                Err("components require rpp built with the `wasm` feature".into())
             }
             _ => Err(format!("unknown host call `{name}`")),
         }

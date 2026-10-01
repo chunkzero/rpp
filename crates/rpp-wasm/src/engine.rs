@@ -55,10 +55,14 @@ impl Drop for EpochTicker {
     }
 }
 
+pub(crate) fn ticks_for(deadline: Duration) -> u64 {
+    let nanos = deadline.as_nanos().max(1);
+    nanos.div_ceil(EPOCH_TICK.as_nanos().max(1)).max(1) as u64
+}
+
 impl Limits {
     pub(crate) fn epoch_ticks(&self) -> u64 {
-        let nanos = self.deadline.as_nanos().max(1);
-        nanos.div_ceil(EPOCH_TICK.as_nanos().max(1)).max(1) as u64
+        ticks_for(self.deadline)
     }
 }
 

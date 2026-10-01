@@ -4319,6 +4319,8 @@ dependencies = [
  "tower-http",
  "tracing",
  "tracing-subscriber",
+ "wit-component",
+ "wit-parser",
  "zip",
 ]
 
@@ -6610,6 +6612,7 @@ dependencies = [
  "wasm-encoder",
  "wasm-metadata",
  "wasmparser",
+ "wat",
  "wit-parser",
 ]
 
