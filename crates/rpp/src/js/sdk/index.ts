@@ -321,6 +321,7 @@ const float = (value: unknown): number | string => {
   if (Number.isNaN(n)) return "NaN";
   if (n === Infinity) return "Infinity";
   if (n === -Infinity) return "-Infinity";
+  if (Object.is(n, -0)) return "-0";
   return n;
 };
 
@@ -467,7 +468,7 @@ type Invoke = (desc: FunctionDesc, args: unknown[]) => unknown;
 const exportsFactories = new Map<string, (invoke: Invoke) => ComponentExports>();
 
 const buildExports = (functions: FunctionDesc[]) => (invoke: Invoke) => {
-  const exports: ComponentExports = {};
+  const exports: ComponentExports = Object.create(null);
   for (const desc of functions) {
     const hash = desc.path.indexOf("#");
     const fn = (...args: unknown[]) => invoke(desc, args);
@@ -477,13 +478,16 @@ const buildExports = (functions: FunctionDesc[]) => (invoke: Invoke) => {
     }
     const iface = desc.path.slice(0, hash);
     const namespace = camelCase(iface.slice(iface.lastIndexOf("/") + 1).split("@")[0]);
-    (exports[namespace] ??= {})[camelCase(desc.path.slice(hash + 1))] = fn;
+    if (!Object.hasOwn(exports, namespace)) exports[namespace] = Object.create(null);
+    exports[namespace][camelCase(desc.path.slice(hash + 1))] = fn;
   }
   return exports;
 };
 
 function loadComponent(name: string): Component {
   const reply = __rpp.call("component.load", { name }).value;
+  if (reply.failure !== undefined)
+    throw new ComponentTimeoutError(name, "load", reply.failure.message);
   const handle: string = reply.handle;
   let factory = exportsFactories.get(name);
   if (factory === undefined) {
@@ -528,7 +532,7 @@ function loadComponent(name: string): Component {
   return { exports: factory(invoke) };
 }
 
-function load<N extends keyof ComponentMap>(name: N): ComponentMap[N];
+function load<N extends keyof ComponentMap>(name: N): Component<ComponentMap[N]>;
 function load(name: string): Component;
 function load(name: string): Component {
   return loadComponent(name);

@@ -23,7 +23,7 @@ pub fn from_wasm(name: &str, bytes: &[u8]) -> Result<String> {
 /// Declarations for the exports of `world`, exposed as `name` in `ComponentMap`.
 pub fn generate(name: &str, resolve: &Resolve, world: WorldId) -> String {
     let mut gen = Generator::new(resolve);
-    let exports_name = pascal_case(name);
+    let exports_name = type_name(name);
     gen.used.insert(exports_name.clone());
 
     for (id, def) in resolve.types.iter() {
@@ -48,7 +48,7 @@ pub fn generate(name: &str, resolve: &Resolve, world: WorldId) -> String {
     out.push_str(&format!("export interface {exports_name} {exports}\n"));
     out.push_str(&format!(
         "declare module \"#rpp\" {{\n  interface ComponentMap {{\n    {}: {exports_name};\n  }}\n}}\n",
-        property_key(name)
+        quote_key(name)
     ));
     out
 }
@@ -177,12 +177,12 @@ impl<'a> Generator<'a> {
             return name.clone();
         }
         let def = &self.resolve.types[id];
-        let base = pascal_case(def.name.as_deref().unwrap_or("type"));
+        let base = type_name(def.name.as_deref().unwrap_or("type"));
         let mut name = base.clone();
         if self.used.contains(&name) {
             if let TypeOwner::Interface(interface) = def.owner {
                 if let Some(owner) = &self.resolve.interfaces[interface].name {
-                    name = format!("{}{base}", pascal_case(owner));
+                    name = type_name(&format!("{}{base}", pascal_case(owner)));
                 }
             }
         }
@@ -279,7 +279,12 @@ impl<'a> Generator<'a> {
             }
             TypeDefKind::List(Type::U8) => "Uint8Array".into(),
             TypeDefKind::List(inner) | TypeDefKind::FixedLengthList(inner, _) => {
-                format!("Array<{}>", self.type_ref(inner))
+                let item = self.type_ref(inner);
+                if has_top_level_union(&item) {
+                    format!("({item})[]")
+                } else {
+                    format!("{item}[]")
+                }
             }
             TypeDefKind::Map(key, value) => {
                 format!("Map<{}, {}>", self.type_ref(key), self.type_ref(value))
@@ -360,12 +365,72 @@ fn camel_case(value: &str) -> String {
         .collect()
 }
 
+/// Names the generated declarations must not shadow: TS globals and common lib types.
+const GLOBAL_TYPES: &[&str] = &[
+    "Array",
+    "ReadonlyArray",
+    "Uint8Array",
+    "BigInt",
+    "Record",
+    "Partial",
+    "Promise",
+    "Error",
+    "Object",
+    "String",
+    "Number",
+    "Boolean",
+    "Map",
+    "Set",
+    "Date",
+    "Symbol",
+    "Function",
+];
+
+/// A PascalCase type name that does not shadow a TS global.
+fn type_name(value: &str) -> String {
+    let name = pascal_case(value);
+    if GLOBAL_TYPES.contains(&name.as_str()) {
+        format!("{name}_")
+    } else {
+        name
+    }
+}
+
+/// Whether `ty` contains a `|` outside brackets and string literals.
+fn has_top_level_union(ty: &str) -> bool {
+    let (mut depth, mut quoted, mut escaped) = (0usize, false, false);
+    for c in ty.chars() {
+        match c {
+            _ if escaped => escaped = false,
+            '\\' if quoted => escaped = true,
+            '"' => quoted = !quoted,
+            _ if quoted => {}
+            '{' | '[' | '(' | '<' => depth += 1,
+            '}' | ']' | ')' | '>' => depth = depth.saturating_sub(1),
+            '|' if depth == 0 => return true,
+            _ => {}
+        }
+    }
+    false
+}
+
 fn pascal_case(value: &str) -> String {
     let name: String = words(value).map(capitalize).collect();
     if name.starts_with(|c: char| c.is_ascii_digit()) {
         format!("_{name}")
     } else {
         name
+    }
+}
+
+/// `name` exactly, quoted when it is not a valid identifier.
+fn quote_key(name: &str) -> String {
+    let valid = name.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_')
+        && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
+    if valid {
+        name.to_string()
+    } else {
+        format!("{name:?}")
     }
 }
 
@@ -443,11 +508,15 @@ fn identifier(name: &str) -> String {
 mod tests {
     use super::*;
 
-    fn dts(wit: &str) -> String {
+    fn dts_named(name: &str, wit: &str) -> String {
         let mut resolve = Resolve::default();
         let package = resolve.push_str("test.wit", wit).unwrap();
         let world = resolve.select_world(&[package], None).unwrap();
-        generate("compiler", &resolve, world)
+        generate(name, &resolve, world)
+    }
+
+    fn dts(wit: &str) -> String {
+        dts_named("compiler", wit)
     }
 
     #[test]
@@ -481,10 +550,7 @@ world w {
             ),
             "{out}"
         );
-        assert!(
-            out.contains("export type Errors = Array<ParseError>;"),
-            "{out}"
-        );
+        assert!(out.contains("export type Errors = ParseError[];"), "{out}");
         assert!(
             out.contains("export type Perms = { canRead?: boolean; canWrite?: boolean };"),
             "{out}"
@@ -534,7 +600,7 @@ world w {
         assert!(out.contains("ping: () => void;"), "{out}");
         assert!(
             out.contains(
-                "pair: () => Array<{ tag: \"ok\"; val: number } | { tag: \"err\"; val: string }>;"
+                "pair: () => ({ tag: \"ok\"; val: number } | { tag: \"err\"; val: string })[];"
             ),
             "{out}"
         );
@@ -552,5 +618,32 @@ world w { export tools; export run: func(); }"#);
             ),
             "{out}"
         );
+    }
+
+    #[test]
+    fn dts_component_map_key_is_the_exact_name() {
+        let out = dts_named("my-calc", "package t:c;\nworld w { export run: func(); }");
+        assert!(out.contains("\"my-calc\": MyCalc;"), "{out}");
+        let out = dts_named("calc_2", "package t:c;\nworld w { export run: func(); }");
+        assert!(out.contains("    calc_2: Calc2;"), "{out}");
+    }
+
+    #[test]
+    fn dts_names_do_not_shadow_globals() {
+        let out = dts_named(
+            "array",
+            r#"package t:c;
+world w {
+  record error { code: u32 }
+  export f: func(items: list<u32>, e: error, o: list<option<u8>>) -> list<error>;
+}"#,
+        );
+        assert!(out.contains("export interface Array_ {"), "{out}");
+        assert!(out.contains("export interface Error_ {"), "{out}");
+        assert!(
+            out.contains("(items: number[], e: Error_, o: (number | undefined)[]) => Error_[];"),
+            "{out}"
+        );
+        assert!(out.contains("array: Array_;"), "{out}");
     }
 }

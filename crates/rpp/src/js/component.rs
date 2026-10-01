@@ -48,6 +48,7 @@ impl Components {
     pub(super) fn load(
         &mut self,
         access: &RuntimeAccess,
+        deadline: Instant,
         value: Value,
     ) -> Result<HostReply, String> {
         let args: LoadArgs = parse("component.load", value)?;
@@ -55,9 +56,24 @@ impl Components {
             .components
             .get(&args.name)
             .ok_or_else(|| format!("unknown component `{}`", args.name))?;
-        let instance = component
-            .instantiate(access.wasm_permissions())
-            .map_err(|error| format!("component `{}` failed to instantiate: {error}", args.name))?;
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        let instance = match component
+            .instantiate_with_deadline(access.wasm_permissions(), remaining)
+        {
+            Ok(instance) => instance,
+            Err(error @ WasmError::Timeout(_)) => {
+                return Ok(HostReply {
+                    value: json!({ "failure": { "kind": "timeout", "message": error.to_string() } }),
+                    bytes: None,
+                });
+            }
+            Err(error) => {
+                return Err(format!(
+                    "component `{}` failed to instantiate: {error}",
+                    args.name
+                ));
+            }
+        };
         let functions: Vec<Value> = component
             .schema()
             .functions
@@ -245,6 +261,7 @@ fn float(value: &Value) -> Result<f64, String> {
             "NaN" => Ok(f64::NAN),
             "Infinity" => Ok(f64::INFINITY),
             "-Infinity" => Ok(f64::NEG_INFINITY),
+            "-0" => Ok(-0.0),
             _ => Err(format!("invalid float {value}")),
         },
         _ => Err(format!("expected a float, got {value}")),
@@ -481,6 +498,8 @@ fn float_wire(value: f64) -> Value {
         json!("NaN")
     } else if value.is_infinite() {
         json!(if value > 0.0 { "Infinity" } else { "-Infinity" })
+    } else if value == 0.0 && value.is_sign_negative() {
+        json!("-0")
     } else {
         json!(value)
     }
@@ -660,6 +679,14 @@ mod tests {
             json!("NaN")
         );
         assert!(wire(&ValueType::Float64, json!("inf"), &[]).is_err());
+    }
+
+    #[test]
+    fn wire_negative_zero() {
+        for ty in [ValueType::Float32, ValueType::Float64] {
+            assert_eq!(round_trip(&ty, json!("-0")), json!("-0"));
+            assert_eq!(round_trip(&ty, json!(0.0)), json!(0.0));
+        }
     }
 
     #[test]

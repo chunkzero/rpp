@@ -184,14 +184,39 @@ impl CompiledComponent {
 
     /// Instantiate with an explicit capability set.
     pub fn instantiate(&self, permissions: Permissions) -> Result<WasmInstance> {
+        self.instantiate_with_ticks(
+            permissions,
+            self.engine.limits.epoch_ticks(),
+            self.engine.limits.deadline,
+        )
+    }
+
+    /// Like [`Self::instantiate`], with the deadline for start functions capped at `limit`.
+    /// A timeout reports the effective deadline.
+    pub fn instantiate_with_deadline(
+        &self,
+        permissions: Permissions,
+        limit: Duration,
+    ) -> Result<WasmInstance> {
+        let deadline = limit.min(self.engine.limits.deadline);
+        self.instantiate_with_ticks(permissions, ticks_for(deadline), deadline)
+    }
+
+    fn instantiate_with_ticks(
+        &self,
+        permissions: Permissions,
+        ticks: u64,
+        deadline: Duration,
+    ) -> Result<WasmInstance> {
         validate_imports(&self.schema.imports, &permissions)?;
         let mut linker = Linker::new(&self.engine.engine);
         p2::add_to_linker_sync(&mut linker).map_err(Error::Engine)?;
 
         let mut store = self.engine.new_store(permissions)?;
+        store.set_epoch_deadline(ticks);
         let instance = linker
             .instantiate(&mut store, &self.component)
-            .map_err(|error| map_timeout(error, self.engine.limits.deadline))?;
+            .map_err(|error| map_timeout(error, deadline))?;
         Ok(WasmInstance {
             store,
             instance,

@@ -9,6 +9,7 @@ use anyhow::{Context, Result};
 use rpp::manifest::PluginManifest;
 use rpp_fetch::registry::PACKAGE_MANIFEST;
 
+use crate::commands::codegen::is_plugin_manifest;
 use crate::project::{resolve_ts_packages, CONFIG_FILE, TS_CONFIG_FILE};
 
 const TSCONFIG_HEAD: &str = r##"{
@@ -137,9 +138,7 @@ pub fn write(root: &Path) -> Result<bool> {
                 })
                 .collect(),
         )
-    } else if ["plugin.toml", PACKAGE_MANIFEST]
-        .iter()
-        .any(|name| root.join(name).is_file())
+    } else if root.join("plugin.toml").is_file() || is_plugin_manifest(&root.join(PACKAGE_MANIFEST))
     {
         Some(BTreeMap::new())
     } else {
@@ -169,10 +168,7 @@ pub fn write(root: &Path) -> Result<bool> {
 
 /// Write `.rpp/generated/<name>.d.ts` for each component the plugin manifest in `root` declares.
 fn write_component_dts(root: &Path) -> Result<bool> {
-    if !["plugin.toml", PACKAGE_MANIFEST]
-        .iter()
-        .any(|name| root.join(name).is_file())
-    {
+    if !root.join("plugin.toml").is_file() && !is_plugin_manifest(&root.join(PACKAGE_MANIFEST)) {
         return Ok(false);
     }
     let manifest = PluginManifest::load(root)?;

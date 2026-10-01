@@ -38,7 +38,7 @@ pub(crate) fn find_root(start: &Path) -> Result<PathBuf> {
     }
 }
 
-fn is_plugin_manifest(path: &Path) -> bool {
+pub(crate) fn is_plugin_manifest(path: &Path) -> bool {
     std::fs::read_to_string(path)
         .ok()
         .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())

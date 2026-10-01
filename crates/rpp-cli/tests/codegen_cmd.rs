@@ -95,6 +95,22 @@ fn codegen_works_in_json_plugin_dir() {
     );
 }
 
+#[test]
+fn codegen_ignores_project_rpp_json() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    std::fs::write(root.join("rpp.config.ts"), "").unwrap();
+    std::fs::write(root.join("rpp.json"), r#"{"dependencies":{}}"#).unwrap();
+
+    let out = run(root, &["codegen"]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(!root.join(".rpp/generated").exists());
+}
+
 fn component_wasm() -> Vec<u8> {
     use wit_component::{ComponentEncoder, StringEncoding};
     use wit_parser::{ManglingAndAbi, Resolve};
@@ -147,6 +163,8 @@ fn codegen_writes_generated_component_dts() {
         "{dts}"
     );
     assert!(dts.contains("calc: Calc;"), "{dts}");
+    let sdk = std::fs::read_to_string(root.join(".rpp/sdk/index.ts")).unwrap();
+    assert!(sdk.contains("): Component<ComponentMap[N]>;"), "{sdk}");
 }
 
 #[test]

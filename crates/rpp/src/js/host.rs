@@ -267,7 +267,7 @@ impl Host for JsHost<'_> {
                 self.run_process(args, bytes.unwrap_or_default())
             }
             #[cfg(feature = "wasm")]
-            "component.load" => self.components.load(self.access, value),
+            "component.load" => self.components.load(self.access, self.deadline, value),
             #[cfg(feature = "wasm")]
             "component.call" => self
                 .components
