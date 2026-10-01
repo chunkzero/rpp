@@ -17,7 +17,7 @@
 
 mod boundary;
 mod cache_replay;
-mod discovery;
+pub(crate) mod discovery;
 mod external;
 mod file_phase;
 mod finalize;
@@ -196,7 +196,13 @@ impl Engine {
             .unwrap_or(false);
         let prev = prev.filter(|_| global_match);
 
-        let sources = discovery::discover(&self.source)?;
+        let mut sources = discovery::discover(&self.source)?;
+        sources.retain(|source| {
+            !self
+                .factories
+                .iter()
+                .any(|factory| factory.is_authoring_source(&source.rel))
+        });
         let source_files = sources
             .iter()
             .map(|source| source.rel.clone())

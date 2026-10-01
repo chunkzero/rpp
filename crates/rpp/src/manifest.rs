@@ -9,6 +9,7 @@ use semver::{Version, VersionReq};
 use serde::Deserialize;
 
 use crate::error::{Error, Result};
+use crate::util::glob;
 use crate::util::path::validate_relative;
 
 /// Plugin id grammar: `^[a-z0-9][a-z0-9_-]*$`.
@@ -35,6 +36,9 @@ pub struct PluginManifest {
     pub config: Option<String>,
     /// Required rpp version range; `rpp.json` packages only.
     pub rpp: Option<VersionReq>,
+    /// Entry discovery patterns by name, relative to the pack source directory;
+    /// `rpp.json` packages only.
+    pub discover: BTreeMap<String, String>,
 }
 
 /// One named component library shipped in a plugin package.
@@ -86,6 +90,8 @@ struct RawJsonManifest {
     config: Option<String>,
     #[serde(default)]
     components: BTreeMap<String, String>,
+    #[serde(default)]
+    discover: BTreeMap<String, String>,
     #[serde(default)]
     #[allow(dead_code)]
     dependencies: Option<serde::de::IgnoredAny>,
@@ -157,6 +163,7 @@ impl PluginManifest {
             components: validated_components,
             config: None,
             rpp: None,
+            discover: BTreeMap::new(),
         })
     }
 
@@ -170,11 +177,13 @@ impl PluginManifest {
     ///   "rpp": ">=0.2",
     ///   "entry": "src/plugin.ts",
     ///   "config": "src/config.ts",
-    ///   "components": { "compiler": "window.wasm" }
+    ///   "components": { "compiler": "window.wasm" },
+    ///   "discover": { "windows": "*/window/**/window.ts" }
     /// }
     /// ```
     ///
-    /// `name` becomes [`PluginManifest::id`] (same grammar). `entry` defaults to
+    /// `discover` maps names (same grammar) to one glob each, relative to the pack source
+    /// directory. `name` becomes [`PluginManifest::id`] (same grammar). `entry` defaults to
     /// `src/plugin.ts` and must be a JavaScript entry; `entry`, `config` and component
     /// paths must be relative. `rpp` is a version requirement checked by [`PluginManifest::load`]. Unknown keys are rejected, except
     /// `dependencies`, which is ignored.
@@ -230,6 +239,18 @@ impl PluginManifest {
             components.insert(name, ComponentManifest { module });
         }
 
+        for (name, pattern) in &raw.discover {
+            if !ID_REGEX.is_match(name) {
+                return Err(fail(format!(
+                    "discover name `{name}` must match ^[a-z0-9][a-z0-9_-]*$"
+                )));
+            }
+            validate_relative(pattern)
+                .map_err(|m| fail(format!("invalid pattern for discover `{name}`: {m}")))?;
+            glob::compile(pattern)
+                .map_err(|m| fail(format!("invalid pattern for discover `{name}`: {m}")))?;
+        }
+
         Ok(PluginManifest {
             id: raw.name,
             version,
@@ -239,6 +260,7 @@ impl PluginManifest {
             components,
             config: raw.config,
             rpp,
+            discover: raw.discover,
         })
     }
 
@@ -352,6 +374,34 @@ authors = ["someone"]
         assert_eq!(m.entry, "src/plugin.ts");
         assert_eq!(m.config.as_deref(), Some("src/config.ts"));
         assert_eq!(m.components["compiler"].module, "window.wasm");
+    }
+
+    #[test]
+    fn parses_json_discover() {
+        let m = PluginManifest::parse_json(
+            r#"{"name":"x","version":"1.0.0","discover":{"windows":"*/window/**/window.ts"}}"#,
+            "rpp.json",
+        )
+        .unwrap();
+        assert_eq!(m.discover["windows"], "*/window/**/window.ts");
+        let m = PluginManifest::parse_json(r#"{"name":"x","version":"1.0.0"}"#, "rpp.json");
+        assert!(m.unwrap().discover.is_empty());
+    }
+
+    #[test]
+    fn rejects_invalid_discover() {
+        for discover in [
+            r#"{"Bad":"a/*.ts"}"#,
+            r#"{"w":""}"#,
+            r#"{"w":"../a/*.ts"}"#,
+            r#"{"w":"/abs/*.ts"}"#,
+            r#"{"w":"a/[.ts"}"#,
+            r#"{"w":["a/*.ts"]}"#,
+        ] {
+            let text = format!(r#"{{"name":"x","version":"1.0.0","discover":{discover}}}"#);
+            let err = PluginManifest::parse_json(&text, "rpp.json").unwrap_err();
+            assert!(matches!(err, Error::Manifest { .. }), "{discover}");
+        }
     }
 
     #[test]

@@ -21,6 +21,16 @@ export interface Pack {
   readonly format?: number;
 }
 
+/** A module found by one of the plugin's `discover` patterns. */
+export interface DiscoveredModule<M = Record<string, unknown>> {
+  /** Source-relative path, e.g. `shop/window/main/window.ts`. */
+  readonly path: string;
+  /** The segment matched by the pattern's first whole `*` segment, if any. */
+  readonly namespace?: string;
+  /** The module namespace object. */
+  readonly module: M;
+}
+
 /** Available to every handler. */
 export interface Context<Options = unknown> {
   /** The plugin id. */
@@ -28,6 +38,8 @@ export interface Context<Options = unknown> {
   /** The plugin's configured options. */
   readonly options: Options;
   readonly pack: Pack;
+  /** Modules matched by the `discover` pattern `name`, sorted by path. Throws if undeclared. */
+  discovered<M = Record<string, unknown>>(name: string): readonly DiscoveredModule<M>[];
 }
 
 /** A file in the processor phase. Assigning `path`, `bytes` or `text` modifies it. */

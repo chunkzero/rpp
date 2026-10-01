@@ -197,7 +197,8 @@ preferred when both exist.
   "rpp": ">=0.2",
   "entry": "src/plugin.ts",
   "config": "src/config.ts",
-  "components": { "compiler": "window.wasm" }
+  "components": { "compiler": "window.wasm" },
+  "discover": { "windows": "*/window/**/window.ts" }
 }
 ```
 
@@ -205,6 +206,14 @@ preferred when both exist.
   checked during dependency resolution.
 - `entry` defaults to `src/plugin.ts` and must be a `.ts`, `.mts`, `.js` or `.mjs` file;
   `entry`, `config` (the config-factory module) and component paths are relative.
+- `discover` maps names (plugin id grammar) to one glob each, relative to the pack source
+  directory (`build.source`). Matching files are bundled with the plugin, so adding one needs
+  no configuration change, and `ctx.discovered(name)` returns `{ path, namespace?, module }`
+  for each, sorted by path (an undeclared name throws `TypeError`). `namespace` is the
+  segment matched by the pattern's first whole `*` segment when all earlier segments are
+  literal, and must match `^[a-z0-9_.-]+$`. Authoring files import the plugin's `config`
+  module as `#plugins/<name>`. Discovered files and the source files they import are
+  authoring inputs: they are excluded from processors, `sourceFiles()` and pack output.
 - `dependencies` is accepted and ignored; other unknown keys are rejected.
 
 ## 3. Core plugin model (in `crates/rpp`)

@@ -1,6 +1,15 @@
 // The dispatcher bundled with every plugin as `rpp:runtime`. Its exports are the functions rpp calls.
 
-import type { BuildStats, Context, File, GeneratorContext, Pack, Plugin, Processor } from "#rpp";
+import type {
+  BuildStats,
+  Context,
+  DiscoveredModule,
+  File,
+  GeneratorContext,
+  Pack,
+  Plugin,
+  Processor,
+} from "#rpp";
 
 declare const __rpp: {
   call(
@@ -17,6 +26,7 @@ const empty = new Uint8Array(0);
 const toBytes = (data: Uint8Array | string): Uint8Array =>
   typeof data === "string" ? encoder.encode(data) : data;
 
+let discoveredModules: Record<string, readonly DiscoveredModule[]> = {};
 let registered: Plugin<unknown> | undefined;
 let context: Context<unknown> | undefined;
 
@@ -24,7 +34,10 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null;
 
 /** Validate and record the entry module's default export. */
-export function register(plugin: unknown): void {
+export function register(
+  plugin: unknown,
+  discovered: Record<string, readonly DiscoveredModule[]> = {},
+): void {
   if (!isRecord(plugin)) throw new TypeError("the entry module must default-export a plugin");
   const { processors, generate, onStart, onFinish } = plugin;
   if (processors !== undefined) {
@@ -54,6 +67,7 @@ export function register(plugin: unknown): void {
     }
   }
   registered = plugin as Plugin<unknown>;
+  discoveredModules = discovered;
 }
 
 const processorTable = (): Record<string, Processor<unknown>> => registered?.processors ?? {};
@@ -72,7 +86,17 @@ export function describe(): unknown {
 }
 
 export function init(args: { plugin: string; options: unknown; pack: Pack }): null {
-  context = { plugin: args.plugin, options: args.options, pack: args.pack };
+  context = {
+    plugin: args.plugin,
+    options: args.options,
+    pack: args.pack,
+    discovered: <M>(name: string) => {
+      if (!Object.hasOwn(discoveredModules, name)) {
+        throw new TypeError(`no \`discover\` pattern named \`${name}\``);
+      }
+      return discoveredModules[name] as readonly DiscoveredModule<M>[];
+    },
+  };
   return null;
 }
 

@@ -44,6 +44,7 @@ fn try_load_with(dir: &Path, options: &str, access: RuntimeAccess) -> rpp::Resul
         pack(),
         JsPluginLimits::default(),
         access,
+        dir,
     )
 }
 
