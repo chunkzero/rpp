@@ -32,7 +32,7 @@ impl StoreData {
             builder.env(name, value);
         }
         if permissions.network {
-            builder.inherit_network();
+            builder.inherit_network().allow_tcp(true).allow_udp(true);
         }
         for preopen in &permissions.preopens {
             let perms = if preopen.writable {
