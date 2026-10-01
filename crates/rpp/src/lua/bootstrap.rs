@@ -7,8 +7,8 @@ use std::time::Duration;
 use mlua::{Lua, LuaOptions, StdLib, Value};
 
 use crate::error::{Error, Result};
-use crate::lua::runtime::RuntimeAccess;
-use crate::lua::sandbox::{install_limits, run_limited, Deadline, Sandbox};
+use crate::host::RuntimeAccess;
+use crate::lua::sandbox::{has_lua, install_limits, run_limited, Deadline, Sandbox};
 use crate::lua::traceback;
 
 /// A completed entry-script evaluation with its owning Lua state.
@@ -29,7 +29,7 @@ pub(crate) fn eval_entry(
     execution_limit: Duration,
     access: RuntimeAccess,
 ) -> Result<EntryEval> {
-    let lua = if access.is_native() || access.has_lua(crate::config::LuaCapability::Debug) {
+    let lua = if access.is_native() || has_lua(&access, crate::config::LuaCapability::Debug) {
         // Native/debug mode is explicitly trusted; mlua marks these libraries
         // unsafe because they can break normal sandbox assumptions.
         unsafe { Lua::unsafe_new_with(StdLib::ALL, LuaOptions::default()) }

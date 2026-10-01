@@ -7,13 +7,13 @@ use mlua::{Function, Lua, Table, Value};
 use parking_lot::Mutex;
 
 use crate::error::{Error, Result};
+use crate::host::{PackInfo, Phase, RuntimeAccess};
 use crate::lua::bootstrap::eval_entry;
-use crate::lua::ctx::{base_ctx, PackInfo};
+use crate::lua::ctx::base_ctx;
 use crate::lua::factory::LuaPluginFactory;
 use crate::lua::file::{FileHandle, FileState};
 use crate::lua::generator_ctx::call_generator;
 use crate::lua::plugin_builder::PluginBuilder;
-use crate::lua::runtime::{Phase, RuntimeAccess};
 use crate::lua::sandbox::{run_limited, Deadline};
 use crate::lua::traceback;
 use crate::model::{BuildStats, GeneratorHost, PackFile, PluginFactory, ProcessOutcome};

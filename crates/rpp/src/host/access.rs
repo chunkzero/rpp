@@ -1,11 +1,11 @@
-//! Runtime capabilities shared by a Lua plugin instance.
+//! Runtime capabilities granted to a plugin instance.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Arc;
 
-use crate::config::{LuaCapability, PluginPermissions, SecurityMode};
+use crate::config::{PluginPermissions, SecurityMode};
 
 #[cfg(feature = "wasm")]
 use rpp_wasm::{CompiledComponent, Permissions};
@@ -92,10 +92,6 @@ impl RuntimeAccess {
 
     pub(crate) fn is_native(&self) -> bool {
         self.security == SecurityMode::Native
-    }
-
-    pub(crate) fn has_lua(&self, cap: LuaCapability) -> bool {
-        self.is_native() || self.permissions.lua.contains(&cap)
     }
 
     pub(crate) fn allows_process(&self) -> bool {

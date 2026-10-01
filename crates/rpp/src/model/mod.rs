@@ -95,7 +95,7 @@ pub trait PluginFactory: Send + Sync {
 }
 
 /// A live plugin instance bound to a single thread.
-pub trait PluginInstance: Send {
+pub trait PluginInstance {
     /// Run one named processor over a file, mutating it in place.
     fn process(&mut self, processor: &str, file: &mut PackFile) -> Result<ProcessOutcome>;
     /// Run the generator phase (sequential, after all processing).
