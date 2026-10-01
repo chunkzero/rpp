@@ -4276,6 +4276,7 @@ dependencies = [
  "mlua",
  "parking_lot",
  "regex",
+ "rpp-js",
  "rpp-wasm",
  "semver",
  "serde",

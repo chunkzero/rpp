@@ -32,6 +32,7 @@ crc32fast = "1.4"
 tracing = { workspace = true, optional = true }
 mlua = { version = "0.11", features = ["lua54", "vendored", "serde", "send"], optional = true }
 rpp-wasm = { workspace = true, optional = true }
+rpp-js = { workspace = true, optional = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
@@ -49,6 +50,7 @@ default = ["lua"]
 tracing = ["dep:tracing"]
 lua = ["dep:mlua"]
 wasm = ["dep:rpp-wasm"]
+js = ["dep:rpp-js"]
 
 [[test]]
 name = "engine_build"

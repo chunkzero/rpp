@@ -76,6 +76,7 @@ check-features:
     cargo check --locked -p rpp --all-targets --no-default-features
     cargo check --locked -p rpp --all-targets
     cargo check --locked -p rpp --all-targets --features wasm,tracing
+    cargo check --locked -p rpp --all-targets --no-default-features --features js
 
 # Fail before tests can skip WASM coverage when the guest target is missing
 require-wasm:
