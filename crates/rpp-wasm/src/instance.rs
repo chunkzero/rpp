@@ -50,14 +50,7 @@ impl WasmInstance {
         function
             .call(&mut self.store, &params, &mut results)
             .map_err(|error| map_timeout(error, self.deadline))?;
-        let converted = results
-            .into_iter()
-            .map(from_wasmtime)
-            .collect::<Result<Vec<_>>>();
-        function
-            .post_return(&mut self.store)
-            .map_err(|error| map_timeout(error, self.deadline))?;
-        converted
+        results.into_iter().map(from_wasmtime).collect()
     }
 }
 
@@ -151,9 +144,16 @@ fn from_wasmtime(value: Val) -> Result<Value> {
                 .transpose()?),
         }),
         Val::Flags(flags) => Value::Flags(flags),
-        Val::Resource(_) | Val::Future(_) | Val::Stream(_) | Val::ErrorContext(_) => {
+        Val::Resource(_)
+        | Val::Future(_)
+        | Val::Stream(_)
+        | Val::ErrorContext(_)
+        | Val::Map(_)
+        | Val::FixedLengthList(_) => {
             return Err(Error::Value(
-                "resource, future, stream, and error-context values are unsupported".into(),
+                "resource, future, stream, error-context, map, and fixed-length list values \
+                 are unsupported"
+                    .into(),
             ))
         }
     })

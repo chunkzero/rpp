@@ -2,7 +2,7 @@
 
 use wasmtime::component::ResourceTable;
 use wasmtime::{StoreLimits, StoreLimitsBuilder};
-use wasmtime_wasi::{DirPerms, FilePerms, WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView};
+use wasmtime_wasi::{FsPerms, WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView};
 
 use crate::types::Permissions;
 
@@ -35,13 +35,13 @@ impl StoreData {
             builder.inherit_network();
         }
         for preopen in &permissions.preopens {
-            let (dir_perms, file_perms) = if preopen.writable {
-                (DirPerms::all(), FilePerms::all())
+            let perms = if preopen.writable {
+                FsPerms::ReadWrite
             } else {
-                (DirPerms::READ, FilePerms::READ)
+                FsPerms::ReadOnly
             };
             builder
-                .preopened_dir(&preopen.host, &preopen.guest, dir_perms, file_perms)
+                .preopened_dir(&preopen.host, &preopen.guest, perms)
                 .map_err(|source| crate::Error::WasiDirectory {
                     path: preopen.host.clone(),
                     source,
