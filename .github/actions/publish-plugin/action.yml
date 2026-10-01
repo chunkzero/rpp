@@ -6,7 +6,7 @@ inputs:
     description: rpp release to install, without the leading v.
     required: true
   registry-token:
-    description: Personal access token that can fork chunkzero/rpp-registry and open pull requests there.
+    description: Token that can open pull requests on chunkzero/rpp-registry, either a GitHub App installation token with write access or a personal access token that can fork it.
     required: true
   install-command:
     description: Command that installs the plugin's dependencies. Detected from the lockfile when empty.
@@ -93,7 +93,6 @@ runs:
         name=$(jq -r .name "$OUT/packed.json")
         version=$(jq -r .version "$OUT/packed.json")
 
-        gh repo fork "$registry" --clone=false
         gh auth setup-git
         git clone "https://github.com/$registry" "$RUNNER_TEMP/registry"
         cd "$RUNNER_TEMP/registry"
@@ -113,15 +112,27 @@ runs:
         name=$(jq -r .name "$OUT/packed.json")
         version=$(jq -r .version "$OUT/packed.json")
         branch="$name-$version"
-        login=$(gh api user --jq .login)
 
         cd "$RUNNER_TEMP/registry"
-        git remote add fork "https://github.com/$login/rpp-registry"
         git config user.name "github-actions[bot]"
         git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
         git add plugins index.json
         git commit -m "feat: add $name $version"
-        git push --force fork "$branch"
-        gh pr create --repo chunkzero/rpp-registry --head "$login:$branch" \
+        # GitHub App installation tokens (ghs_) push the branch to the registry and never replace an existing one.
+        # Other tokens push to their owner's fork.
+        case "$GH_TOKEN" in
+          ghs_*)
+            git push --force-with-lease="refs/heads/$branch:" origin "$branch"
+            head="$branch"
+            ;;
+          *)
+            login=$(gh api user --jq .login)
+            gh repo fork chunkzero/rpp-registry --clone=false
+            git remote add fork "https://github.com/$login/rpp-registry"
+            git push --force fork "$branch"
+            head="$login:$branch"
+            ;;
+        esac
+        gh pr create --repo chunkzero/rpp-registry --head "$head" \
           --title "feat: add $name $version" \
           --body "Publishes $name $version from https://github.com/$GITHUB_REPOSITORY/releases/tag/$GITHUB_REF_NAME."
