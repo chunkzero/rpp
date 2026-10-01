@@ -8,11 +8,19 @@
 
 #![deny(missing_docs)]
 
+mod allocator;
 mod bundle;
+mod deadline;
 mod engine;
 mod error;
+mod extensions;
+mod host;
+mod isolate;
 mod model;
+mod profile;
+mod runtime;
 mod sourcemap;
+mod termination;
 
 pub use bundle::{bundle, Bundle, BundleRequest};
 pub use engine::{Engine, Runtime};

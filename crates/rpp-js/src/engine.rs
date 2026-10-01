@@ -3,13 +3,19 @@
 use std::marker::PhantomData;
 
 use crate::bundle::Bundle;
-use crate::error::Result;
+use crate::deadline::Deadline;
+use crate::error::{Error, Result};
+use crate::isolate::Isolate;
 use crate::model::{Call, Cancellation, Clock, Host, Limits, Log, Output};
+
+const MIN_HEAP_BYTES: usize = 16 * 1024 * 1024;
 
 /// The per-thread executor and deadline watchdog shared by its runtimes.
 ///
 /// `!Send`: create it on the thread that will own its runtimes.
 pub struct Engine {
+    executor: tokio::runtime::Runtime,
+    deadline: Deadline,
     _thread: PhantomData<*const ()>,
 }
 
@@ -17,7 +23,7 @@ impl Engine {
     /// Initialize V8. Call once on the main thread before creating engines on other
     /// threads; repeated calls are harmless and [`Engine::new`] calls it too.
     pub fn init_platform() {
-        todo!()
+        deno_core::JsRuntime::init_platform(None);
     }
 
     /// Create an engine for the current thread.
@@ -26,7 +32,14 @@ impl Engine {
     ///
     /// [`crate::Error::Io`] when the executor or watchdog cannot start.
     pub fn new() -> Result<Self> {
-        todo!()
+        Self::init_platform();
+        Ok(Self {
+            executor: tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()?,
+            deadline: Deadline::new()?,
+            _thread: PhantomData,
+        })
     }
 
     /// Create an isolate, install the globals, and evaluate `bundle` as a module
@@ -47,8 +60,28 @@ impl Engine {
         clock: Clock,
         cancellation: &Cancellation,
     ) -> Result<(Runtime, Vec<Log>)> {
-        let _ = (name, bundle, limits, clock, cancellation);
-        todo!()
+        if limits.heap_bytes < MIN_HEAP_BYTES {
+            return Err(Error::Invalid(format!(
+                "heap limit {} is below the {MIN_HEAP_BYTES} byte minimum",
+                limits.heap_bytes
+            )));
+        }
+        let (isolate, logs) = Isolate::load(
+            &self.executor,
+            &self.deadline,
+            name,
+            &bundle.code,
+            &bundle.source_map,
+            limits,
+            clock,
+            cancellation,
+        )?;
+        let runtime = Runtime {
+            isolate,
+            limits,
+            _thread: PhantomData,
+        };
+        Ok((runtime, logs))
     }
 }
 
@@ -56,6 +89,8 @@ impl Engine {
 ///
 /// `!Send`: use and drop it on the thread of the [`Engine`] that loaded it.
 pub struct Runtime {
+    isolate: Isolate,
+    limits: Limits,
     _thread: PhantomData<*const ()>,
 }
 
@@ -78,12 +113,18 @@ impl Runtime {
         host: &mut dyn Host,
         cancellation: &Cancellation,
     ) -> Result<Output> {
-        let _ = (engine, call, host, cancellation);
-        todo!()
+        self.isolate.call(
+            &engine.executor,
+            &engine.deadline,
+            call,
+            host,
+            self.limits,
+            cancellation,
+        )
     }
 
     /// Whether a call was terminated, making this runtime unusable.
     pub fn is_terminated(&self) -> bool {
-        todo!()
+        self.isolate.is_terminated()
     }
 }

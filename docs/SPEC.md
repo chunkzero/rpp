@@ -29,6 +29,7 @@ crates/
   rpp-fetch/    # plugin source resolution: github fetch, cache, lockfile, search
   rpp-squash/   # pack optimization: json minify, png optimize, zip, packsquash-extern
   rpp-wasm/     # wasmtime WASIp2 component host + WIT definitions
+  rpp-js/       # Rolldown bundling + sandboxed V8 runtime (deno_core) for TS plugins
   rpp-cli/      # the `rpp` binary
 examples/
   pack/         # a real, complete example resource pack project (rpp.toml, src/, plugins/)
@@ -36,7 +37,7 @@ examples/
 docs/           # SPEC.md (this file), plugin authoring guides
 ```
 
-Dependency direction: `rpp-fetch`, `rpp-squash`, `rpp-wasm` are **standalone** (they do
+Dependency direction: `rpp-fetch`, `rpp-squash`, `rpp-wasm`, `rpp-js` are **standalone** (they do
 NOT depend on `rpp`). `rpp` optionally depends on `rpp-wasm` (feature `wasm`) via an
 adapter module. `rpp-cli` depends on all of them.
 
