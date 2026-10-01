@@ -255,6 +255,9 @@ pub struct PluginConfig {
     /// Source descriptor (`path:...` or `github:owner/repo`).
     #[serde(default)]
     pub source: Option<String>,
+    /// Dependency name from the project's `rpp.json` (`rpp.config.ts` projects only).
+    #[serde(default)]
+    pub package: Option<String>,
     /// Optional git ref (tag/branch/sha) for GitHub sources.
     #[serde(default)]
     pub r#ref: Option<String>,
@@ -368,6 +371,21 @@ impl Config {
         })?;
         config.validate(&path)?;
         Ok(config)
+    }
+
+    /// Build a [`Config`] from the JSON value `rpp.config.ts` default-exports,
+    /// attributing errors to `path`.
+    ///
+    /// Keys are the camelCase forms of the `rpp.toml` schema (`pack.packFormat`,
+    /// `build.squash.packsquashBinary`), with these differences: `plugins` is an array of
+    /// `{ plugin, options?, security?, permissions?, outputs? }` where `plugin` names an
+    /// `rpp.json` dependency (stored in [`PluginConfig::package`]); `build.limits` holds
+    /// the plugin runtime limits (stored in `build.lua`); `build.lua`, `id`, `source`,
+    /// `ref`, `subdir`, `permissions.lua` and `security: "native"` are rejected. Keys
+    /// inside `options` and `outputs` are kept verbatim; `null` values are invalid.
+    pub fn from_ts_json(value: &serde_json::Value, path: impl Into<PathBuf>) -> Result<Self> {
+        let _ = (value, path.into());
+        todo!()
     }
 
     /// Load and parse a `rpp.toml` from disk.

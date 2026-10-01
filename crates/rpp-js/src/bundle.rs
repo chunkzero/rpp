@@ -32,6 +32,20 @@ pub struct BundleRequest {
     /// are parsed as TypeScript, and may import each other or files under `root`
     /// (relative imports from a virtual module resolve against `root`).
     pub virtual_modules: BTreeMap<String, String>,
+    /// Directories outside `root` that may also be bundled, keyed by an exact import
+    /// specifier (e.g. `#plugins/window`) that resolves to that package's entry file.
+    /// Files inside a package directory may import each other relatively; source maps
+    /// show them as `<specifier>/<path relative to the package directory>`.
+    pub packages: BTreeMap<String, BundlePackage>,
+}
+
+/// A directory bundled in addition to `root`; see [`BundleRequest::packages`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct BundlePackage {
+    /// The package directory.
+    pub dir: PathBuf,
+    /// The file the specifier resolves to, relative to `dir`.
+    pub entry: String,
 }
 
 /// A bundled program.

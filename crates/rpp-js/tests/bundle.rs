@@ -1,4 +1,3 @@
-use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 
@@ -15,7 +14,7 @@ fn request(root: &Path, entry: &str) -> BundleRequest {
     BundleRequest {
         root: root.to_path_buf(),
         entry: entry.to_string(),
-        virtual_modules: BTreeMap::new(),
+        ..Default::default()
     }
 }
 

@@ -30,6 +30,9 @@ pub struct PluginManifest {
     pub entry: String,
     /// Named WASM components callable by the Lua entry script.
     pub components: BTreeMap<String, ComponentManifest>,
+    /// Config module (relative to the plugin root) whose default export is the
+    /// plugin's config factory; `rpp.json` packages only.
+    pub config: Option<String>,
 }
 
 /// One named component library shipped in a plugin package.
@@ -124,10 +127,36 @@ impl PluginManifest {
             authors: raw.authors,
             entry,
             components: validated_components,
+            config: None,
         })
     }
 
     /// Load and parse a `plugin.toml` from a plugin package directory.
+    /// Parse and validate an `rpp.json` package manifest, attributing errors to `path`.
+    ///
+    /// ```json
+    /// {
+    ///   "name": "window",
+    ///   "version": "0.1.0",
+    ///   "description": "…",
+    ///   "rpp": ">=0.2",
+    ///   "entry": "src/plugin.ts",
+    ///   "config": "src/config.ts",
+    ///   "components": { "compiler": "window.wasm" }
+    /// }
+    /// ```
+    ///
+    /// `name` becomes [`PluginManifest::id`] (same grammar). `entry` defaults to
+    /// `src/plugin.ts` and must be a JavaScript entry; `entry`, `config` and component
+    /// paths must be relative. `rpp` is checked during dependency resolution and only
+    /// validated as a version requirement here. Unknown keys are rejected, except
+    /// `dependencies`, which is ignored.
+    pub fn parse_json(text: &str, path: impl Into<PathBuf>) -> Result<Self> {
+        let _ = (text, path.into());
+        todo!()
+    }
+
+    /// Load `rpp.json` from `dir` when present, otherwise `plugin.toml`.
     pub fn load(dir: impl AsRef<Path>) -> Result<Self> {
         let dir = dir.as_ref();
         let path = dir.join("plugin.toml");

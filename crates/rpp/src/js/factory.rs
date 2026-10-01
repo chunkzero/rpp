@@ -133,6 +133,7 @@ impl JsPluginFactory {
             root: root.clone(),
             entry: "rpp:entry".into(),
             virtual_modules: virtual_modules(&manifest.entry),
+            ..Default::default()
         })
         .map_err(|e| load_error(e.to_string()))?;
 
