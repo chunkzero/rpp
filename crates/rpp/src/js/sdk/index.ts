@@ -1,6 +1,19 @@
 // The rpp plugin SDK, imported as `#rpp`. Embedded in rpp and written to
 // `.rpp/sdk/index.ts` by `rpp codegen`, so it always matches the running rpp.
 
+declare const __rpp: {
+  call(
+    name: string,
+    value: unknown,
+    bytes?: Uint8Array,
+  ): { value: any; bytes: Uint8Array | undefined };
+};
+
+const encoder = new TextEncoder();
+
+const toBytes = (data: Uint8Array | string): Uint8Array =>
+  typeof data === "string" ? encoder.encode(data) : data;
+
 /** Pack metadata from the project configuration. */
 export interface Pack {
   readonly name: string;
@@ -91,31 +104,83 @@ export interface ProcessResult {
   stderr: string;
 }
 
-export declare const toml: {
-  parse(text: string): unknown;
-  stringify(value: unknown): string;
+export const toml = {
+  parse(text: string): unknown {
+    return __rpp.call("toml.parse", { text }).value;
+  },
+  stringify(value: unknown): string {
+    return __rpp.call("toml.stringify", { value }).value;
+  },
 };
 
-export declare const hash: {
-  xxh3(data: Uint8Array | string): string;
-  sha256(data: Uint8Array | string): string;
-  md5(data: Uint8Array | string): string;
-  crc32(data: Uint8Array | string): number;
+const digest = (algorithm: string, data: Uint8Array | string) =>
+  __rpp.call("hash", { algorithm }, toBytes(data)).value;
+
+export const hash = {
+  xxh3: (data: Uint8Array | string): string => digest("xxh3", data),
+  sha256: (data: Uint8Array | string): string => digest("sha256", data),
+  md5: (data: Uint8Array | string): string => digest("md5", data),
+  crc32: (data: Uint8Array | string): number => digest("crc32", data),
 };
 
-export declare const path: {
-  join(...parts: string[]): string;
-  dirname(path: string): string;
-  basename(path: string): string;
-  /** The extension without the dot, or `""`. */
-  ext(path: string): string;
-  withExt(path: string, ext: string): string;
-  /** Whether `path` matches the glob `pattern`, using rpp's glob rules. */
-  match(pattern: string, path: string): boolean;
+const baseName = (p: string): string => p.slice(p.lastIndexOf("/") + 1);
+
+const dotIndex = (base: string): number => {
+  const dot = base.lastIndexOf(".");
+  return dot > 0 ? dot : -1;
+};
+
+export const path = {
+  join(...parts: string[]): string {
+    const segments: string[] = [];
+    for (const segment of parts.join("/").split("/")) {
+      if (segment === "..") segments.pop();
+      else if (segment !== "" && segment !== ".") segments.push(segment);
+    }
+    return segments.join("/");
+  },
+  dirname(p: string): string {
+    const slash = p.lastIndexOf("/");
+    return slash < 0 ? "" : p.slice(0, slash);
+  },
+  basename: baseName,
+  ext(p: string): string {
+    const base = baseName(p);
+    const dot = dotIndex(base);
+    return dot < 0 ? "" : base.slice(dot + 1);
+  },
+  withExt(p: string, ext: string): string {
+    const slash = p.lastIndexOf("/");
+    const base = p.slice(slash + 1);
+    const dot = dotIndex(base);
+    const stem = dot < 0 ? base : base.slice(0, dot);
+    const suffix = ext.replace(/^\.+/, "");
+    return p.slice(0, slash + 1) + (suffix === "" ? stem : `${stem}.${suffix}`);
+  },
+  match(pattern: string, p: string): boolean {
+    return __rpp.call("glob.match", { pattern, path: p }).value;
+  },
 };
 
 /** Run a program. Requires `trusted` security with the program in `permissions.process`;
  * only available in the generator and hooks. */
-export declare const process: {
-  run(request: ProcessRequest): ProcessResult;
+export const process = {
+  run(request: ProcessRequest): ProcessResult {
+    const reply = __rpp.call(
+      "process.run",
+      {
+        program: request.program,
+        args: request.args ?? [],
+        cwd: request.cwd,
+        env: request.env ?? {},
+        timeout_ms: request.timeoutMs,
+      },
+      request.stdin === undefined ? undefined : toBytes(request.stdin),
+    );
+    return {
+      status: reply.value.status,
+      stdout: reply.bytes ?? new Uint8Array(0),
+      stderr: reply.value.stderr,
+    };
+  },
 };

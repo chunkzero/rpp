@@ -1,6 +1,7 @@
 //! The `rpp` command-line interface.
 //!
-//! Subcommands (spec §9): `init`, `build`, `dev`, `clean`, `add`, `remove`, `update`, `search`, and
+//! Subcommands (spec §9): `init`, `build`, `dev`, `clean`, `codegen`, `check`, `add`, `remove`,
+//! `update`, `search`, and
 //! `plugin ...`.
 //! Shared project plumbing lives in [`project`]; pretty output in [`ui`]; LuaLS
 //! editor stubs in [`luals`].
@@ -64,6 +65,10 @@ enum Command {
         /// The search query.
         query: String,
     },
+    /// Write the TypeScript SDK and tsconfig files.
+    Codegen,
+    /// Generate definitions, then type-check TypeScript with `tsc`.
+    Check,
     /// Manage plugins (`add`/`remove`/`list`/`update`/`search`).
     #[command(subcommand)]
     Plugin(PluginCommand),
@@ -131,6 +136,8 @@ fn main() {
         Command::Remove { names } => commands::deps::remove(&dir, &names),
         Command::Update { names } => commands::deps::update(&dir, &names),
         Command::Search { query } => commands::deps::search(&query),
+        Command::Codegen => commands::codegen::run(&dir),
+        Command::Check => commands::check::run(&dir),
         Command::Plugin(cmd) => commands::plugin::run(&dir, cmd),
         Command::Component(cmd) => commands::component::run(&dir, cmd),
     };

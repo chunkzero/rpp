@@ -618,6 +618,11 @@ pub fn run_packsquash(binary: &str, pack_dir: &Path, zip_path: &Path, options_fi
   live-reload events listing changed paths. Plugin file changes reload that plugin and
   invalidate accordingly; rpp.toml changes do a full reload.
 - `rpp clean` — remove output + cache.
+- `rpp codegen` — write the TypeScript SDK (`.rpp/sdk/`) and `.rpp/tsconfig.json`, and a
+  root `tsconfig.json` if missing, in the nearest directory with `rpp.toml` or `plugin.toml`.
+  `build` and `dev` do this best-effort.
+- `rpp check` — `codegen`, then run `tsc -p tsconfig.json --noEmit` (`RPP_TSC` overrides the
+  compiler; TypeScript 7+ expected on PATH). A non-zero exit fails the command.
 - `rpp plugin add <source> [--ref r] [--subdir d] [--project|--global]` /
   `remove <id> [--global]` / `list [--global]` /
   `update [id] [--global]` / `search <query>` — manages `[[plugin]]` entries

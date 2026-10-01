@@ -5,6 +5,7 @@ pub mod project;
 pub mod ui;
 
 mod atomic;
+mod codegen;
 mod luals;
 mod ordered_json;
 mod user_plugins;
