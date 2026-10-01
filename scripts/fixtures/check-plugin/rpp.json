@@ -1,0 +1,5 @@
+{
+  "name": "check-fixture",
+  "version": "0.1.0",
+  "rpp": ">=0.1.0-alpha.0"
+}
