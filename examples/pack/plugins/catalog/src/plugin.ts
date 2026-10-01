@@ -38,8 +38,8 @@ export default definePlugin<Options>({
       if (changed) ctx.emit(path, json(model));
     }
 
-    const translations: Record<string, string> = {};
-    const items: Record<string, unknown> = {};
+    const translations: Record<string, string> = Object.create(null);
+    const items: Record<string, unknown> = Object.create(null);
     for (const { path, module } of ctx.discovered<{ default: Item }>("items")) {
       const id = /^items\/([a-z0-9_-]+)\.ts$/.exec(path)?.[1];
       if (id === undefined) {

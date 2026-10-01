@@ -4,6 +4,12 @@ import type { Options } from "./config.ts";
 
 // A pure processor: it re-encodes JSON and `.mcmeta` files compactly, or pretty-printed
 // when `pretty` is set. Assigning `file.text` is what marks the file as modified.
+// Keeps each number's source text so values beyond double precision survive re-encoding.
+const keepNumbers = (_key: string, value: unknown, context?: { source?: string }) =>
+  typeof value === "number" && context?.source !== undefined
+    ? (JSON as unknown as { rawJSON(text: string): unknown }).rawJSON(context.source)
+    : value;
+
 export default definePlugin<Options>({
   processors: {
     minify: {
@@ -15,7 +21,7 @@ export default definePlugin<Options>({
       run(ctx, file) {
         let decoded: unknown;
         try {
-          decoded = JSON.parse(file.text);
+          decoded = JSON.parse(file.text, keepNumbers);
         } catch {
           // Some packs ship intentionally quirky JSON; pass it through unchanged.
           return;

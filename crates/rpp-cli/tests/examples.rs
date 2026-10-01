@@ -218,6 +218,23 @@ fn mcmeta_validate_accepts_array_description() {
 }
 
 #[test]
+fn json_minify_keeps_number_text() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = copy_pack(tmp.path());
+    std::fs::write(
+        root.join("src/assets/minecraft/models/block/big.json"),
+        "{ \"seed\": 9007199254740993, \"scale\": 1.50 }",
+    )
+    .unwrap();
+
+    let out = build(&root, &[]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let model =
+        std::fs::read_to_string(root.join("dist/assets/minecraft/models/block/big.json")).unwrap();
+    assert_eq!(model, r#"{"seed":9007199254740993,"scale":1.50}"#);
+}
+
+#[test]
 fn hash_rename_uses_processed_bytes() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path();

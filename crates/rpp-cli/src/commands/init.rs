@@ -197,6 +197,11 @@ const HELLO_PLUGIN: &str = r##"import { definePlugin } from "#rpp";
 
 // Processor: minify every JSON / mcmeta file in the pack.
 // Generator: emit a tiny build marker listing the pack name and greeting.
+const keepNumbers = (_key: string, value: unknown, context?: { source?: string }) =>
+  typeof value === "number" && context?.source !== undefined
+    ? (JSON as unknown as { rawJSON(text: string): unknown }).rawJSON(context.source)
+    : value;
+
 export default definePlugin<{ greeting?: string }>({
   processors: {
     minify: {
@@ -204,7 +209,7 @@ export default definePlugin<{ greeting?: string }>({
       priority: 50,
       run(_ctx, file) {
         try {
-          file.text = JSON.stringify(JSON.parse(file.text));
+          file.text = JSON.stringify(JSON.parse(file.text, keepNumbers));
         } catch {
           // Leave files that are not valid JSON unchanged.
         }
