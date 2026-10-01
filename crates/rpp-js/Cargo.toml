@@ -14,6 +14,7 @@ deno_core = "=0.412.0"
 deno_error = "=0.7.1"
 deno_web = "=0.290.0"
 deno_webidl = "=0.259.0"
+oxc = { version = "=0.152.0", default-features = false, features = ["codegen", "isolated_declarations"] }
 rolldown = "=1.2.12"
 rolldown_common = "=1.2.12"
 rolldown_plugin = "=1.2.12"

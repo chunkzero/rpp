@@ -11,16 +11,19 @@ use rolldown::plugin::{
     SharedLoadPluginContext,
 };
 use rolldown::{
-    Bundler, BundlerOptions, CodeSplittingMode, InputItem, ModuleType, OutputFormat, Platform,
-    SourceMapPathTransform, SourceMapType,
+    Bundler, BundlerOptions, ChunkFilenamesOutputOption, CodeSplittingMode, InputItem, ModuleType,
+    OutputFormat, Platform, ResolveOptions, SourceMapPathTransform, SourceMapType,
 };
 use rolldown_common::{Output, ResolvedExternal};
+use rolldown_sourcemap::{JSONSourceMap, SourceMap};
 use twox_hash::XxHash3_64;
 
 use crate::error::{Error, Result};
 
 // Not `\0`-prefixed: Rolldown emits no source map entries for such modules.
 const VIRTUAL_PREFIX: &str = "rpp-virtual:";
+const NODE_MODULES: &str = "node_modules";
+const SOURCE_MAP_COMMENT: &str = "//# sourceMappingURL=";
 
 /// What to bundle.
 #[derive(Debug, Clone, Default)]
@@ -78,6 +81,58 @@ pub struct Bundle {
 /// [`crate::Error::Bundle`] for syntax errors, unresolved imports, `node:` or other
 /// built-in imports, files outside `root`, or output with more than one chunk.
 pub fn bundle(request: &BundleRequest) -> Result<Bundle> {
+    let entry = InputItem {
+        name: Some("bundle".to_string()),
+        import: request.entry.clone(),
+    };
+    let built = build(request, &Settings::default(), vec![entry])?;
+    let Ok([chunk]) = <[Chunk; 1]>::try_from(built.chunks) else {
+        return Err(Error::Bundle(
+            "bundling produced more than one chunk".to_string(),
+        ));
+    };
+    Ok(Bundle {
+        code: chunk.code,
+        source_map: chunk.source_map,
+        inputs: built.inputs,
+        input_hashes: built.input_hashes,
+    })
+}
+
+/// Behaviour that differs between [`bundle`] and [`crate::pack`].
+#[derive(Debug, Default)]
+pub(crate) struct Settings {
+    /// Specifiers left as imports; one ending in `/` matches every specifier under it.
+    pub externals: Vec<String>,
+    /// Specifiers that resolve to a file relative to `root`.
+    pub aliases: BTreeMap<String, String>,
+    /// Allow files under any `node_modules` directory, even outside `root`.
+    pub allow_node_modules: bool,
+    /// Package fields tried when a package has no `exports`; `None` keeps the default.
+    pub main_fields: Option<Vec<String>>,
+    /// Emit shared chunks instead of requiring a single chunk.
+    pub split: bool,
+}
+
+pub(crate) struct Chunk {
+    pub file_name: String,
+    pub code: String,
+    pub source_map: String,
+}
+
+pub(crate) struct Built {
+    pub chunks: Vec<Chunk>,
+    pub inputs: Vec<PathBuf>,
+    pub input_hashes: Vec<(PathBuf, u64)>,
+}
+
+/// Runs one Rolldown build; entries in `inputs` are keys of `virtual_modules` or paths
+/// relative to `root`.
+pub(crate) fn build(
+    request: &BundleRequest,
+    settings: &Settings,
+    inputs: Vec<InputItem>,
+) -> Result<Built> {
     let root = request.root.canonicalize().map_err(|e| {
         Error::Bundle(format!(
             "cannot resolve root {}: {e}",
@@ -105,26 +160,46 @@ pub fn bundle(request: &BundleRequest) -> Result<Bundle> {
         root: root.clone(),
         packages: Arc::clone(&packages),
         modules: request.virtual_modules.clone(),
+        externals: settings.externals.clone(),
+        aliases: settings.aliases.clone(),
+        allow_node_modules: settings.allow_node_modules,
         diagnostics: Arc::clone(&diagnostics),
         loaded: Arc::clone(&loaded),
     };
 
-    let entry = if request.virtual_modules.contains_key(&request.entry) {
-        request.entry.clone()
-    } else {
-        root.join(&request.entry).to_string_lossy().into_owned()
-    };
+    let input = inputs
+        .into_iter()
+        .map(|item| InputItem {
+            import: if request.virtual_modules.contains_key(&item.import) {
+                item.import
+            } else {
+                root.join(&item.import).to_string_lossy().into_owned()
+            },
+            ..item
+        })
+        .collect();
+    let allow_node_modules = settings.allow_node_modules;
     let options = BundlerOptions {
-        input: Some(vec![InputItem {
-            name: Some("bundle".to_string()),
-            import: entry,
-        }]),
+        input: Some(input),
         cwd: Some(root.clone()),
         dir: Some(root.to_string_lossy().into_owned()),
         format: Some(OutputFormat::Esm),
         platform: Some(Platform::Neutral),
         sourcemap: Some(SourceMapType::Hidden),
-        code_splitting: Some(CodeSplittingMode::Bool(false)),
+        code_splitting: Some(CodeSplittingMode::Bool(settings.split)),
+        entry_filenames: settings
+            .split
+            .then(|| ChunkFilenamesOutputOption::String("[name].js".to_string())),
+        chunk_filenames: settings
+            .split
+            .then(|| ChunkFilenamesOutputOption::String("chunk-[hash].js".to_string())),
+        resolve: settings
+            .main_fields
+            .clone()
+            .map(|main_fields| ResolveOptions {
+                main_fields: Some(main_fields),
+                ..Default::default()
+            }),
         sourcemap_path_transform: Some(SourceMapPathTransform::new(Arc::new({
             let root = root.clone();
             let packages = Arc::clone(&packages);
@@ -134,7 +209,7 @@ pub fn bundle(request: &BundleRequest) -> Result<Bundle> {
                 Box::pin(async move {
                     Ok(sources
                         .iter()
-                        .map(|s| display_source(&root, &packages, s))
+                        .map(|s| display_source(&root, &packages, allow_node_modules, s))
                         .collect())
                 })
             }
@@ -172,20 +247,22 @@ pub fn bundle(request: &BundleRequest) -> Result<Bundle> {
     }
     let output = output.expect("output exists when there are no errors");
 
-    let mut chunks = output.assets.iter().filter_map(|asset| match asset {
-        Output::Chunk(chunk) => Some(chunk),
-        Output::Asset(_) => None,
-    });
-    let (Some(chunk), None) = (chunks.next(), chunks.next()) else {
-        return Err(Error::Bundle(
-            "bundling produced more than one chunk".to_string(),
-        ));
-    };
-    let source_map = chunk
-        .map
-        .as_ref()
-        .ok_or_else(|| Error::Bundle("bundling produced no source map".to_string()))?
-        .to_json_string();
+    let mut chunks = Vec::new();
+    for asset in &output.assets {
+        let Output::Chunk(chunk) = asset else {
+            continue;
+        };
+        let source_map = chunk
+            .map
+            .as_ref()
+            .ok_or_else(|| Error::Bundle("bundling produced no source map".to_string()))?
+            .to_json_string();
+        chunks.push(Chunk {
+            file_name: chunk.filename.to_string(),
+            code: chunk.code.clone(),
+            source_map,
+        });
+    }
 
     let mut hashes = loaded.lock().expect("loaded lock").clone();
     hashes.retain(|path, _| path.is_absolute() && path.is_file());
@@ -211,9 +288,8 @@ pub fn bundle(request: &BundleRequest) -> Result<Bundle> {
     let input_hashes: Vec<(PathBuf, u64)> = hashes.into_iter().collect();
     let inputs = input_hashes.iter().map(|(path, _)| path.clone()).collect();
 
-    Ok(Bundle {
-        code: chunk.code.clone(),
-        source_map,
+    Ok(Built {
+        chunks,
         inputs,
         input_hashes,
     })
@@ -221,11 +297,26 @@ pub fn bundle(request: &BundleRequest) -> Result<Bundle> {
 
 /// Turns a source path relative to `root` (as Rolldown reports it) into the form
 /// listed in the source map.
-fn display_source(root: &Path, packages: &[Package], source: &str) -> String {
+fn display_source(
+    root: &Path,
+    packages: &[Package],
+    allow_node_modules: bool,
+    source: &str,
+) -> String {
     if let Some(at) = source.find(VIRTUAL_PREFIX) {
         return source[at + VIRTUAL_PREFIX.len()..].to_string();
     }
     let absolute = normalize(&root.join(source));
+    if allow_node_modules {
+        let components: Vec<_> = absolute.components().collect();
+        if let Some(at) = components
+            .iter()
+            .rposition(|c| c.as_os_str() == NODE_MODULES)
+        {
+            let tail: PathBuf = components[at..].iter().collect();
+            return tail.to_string_lossy().replace('\\', "/");
+        }
+    }
     for package in packages {
         if let Ok(relative) = absolute.strip_prefix(&package.dir) {
             let relative = relative.to_string_lossy().replace('\\', "/");
@@ -265,6 +356,9 @@ struct VirtualModules {
     root: PathBuf,
     packages: Arc<Vec<Package>>,
     modules: BTreeMap<String, String>,
+    externals: Vec<String>,
+    aliases: BTreeMap<String, String>,
+    allow_node_modules: bool,
     diagnostics: Arc<Mutex<Vec<String>>>,
     loaded: Arc<Mutex<BTreeMap<PathBuf, u64>>>,
 }
@@ -294,10 +388,81 @@ impl VirtualModules {
     }
 
     fn is_allowed(&self, id: &str) -> bool {
-        Path::new(id).canonicalize().is_ok_and(|path| {
-            path.starts_with(&self.root) || self.packages.iter().any(|p| path.starts_with(&p.dir))
-        })
+        Path::new(id)
+            .canonicalize()
+            .is_ok_and(|path| self.is_allowed_path(&path))
     }
+
+    fn is_allowed_path(&self, path: &Path) -> bool {
+        path.starts_with(&self.root)
+            || self.packages.iter().any(|p| path.starts_with(&p.dir))
+            || (self.allow_node_modules && path.components().any(|c| c.as_os_str() == NODE_MODULES))
+    }
+
+    fn is_external(&self, specifier: &str) -> bool {
+        self.externals
+            .iter()
+            .any(|e| specifier == e || (e.ends_with('/') && specifier.starts_with(e.as_str())))
+    }
+
+    /// The module's code with the source map it points to, when that map is readable
+    /// from an allowed directory. Sources in the map become absolute paths.
+    fn attach_input_map(&self, path: &Path, code: String) -> HookLoadOutput {
+        let plain = |code: String| HookLoadOutput {
+            code: code.into(),
+            ..Default::default()
+        };
+        let Some(url) = code
+            .trim_end()
+            .lines()
+            .next_back()
+            .and_then(|line| line.strip_prefix(SOURCE_MAP_COMMENT))
+            .filter(|url| !url.starts_with("data:"))
+        else {
+            return plain(code);
+        };
+        let Some(map_path) = path
+            .parent()
+            .and_then(|dir| dir.join(url.trim()).canonicalize().ok())
+            .filter(|map_path| self.is_allowed_path(map_path))
+        else {
+            return plain(code);
+        };
+        let Ok(bytes) = fs::read(&map_path) else {
+            return plain(code);
+        };
+        let map = std::str::from_utf8(&bytes)
+            .ok()
+            .zip(map_path.parent())
+            .and_then(|(json, dir)| absolute_sources(json, dir));
+        let Some(map) = map else {
+            return plain(code);
+        };
+        self.loaded
+            .lock()
+            .expect("loaded lock")
+            .insert(map_path, XxHash3_64::oneshot(&bytes));
+        HookLoadOutput {
+            code: code.into(),
+            map: Some(map),
+            ..Default::default()
+        }
+    }
+}
+
+/// Parses a source map, making each source an absolute normalized path.
+fn absolute_sources(json: &str, dir: &Path) -> Option<SourceMap> {
+    let mut map: JSONSourceMap = serde_json::from_str(json).ok()?;
+    let base = match map.source_root.take() {
+        Some(source_root) => dir.join(source_root),
+        None => dir.to_path_buf(),
+    };
+    for source in &mut map.sources {
+        *source = normalize(&base.join(&*source))
+            .to_string_lossy()
+            .into_owned();
+    }
+    SourceMap::from_json(map).ok()
 }
 
 fn relative_to(root: &Path, path: &Path) -> String {
@@ -327,7 +492,26 @@ impl Plugin for VirtualModules {
                 "{VIRTUAL_PREFIX}{specifier}"
             ))));
         }
+        if self.is_external(specifier) {
+            return Ok(Some(HookResolveIdOutput {
+                id: specifier.into(),
+                external: Some(ResolvedExternal::Bool(true)),
+                ..Default::default()
+            }));
+        }
         let importer = self.describe_importer(args.importer);
+        if let Some(entry) = self.aliases.get(specifier) {
+            return Ok(Some(match self.root.join(entry).canonicalize() {
+                Ok(path) if path.starts_with(&self.root) => {
+                    HookResolveIdOutput::from_id(path.to_string_lossy().into_owned())
+                }
+                _ => self.reject(
+                    specifier,
+                    &importer,
+                    "the target is missing or outside the root",
+                ),
+            }));
+        }
         if let Some(package) = self.packages.iter().find(|p| p.specifier == specifier) {
             return Ok(Some(
                 match package.dir.join(&package.entry).canonicalize() {
@@ -396,14 +580,12 @@ impl Plugin for VirtualModules {
             let Ok(code) = String::from_utf8(bytes) else {
                 return Ok(None);
             };
+            let path = PathBuf::from(args.id);
             self.loaded
                 .lock()
                 .expect("loaded lock")
-                .insert(PathBuf::from(args.id), XxHash3_64::oneshot(code.as_bytes()));
-            return Ok(Some(HookLoadOutput {
-                code: code.into(),
-                ..Default::default()
-            }));
+                .insert(path.clone(), XxHash3_64::oneshot(code.as_bytes()));
+            return Ok(Some(self.attach_input_map(&path, code)));
         };
         Ok(self.modules.get(specifier).map(|code| HookLoadOutput {
             code: code.as_str().into(),
