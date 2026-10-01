@@ -16,7 +16,7 @@ use wasmtime::{Config, Engine, Store};
 use wasmtime_wasi::p2;
 
 use crate::instance::map_timeout;
-use crate::store::StoreData;
+use crate::store::{link_instant_subscriptions, StoreData};
 use crate::types::{Function, Limits, Permissions, Schema, ValueType};
 use crate::{Error, Result, WasmInstance};
 
@@ -211,6 +211,9 @@ impl CompiledComponent {
         validate_imports(&self.schema.imports, &permissions)?;
         let mut linker = Linker::new(&self.engine.engine);
         p2::add_to_linker_sync(&mut linker).map_err(Error::Engine)?;
+        if !permissions.clocks {
+            link_instant_subscriptions(&mut linker).map_err(Error::Engine)?;
+        }
 
         let mut store = self.engine.new_store(permissions)?;
         store.set_epoch_deadline(ticks);
@@ -306,16 +309,15 @@ fn value_type(ty: Type) -> ValueType {
 
 fn validate_imports(imports: &[String], permissions: &Permissions) -> Result<()> {
     for import in imports {
-        let allowed = if import.starts_with("wasi:clocks/") {
-            permissions.clocks
-        } else if import.starts_with("wasi:sockets/") {
+        let allowed = if import.starts_with("wasi:sockets/") {
             permissions.network
         } else if import.starts_with("wasi:filesystem/") {
             !permissions.preopens.is_empty()
         } else {
-            // Random imports receive deterministic streams unless granted;
-            // cli/io are always linked.
-            import.starts_with("wasi:random/")
+            // Clock and random imports receive deterministic values unless
+            // granted; cli/io are always linked.
+            import.starts_with("wasi:clocks/")
+                || import.starts_with("wasi:random/")
                 || import.starts_with("wasi:cli/environment")
                 || import.starts_with("wasi:cli/exit")
                 || import.starts_with("wasi:cli/std")
@@ -327,4 +329,15 @@ fn validate_imports(imports: &[String], permissions: &Permissions) -> Result<()>
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn clock_imports_are_allowed_without_permission() {
+        let imports = vec!["wasi:clocks/monotonic-clock@0.2.6".to_string()];
+        assert!(validate_imports(&imports, &Permissions::default()).is_ok());
+    }
 }

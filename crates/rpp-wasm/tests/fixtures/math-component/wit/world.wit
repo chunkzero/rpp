@@ -3,4 +3,5 @@ package test:math;
 world math {
     export add: func(a: s32, b: s32) -> s32;
     export spin: func();
+    export sleep-hour: func() -> u64;
 }

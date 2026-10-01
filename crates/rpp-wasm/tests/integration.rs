@@ -110,3 +110,17 @@ fn call_with_deadline_caps_timeout() {
         other => panic!("expected timeout, got {other:?}"),
     }
 }
+
+#[test]
+fn sleeping_returns_immediately_on_fixed_clock() {
+    let Some(fixture) = build_fixture(&fixture("math-component"), "math_component") else {
+        return;
+    };
+    let engine = WasmEngine::new().unwrap();
+    let component = engine.load(&fixture.wasm).unwrap();
+    let mut instance = component.instantiate(Permissions::default()).unwrap();
+    let started = std::time::Instant::now();
+    let results = instance.call("sleep-hour", &[]).unwrap();
+    assert!(started.elapsed() < Duration::from_secs(5));
+    assert_eq!(results, vec![Value::U64(0)]);
+}
