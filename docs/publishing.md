@@ -67,8 +67,8 @@ to publish. The first publish of a new plugin name registers it; later publishes
    failed run can be retried.
 4. Adds the version to `plugins/<name>.json`, regenerates `index.json`, and runs `registry.py check --base origin/main`,
    which downloads the uploaded archive and verifies its hash. A version already in the registry fails here.
-5. Pushes the branch `<name>-<version>` to the registry, or to the token owner's fork when the token cannot push there,
-   and opens a pull request.
+5. Pushes the branch `<name>-<version>` and opens a pull request. A GitHub App token pushes the branch to the registry
+   and fails if it already exists; a personal access token pushes to its owner's fork.
 
 A plugin's public types must not reference types from its npm dependencies, because declarations from `node_modules`
 are not packed.

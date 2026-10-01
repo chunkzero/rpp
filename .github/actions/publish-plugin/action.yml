@@ -118,16 +118,16 @@ runs:
         git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
         git add plugins index.json
         git commit -m "feat: add $name $version"
-        # Tokens with write access to the registry (such as a GitHub App installation token) push a branch
-        # directly; other tokens push to the token owner's fork.
-        if git push --force origin "$branch" 2>/dev/null; then
-          head="$branch"
-        else
+        # Personal tokens push to the owner's fork. GitHub App installation tokens have no user and push the branch to
+        # the registry itself; that push never replaces an existing branch.
+        if login=$(gh api user --jq .login 2>/dev/null); then
           gh repo fork chunkzero/rpp-registry --clone=false
-          login=$(gh api user --jq .login)
           git remote add fork "https://github.com/$login/rpp-registry"
           git push --force fork "$branch"
           head="$login:$branch"
+        else
+          git push origin "$branch"
+          head="$branch"
         fi
         gh pr create --repo chunkzero/rpp-registry --head "$head" \
           --title "feat: add $name $version" \
