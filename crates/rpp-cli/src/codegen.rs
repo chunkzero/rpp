@@ -6,8 +6,10 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 
+use rpp::manifest::PluginManifest;
 use rpp_fetch::registry::PACKAGE_MANIFEST;
 
+use crate::commands::codegen::is_plugin_manifest;
 use crate::project::{resolve_ts_packages, CONFIG_FILE, TS_CONFIG_FILE};
 
 const TSCONFIG_HEAD: &str = r##"{
@@ -34,7 +36,7 @@ const TSCONFIG_TAIL: &str = r#"
 
 const ROOT_TSCONFIG: &str = r#"{
   "extends": "./.rpp/tsconfig.json",
-  "include": ["**/*.ts", "**/*.mts", ".rpp/sdk/*.d.ts"],
+  "include": ["**/*.ts", "**/*.mts", ".rpp/sdk/*.d.ts", ".rpp/generated/*.d.ts"],
   "exclude": ["dist", ".rpp/cache"]
 }
 "#;
@@ -136,9 +138,7 @@ pub fn write(root: &Path) -> Result<bool> {
                 })
                 .collect(),
         )
-    } else if ["plugin.toml", PACKAGE_MANIFEST]
-        .iter()
-        .any(|name| root.join(name).is_file())
+    } else if root.join("plugin.toml").is_file() || is_plugin_manifest(&root.join(PACKAGE_MANIFEST))
     {
         Some(BTreeMap::new())
     } else {
@@ -155,11 +155,42 @@ pub fn write(root: &Path) -> Result<bool> {
         &tsconfig(plugin_configs.as_ref()),
     )?;
 
+    changed |= write_component_dts(root)?;
+
     let root_config = root.join("tsconfig.json");
     if !root_config.exists() {
         std::fs::write(&root_config, ROOT_TSCONFIG)
             .with_context(|| format!("writing {}", root_config.display()))?;
         changed = true;
+    }
+    Ok(changed)
+}
+
+/// Write `.rpp/generated/<name>.d.ts` for each component the plugin manifest in `root` declares.
+fn write_component_dts(root: &Path) -> Result<bool> {
+    if !root.join("plugin.toml").is_file() && !is_plugin_manifest(&root.join(PACKAGE_MANIFEST)) {
+        return Ok(false);
+    }
+    let manifest = PluginManifest::load(root)?;
+    let mut changed = false;
+    for (name, component) in &manifest.components {
+        let wasm = root.join(&component.module);
+        let bytes = match std::fs::read(&wasm) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                crate::ui::warn(format!(
+                    "component `{name}`: {} is not built; skipping its type definitions",
+                    wasm.display()
+                ));
+                continue;
+            }
+            Err(error) => {
+                return Err(error).with_context(|| format!("reading {}", wasm.display()));
+            }
+        };
+        let dts = crate::component_dts::from_wasm(name, &bytes)
+            .with_context(|| format!("generating types for component `{name}`"))?;
+        changed |= write_if_changed(&root.join(format!(".rpp/generated/{name}.d.ts")), &dts)?;
     }
     Ok(changed)
 }

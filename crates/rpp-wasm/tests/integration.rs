@@ -95,3 +95,18 @@ fn timeout_interrupts_guest() {
         other => panic!("expected timeout, got {other:?}"),
     }
 }
+
+#[test]
+fn call_with_deadline_caps_timeout() {
+    let Some(fixture) = build_fixture(&fixture("math-component"), "math_component") else {
+        return;
+    };
+    let engine = WasmEngine::new().unwrap();
+    let component = engine.load(&fixture.wasm).unwrap();
+    let mut instance = component.instantiate(Permissions::default()).unwrap();
+    let limit = Duration::from_millis(100);
+    match instance.call_with_deadline("spin", &[], limit) {
+        Err(Error::Timeout(reported)) => assert_eq!(reported, limit),
+        other => panic!("expected timeout, got {other:?}"),
+    }
+}
