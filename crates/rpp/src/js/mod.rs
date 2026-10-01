@@ -49,15 +49,20 @@
 //!
 //! [`PluginInstance`]: crate::model::PluginInstance
 
+mod config;
 mod factory;
 mod host;
 mod instance;
 
+pub use config::{evaluate_config, ConfigPackage, EvaluatedConfig, CONFIG_FILE};
 pub use factory::{JsPluginFactory, JsPluginLimits};
 
 /// The embedded SDK, as `(relative path, contents)`. `rpp codegen` writes these
 /// under `.rpp/sdk/`.
-pub const SDK_FILES: &[(&str, &str)] = &[("index.ts", include_str!("sdk/index.ts"))];
+pub const SDK_FILES: &[(&str, &str)] = &[
+    ("index.ts", include_str!("sdk/index.ts")),
+    ("config.ts", include_str!("sdk/config.ts")),
+];
 
 /// Whether a `plugin.toml` entry selects the JavaScript runtime.
 pub fn is_js_entry(entry: &str) -> bool {

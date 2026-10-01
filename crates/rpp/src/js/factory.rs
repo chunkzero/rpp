@@ -82,10 +82,10 @@ struct ProcessorDescription {
 }
 
 impl JsPluginFactory {
-    /// Read `plugin.toml` in `dir`, bundle its entry, evaluate it once to read its
+    /// Read `rpp.json` (or `plugin.toml`) in `dir`, bundle its entry, evaluate it once to read its
     /// processors and handlers, and compute the cache key.
     ///
-    /// The cache key covers the bundled code, `plugin.toml`, declared component
+    /// The cache key covers the bundled code, the manifest, declared component
     /// bytes, canonical `options`, host access and the rpp version.
     ///
     /// # Errors
@@ -101,10 +101,7 @@ impl JsPluginFactory {
         access: RuntimeAccess,
     ) -> Result<Self> {
         let dir = dir.as_ref();
-        let manifest_path = dir.join("plugin.toml");
-        let manifest_source =
-            std::fs::read_to_string(&manifest_path).map_err(|e| Error::io(&manifest_path, e))?;
-        let manifest = PluginManifest::parse(&manifest_source, &manifest_path)?;
+        let (manifest, manifest_source) = PluginManifest::load_with_source(dir)?;
         let id = manifest.id.clone();
         let load_error = |message: String| Error::PluginLoad {
             plugin: id.clone(),
@@ -133,6 +130,7 @@ impl JsPluginFactory {
             root: root.clone(),
             entry: "rpp:entry".into(),
             virtual_modules: virtual_modules(&manifest.entry),
+            ..Default::default()
         })
         .map_err(|e| load_error(e.to_string()))?;
 
@@ -292,7 +290,7 @@ fn compute_cache_key(
     writer.write_str("rpp.js.plugin.v1");
     writer.write_str(env!("CARGO_PKG_VERSION"));
     writer.write(bundle.code.as_bytes());
-    writer.write_str("plugin.toml");
+    writer.write_str("manifest");
     writer.write(manifest_source.as_bytes());
     for (name, component) in &manifest.components {
         let path = root.join(&component.module);

@@ -1,4 +1,4 @@
-//! Shared project plumbing: locate `rpp.toml`, load the [`Config`], resolve all
+//! Shared project plumbing: locate `rpp.toml` (or `rpp.config.ts`), load the [`Config`], resolve all
 //! configured plugins (lockfile-aware), construct the right plugin factory for
 //! each, and build an [`Engine`].
 //!
@@ -14,27 +14,35 @@ use anyhow::{anyhow, bail, Context, Result};
 use rpp::config::{Config, PluginConfig};
 use rpp::engine::{Engine, EngineBuilder};
 use rpp::host::{PackInfo, RuntimeAccess};
-use rpp::js::{JsPluginFactory, JsPluginLimits};
+use rpp::js::{evaluate_config, ConfigPackage, JsPluginFactory, JsPluginLimits};
 use rpp::lua::{LuaPluginFactory, LuaPluginLimits};
 use rpp::manifest::PluginManifest;
 use rpp::model::PluginFactory;
+use rpp_fetch::registry::{
+    parse_dependencies, resolve, PackageLock, Registry, Update, PACKAGE_MANIFEST,
+};
 use rpp_fetch::{Lockfile, Pin, PluginSource, Resolver};
 use rpp_wasm::WasmEngine;
 
+use crate::commands::deps::rpp_version;
 use crate::user_plugins::UserPlugins;
 
 /// The config file name.
 pub const CONFIG_FILE: &str = "rpp.toml";
+/// The TypeScript config file name.
+pub const TS_CONFIG_FILE: &str = rpp::js::CONFIG_FILE;
 /// The lockfile name.
 pub const LOCK_FILE: &str = "rpp.lock";
 
-/// A located project: the directory containing `rpp.toml` plus the parsed
-/// config.
+/// A located project: the directory containing `rpp.toml` or `rpp.config.ts`
+/// plus the parsed config.
 pub struct Project {
-    /// The directory containing `rpp.toml`.
+    /// The directory containing the project config file.
     pub root: PathBuf,
     /// The parsed configuration.
     pub config: Config,
+    /// Present for `rpp.config.ts` projects.
+    pub(crate) ts: Option<TsProject>,
     /// User-level plugins loaded from `~/.rpp/plugins.toml`.
     pub(crate) user_plugins: UserPlugins,
 }
@@ -50,6 +58,20 @@ pub struct PluginMeta {
     pub source: String,
     /// The canonical source key used in the lockfile.
     pub canonical: String,
+}
+
+/// A resolved `rpp.json` dependency.
+#[derive(Debug, Clone)]
+pub(crate) struct TsPackage {
+    pub(crate) dir: PathBuf,
+    pub(crate) manifest: PluginManifest,
+}
+
+/// What loading `rpp.config.ts` resolved.
+pub(crate) struct TsProject {
+    pub(crate) packages: BTreeMap<String, TsPackage>,
+    /// Files the config bundle read.
+    inputs: Vec<PathBuf>,
 }
 
 impl Project {
@@ -68,24 +90,61 @@ impl Project {
     fn discover_with_user_plugins(start: &Path, user_plugins: UserPlugins) -> Result<Self> {
         let root = find_project_root(start).ok_or_else(|| {
             anyhow!(
-                "no `{CONFIG_FILE}` found in `{}` or any parent directory\n\
+                "no `{CONFIG_FILE}` or `{TS_CONFIG_FILE}` found in `{}` or any parent directory\n\
                  (run `rpp init` to scaffold a new project)",
                 start.display()
             )
         })?;
-        let config_path = root.join(CONFIG_FILE);
-        let config = Config::load(&config_path)
-            .with_context(|| format!("loading {}", config_path.display()))?;
+        if root.join(CONFIG_FILE).is_file() && root.join(TS_CONFIG_FILE).is_file() {
+            bail!(
+                "`{}` contains both `{CONFIG_FILE}` and `{TS_CONFIG_FILE}`; remove one",
+                root.display()
+            );
+        }
+        let (config, ts) = if root.join(TS_CONFIG_FILE).is_file() {
+            let (config, ts) = load_ts(&root)?;
+            (config, Some(ts))
+        } else {
+            let config_path = root.join(CONFIG_FILE);
+            let config = Config::load(&config_path)
+                .with_context(|| format!("loading {}", config_path.display()))?;
+            (config, None)
+        };
         Ok(Project {
             root,
             config,
+            ts,
             user_plugins,
         })
     }
 
-    /// Path to `rpp.toml`.
+    /// Path to `rpp.toml`, or `rpp.config.ts` for TypeScript projects.
     pub fn config_path(&self) -> PathBuf {
-        self.root.join(CONFIG_FILE)
+        let name = if self.ts.is_some() {
+            TS_CONFIG_FILE
+        } else {
+            CONFIG_FILE
+        };
+        self.root.join(name)
+    }
+
+    /// Every file whose change requires reloading the project config.
+    pub fn config_files(&self) -> Vec<PathBuf> {
+        let mut files = vec![self.config_path()];
+        if let Some(ts) = &self.ts {
+            files.push(self.root.join(PACKAGE_MANIFEST));
+            files.push(self.lock_path());
+            files.extend(ts.inputs.iter().cloned());
+            for package in ts.packages.values() {
+                files.extend(
+                    [PACKAGE_MANIFEST, "plugin.toml"]
+                        .iter()
+                        .map(|name| package.dir.join(name))
+                        .filter(|path| path.is_file()),
+                );
+            }
+        }
+        files
     }
 
     /// Path to `rpp.lock`.
@@ -131,6 +190,9 @@ impl Project {
 
     /// Resolve package metadata, select overrides, then load effective plugins in order.
     fn resolve_factories(&self, wasm_engine: Option<WasmEngine>) -> Result<ResolvedFactories> {
+        if let Some(ts) = &self.ts {
+            return self.resolve_ts_factories(ts, wasm_engine);
+        }
         let global_resolver = Resolver::new(&self.user_plugins.root)
             .context("initializing the global plugin resolver")?;
         let project_resolver =
@@ -226,6 +288,39 @@ impl Project {
         })
     }
 
+    /// Load each configured `package` plugin from the resolved `rpp.json` dependencies.
+    fn resolve_ts_factories(
+        &self,
+        ts: &TsProject,
+        wasm_engine: Option<WasmEngine>,
+    ) -> Result<ResolvedFactories> {
+        let mut shared_wasm = wasm_engine;
+        let mut factories = Vec::new();
+        for plugin_cfg in &self.config.plugins {
+            let name = plugin_cfg.label();
+            let package = ts.packages.get(name).ok_or_else(|| {
+                anyhow!(
+                    "plugin package `{name}` is not a dependency in {PACKAGE_MANIFEST}\n\
+                     (run `rpp add {name}`)"
+                )
+            })?;
+            let loaded = self.load_factory(
+                ResolvedPackage {
+                    manifest: package.manifest.clone(),
+                    root: package.dir.clone(),
+                    config: plugin_cfg.clone(),
+                    scope: PluginScope::Project,
+                },
+                &mut shared_wasm,
+            )?;
+            factories.push(loaded.factory);
+        }
+        Ok(ResolvedFactories {
+            factories,
+            wasm_engine: shared_wasm,
+        })
+    }
+
     /// Refresh editor definitions shipped by plugins (`luals/*.lua`) into
     /// `.rpp/api`. Best-effort: failures are reported, never fatal.
     fn write_plugin_stubs(&self, factories: &[LoadedFactory]) {
@@ -306,6 +401,9 @@ impl Project {
         };
         plugin_cfg.validate(&config_path)?;
         let id = manifest.id.clone();
+        if self.ts.is_some() && !rpp::js::is_js_entry(&manifest.entry) {
+            bail!("plugin `{id}` is a Lua plugin; {TS_CONFIG_FILE} projects support TypeScript plugins only");
+        }
 
         let engine = if manifest.components.is_empty() {
             shared_wasm.clone()
@@ -470,7 +568,74 @@ fn pin_changed(locked: Option<&rpp_fetch::LockedPlugin>, pin: &Pin, subdir: Opti
     }
 }
 
-/// Walk up from `start` looking for a directory containing `rpp.toml`.
+/// Resolve `rpp.json` dependencies against `rpp.lock` without updating pins, saving the
+/// lock when resolution changed it. A missing `rpp.json` has no dependencies.
+pub(crate) fn resolve_ts_packages(root: &Path) -> Result<BTreeMap<String, TsPackage>> {
+    let manifest_path = root.join(PACKAGE_MANIFEST);
+    let dependencies = if manifest_path.is_file() {
+        let text = std::fs::read_to_string(&manifest_path)
+            .with_context(|| format!("reading {}", manifest_path.display()))?;
+        parse_dependencies(&text)?
+    } else {
+        Vec::new()
+    };
+    let lock_path = root.join(LOCK_FILE);
+    let mut lock = PackageLock::load(&lock_path)?;
+    let before = lock.clone();
+    let resolved = resolve(
+        &Registry::from_env()?,
+        root,
+        &dependencies,
+        &mut lock,
+        &rpp_version()?,
+        &Update::None,
+    )
+    .context("resolving dependencies")?;
+    if lock != before {
+        lock.save(&lock_path)
+            .with_context(|| format!("writing {}", lock_path.display()))?;
+    }
+    resolved
+        .into_iter()
+        .map(|package| {
+            let manifest = PluginManifest::load(&package.root).with_context(|| {
+                format!(
+                    "reading plugin manifest for `{}` at {}",
+                    package.name,
+                    package.root.display()
+                )
+            })?;
+            let dir = package.root;
+            Ok((package.name, TsPackage { dir, manifest }))
+        })
+        .collect()
+}
+
+fn load_ts(root: &Path) -> Result<(Config, TsProject)> {
+    let packages = resolve_ts_packages(root)?;
+    let config_packages = packages
+        .iter()
+        .map(|(name, package)| {
+            (
+                name.clone(),
+                ConfigPackage {
+                    dir: package.dir.clone(),
+                    config: package.manifest.config.clone(),
+                },
+            )
+        })
+        .collect();
+    let evaluated = evaluate_config(root, &config_packages, JsPluginLimits::default())?;
+    Ok((
+        evaluated.config,
+        TsProject {
+            packages,
+            inputs: evaluated.inputs,
+        },
+    ))
+}
+
+/// Walk up from `start` looking for a directory containing `rpp.toml` or `rpp.config.ts`.
 pub fn find_project_root(start: &Path) -> Option<PathBuf> {
     let start = if start.is_absolute() {
         start.to_path_buf()
@@ -479,7 +644,7 @@ pub fn find_project_root(start: &Path) -> Option<PathBuf> {
     };
     let mut dir = start.as_path();
     loop {
-        if dir.join(CONFIG_FILE).is_file() {
+        if dir.join(CONFIG_FILE).is_file() || dir.join(TS_CONFIG_FILE).is_file() {
             return Some(dir.to_path_buf());
         }
         dir = dir.parent()?;
@@ -529,6 +694,7 @@ mod tests {
         Project {
             root: root.into(),
             config,
+            ts: None,
             user_plugins: UserPlugins {
                 root: root.into(),
                 plugins: globals.plugins,

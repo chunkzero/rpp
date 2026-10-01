@@ -11,6 +11,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
 
+mod ts;
+
 /// The fully parsed `rpp.toml`.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -255,6 +257,9 @@ pub struct PluginConfig {
     /// Source descriptor (`path:...` or `github:owner/repo`).
     #[serde(default)]
     pub source: Option<String>,
+    /// Dependency name from the project's `rpp.json` (`rpp.config.ts` projects only).
+    #[serde(default)]
+    pub package: Option<String>,
     /// Optional git ref (tag/branch/sha) for GitHub sources.
     #[serde(default)]
     pub r#ref: Option<String>,
@@ -354,6 +359,7 @@ impl PluginConfig {
         self.source
             .as_deref()
             .or(self.id.as_deref())
+            .or(self.package.as_deref())
             .unwrap_or("<unnamed>")
     }
 }
@@ -366,8 +372,28 @@ impl Config {
             path: path.clone(),
             message: format!("{e}"),
         })?;
+        if config.plugins.iter().any(|plugin| plugin.package.is_some()) {
+            return Err(Error::Config {
+                path,
+                message: "`package` is only supported in rpp.config.ts".into(),
+            });
+        }
         config.validate(&path)?;
         Ok(config)
+    }
+
+    /// Build a [`Config`] from the JSON value `rpp.config.ts` default-exports,
+    /// attributing errors to `path`.
+    ///
+    /// Keys are the camelCase forms of the `rpp.toml` schema (`pack.packFormat`,
+    /// `build.squash.packsquashBinary`), with these differences: `plugins` is an array of
+    /// `{ plugin, options?, security?, permissions?, outputs? }` where `plugin` names an
+    /// `rpp.json` dependency (stored in [`PluginConfig::package`]); `build.limits` holds
+    /// the plugin runtime limits (stored in `build.lua`); `build.lua`, `id`, `source`,
+    /// `ref`, `subdir`, `permissions.lua` and `security: "native"` are rejected. Keys
+    /// inside `options` and `outputs` are kept verbatim; `null` values are invalid.
+    pub fn from_ts_json(value: &serde_json::Value, path: impl Into<PathBuf>) -> Result<Self> {
+        ts::from_json(value, path.into())
     }
 
     /// Load and parse a `rpp.toml` from disk.
@@ -451,23 +477,39 @@ impl Config {
 }
 
 fn validate_plugin_identity(plugin: &PluginConfig, path: &Path) -> Result<()> {
-    match (plugin.id.as_deref(), plugin.source.as_deref()) {
-        (Some(id), None) if valid_plugin_id_ref(id) => Ok(()),
-        (Some(id), None) => Err(Error::Config {
-            path: path.to_path_buf(),
-            message: format!("plugin id `{id}` is invalid"),
-        }),
+    let config_error = |message: String| Error::Config {
+        path: path.to_path_buf(),
+        message,
+    };
+    let (id, source, package) = (
+        plugin.id.as_deref(),
+        plugin.source.as_deref(),
+        plugin.package.as_deref(),
+    );
+    match (id, source, package) {
+        (Some(id), None, None) if valid_plugin_id_ref(id) => Ok(()),
+        (Some(id), None, None) => Err(config_error(format!("plugin id `{id}` is invalid"))),
         // Source grammar is owned by rpp-fetch and validated during resolution.
-        (None, Some(_)) => Ok(()),
-        (Some(_), Some(_)) => Err(Error::Config {
-            path: path.to_path_buf(),
-            message: "plugin entries must set either `id` or `source`, not both".into(),
-        }),
-        (None, None) => Err(Error::Config {
-            path: path.to_path_buf(),
-            message: "plugin entries must set either `id` or `source`".into(),
-        }),
+        (None, Some(_), None) => Ok(()),
+        (None, None, Some(package)) if valid_dependency_name(package) => Ok(()),
+        (None, None, Some(package)) => Err(config_error(format!(
+            "plugin package `{package}` must match ^[a-z0-9][a-z0-9_-]*$"
+        ))),
+        (None, None, None) => Err(config_error(
+            "plugin entries must set one of `id`, `source` or `package`".into(),
+        )),
+        _ => Err(config_error(
+            "plugin entries must set exactly one of `id`, `source` or `package`".into(),
+        )),
     }
+}
+
+fn valid_dependency_name(name: &str) -> bool {
+    let mut bytes = name.bytes();
+    bytes
+        .next()
+        .is_some_and(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
+        && bytes.all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'_' | b'-'))
 }
 
 fn valid_plugin_id_ref(id: &str) -> bool {
@@ -636,6 +678,13 @@ mod tests {
         assert!(cfg.build.squash.enabled);
         assert_eq!(cfg.dev.port, 8080);
         assert!(cfg.plugins.is_empty());
+    }
+
+    #[test]
+    fn toml_rejects_package_plugins() {
+        let text = "[pack]\nname = \"demo\"\n[[plugin]]\npackage = \"window\"\n";
+        let err = Config::parse(text, "rpp.toml").unwrap_err().to_string();
+        assert!(err.contains("only supported in rpp.config.ts"), "{err}");
     }
 
     #[test]

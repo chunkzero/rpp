@@ -75,6 +75,27 @@ fn codegen_works_in_plugin_dir() {
 }
 
 #[test]
+fn codegen_works_in_json_plugin_dir() {
+    let dir = tempfile::tempdir().unwrap();
+    let plugin = dir.path().join("plugin");
+    std::fs::create_dir_all(plugin.join("src")).unwrap();
+    std::fs::write(plugin.join("rpp.json"), r#"{"name":"p","version":"0.1.0"}"#).unwrap();
+    std::fs::write(plugin.join("src/plugin.ts"), "").unwrap();
+
+    let out = run(&plugin.join("src"), &["codegen"]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let tsconfig = std::fs::read_to_string(plugin.join(".rpp/tsconfig.json")).unwrap();
+    assert!(
+        tsconfig.contains("\"#rpp/config\": [\"./sdk/config.ts\"]"),
+        "{tsconfig}"
+    );
+}
+
+#[test]
 fn check_reports_missing_compiler() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();

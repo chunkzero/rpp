@@ -11,7 +11,7 @@ use rpp_fetch::registry::{
 use semver::{Version, VersionReq};
 
 use crate::ordered_json::{Json, Object};
-use crate::project::{CONFIG_FILE, LOCK_FILE};
+use crate::project::{CONFIG_FILE, LOCK_FILE, TS_CONFIG_FILE};
 use crate::{atomic, ui};
 
 /// A located `rpp.json` project and its parsed manifest.
@@ -25,9 +25,11 @@ impl Manifest {
     /// is an empty manifest when `create` is set (rooted at `dir`), else an error.
     fn discover(dir: &Path, command: &str, create: bool) -> Result<Self> {
         let start = std::path::absolute(dir).context("reading current directory")?;
-        let found = start
-            .ancestors()
-            .find(|d| d.join(PACKAGE_MANIFEST).is_file() || d.join(CONFIG_FILE).is_file());
+        let found = start.ancestors().find(|d| {
+            [PACKAGE_MANIFEST, CONFIG_FILE, TS_CONFIG_FILE]
+                .iter()
+                .any(|name| d.join(name).is_file())
+        });
         let root = match found {
             Some(root) => root.to_path_buf(),
             None if create => start,
@@ -87,7 +89,7 @@ impl Manifest {
     }
 }
 
-fn rpp_version() -> Result<Version> {
+pub(crate) fn rpp_version() -> Result<Version> {
     Version::parse(env!("CARGO_PKG_VERSION")).context("parsing the rpp version")
 }
 

@@ -1,8 +1,7 @@
-use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 
-use rpp_js::{bundle, BundleRequest, Error};
+use rpp_js::{bundle, BundlePackage, BundleRequest, Error};
 use tempfile::TempDir;
 
 fn write(root: &Path, name: &str, contents: &str) {
@@ -15,7 +14,7 @@ fn request(root: &Path, entry: &str) -> BundleRequest {
     BundleRequest {
         root: root.to_path_buf(),
         entry: entry.to_string(),
-        virtual_modules: BTreeMap::new(),
+        ..Default::default()
     }
 }
 
@@ -226,5 +225,116 @@ fn inputs_exclude_bundler_runtime_helpers() {
     assert_eq!(
         bundle.inputs,
         vec![root.join("legacy.cjs"), root.join("main.ts")]
+    );
+}
+
+fn package_request(root: &Path, pkg: &Path) -> BundleRequest {
+    let mut req = request(root, "main.ts");
+    req.packages.insert(
+        "#plugins/window".to_string(),
+        BundlePackage {
+            dir: pkg.to_path_buf(),
+            entry: "index.ts".to_string(),
+        },
+    );
+    req
+}
+
+#[test]
+fn package_specifier_resolves_outside_root() {
+    let root_dir = TempDir::new().unwrap();
+    let pkg_dir = TempDir::new().unwrap();
+    let root = root_dir.path().canonicalize().unwrap();
+    let pkg = pkg_dir.path().canonicalize().unwrap();
+    write(
+        &root,
+        "main.ts",
+        "import { win } from '#plugins/window';\nexport const out: string = win();\n",
+    );
+    write(
+        &pkg,
+        "index.ts",
+        "import { host } from '#rpp';\nimport { name } from './lib/name';\nexport const win = (): string => host() + name;\n",
+    );
+    write(
+        &pkg,
+        "lib/name.ts",
+        "export const name: string = 'window';\n",
+    );
+    let mut req = package_request(&root, &pkg);
+    req.virtual_modules.insert(
+        "#rpp".to_string(),
+        "export function host(): string { return 'host'; }\n".to_string(),
+    );
+
+    let bundle = bundle(&req).unwrap();
+
+    assert!(bundle.code.contains("window"), "{}", bundle.code);
+    let mut expected = vec![
+        pkg.join("index.ts"),
+        pkg.join("lib/name.ts"),
+        root.join("main.ts"),
+    ];
+    expected.sort();
+    assert_eq!(bundle.inputs, expected);
+}
+
+#[test]
+fn package_files_cannot_escape_their_dir() {
+    let base = TempDir::new().unwrap();
+    let base = base.path().canonicalize().unwrap();
+    let root = base.join("root");
+    let pkg = base.join("pkg");
+    write(&base, "secret.ts", "export const secret = 1;\n");
+    write(
+        &root,
+        "main.ts",
+        "import { win } from '#plugins/window';\nexport const out = win;\n",
+    );
+    write(
+        &pkg,
+        "index.ts",
+        "import { secret } from '../secret';\nexport const win = secret;\n",
+    );
+
+    let message = bundle_error(&package_request(&root, &pkg));
+
+    assert!(message.contains("../secret"), "{message}");
+    assert!(message.contains("outside the root"), "{message}");
+}
+
+#[test]
+fn package_sources_are_labelled_by_specifier() {
+    let root_dir = TempDir::new().unwrap();
+    let pkg_dir = TempDir::new().unwrap();
+    let root = root_dir.path().canonicalize().unwrap();
+    let pkg = pkg_dir.path().canonicalize().unwrap();
+    write(
+        &root,
+        "main.ts",
+        "import { win } from '#plugins/window';\nexport const out = win;\n",
+    );
+    write(
+        &pkg,
+        "index.ts",
+        "import { n } from './lib/n';\nexport const win = n() + n();\n",
+    );
+    write(
+        &pkg,
+        "lib/n.ts",
+        "export const n = (): number => Math.random();\n",
+    );
+
+    let bundle = bundle(&package_request(&root, &pkg)).unwrap();
+
+    let mut sources = source_list(&bundle.source_map);
+    sources.sort();
+    assert_eq!(
+        sources,
+        vec![
+            "#plugins/window/index.ts",
+            "#plugins/window/lib/n.ts",
+            "main.ts"
+        ]
     );
 }

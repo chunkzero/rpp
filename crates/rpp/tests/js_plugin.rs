@@ -502,3 +502,27 @@ export default definePlugin({
     let error = instance.generate(&mut Recorder::default()).unwrap_err();
     assert!(error.to_string().contains("must not contain"), "{error}");
 }
+
+#[test]
+fn loads_plugin_with_only_rpp_json() {
+    let dir = tempfile::tempdir().unwrap();
+    write_file(
+        dir.path(),
+        "rpp.json",
+        r#"{ "name": "json-only", "version": "1.0.0" }"#,
+    );
+    write_file(
+        dir.path(),
+        "src/plugin.ts",
+        r##"
+import { definePlugin } from "#rpp";
+export default definePlugin({
+  processors: { set: { files: "**/*", run(ctx, file) { file.text = "ok"; } } },
+});
+"##,
+    );
+    let factory = load(dir.path(), "");
+    let mut instance = factory.instantiate().unwrap();
+    let (file, _) = process(instance.as_mut(), "set", "a.txt", "x");
+    assert_eq!(text(&file), "ok");
+}

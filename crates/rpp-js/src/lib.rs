@@ -22,7 +22,7 @@ mod runtime;
 mod sourcemap;
 mod termination;
 
-pub use bundle::{bundle, Bundle, BundleRequest};
+pub use bundle::{bundle, Bundle, BundlePackage, BundleRequest};
 pub use engine::{Engine, Runtime};
 pub use error::{Error, Result};
 pub use model::{Call, Cancellation, Clock, Host, HostReply, Limits, Log, LogLevel, Output};

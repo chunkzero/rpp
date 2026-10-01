@@ -2,6 +2,8 @@
 //! because dependencies may enable `serde_json/arbitrary_precision`, which changes how
 //! numbers deserialize.
 
+#![cfg_attr(not(any(feature = "lua", feature = "js")), allow(dead_code))]
+
 use serde_json::Value;
 
 /// The single key of the object that stands for a TOML datetime in tagged JSON.
