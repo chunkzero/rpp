@@ -15,6 +15,12 @@ impl Guest for Component {
             core::hint::spin_loop();
         }
     }
+
+    fn sleep_hour() -> u64 {
+        let start = std::time::Instant::now();
+        std::thread::sleep(std::time::Duration::from_secs(3600));
+        start.elapsed().as_nanos() as u64
+    }
 }
 
 export!(Component);

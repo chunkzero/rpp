@@ -16,7 +16,7 @@ use wasmtime::{Config, Engine, Store};
 use wasmtime_wasi::p2;
 
 use crate::instance::map_timeout;
-use crate::store::StoreData;
+use crate::store::{link_instant_subscriptions, StoreData};
 use crate::types::{Function, Limits, Permissions, Schema, ValueType};
 use crate::{Error, Result, WasmInstance};
 
@@ -211,6 +211,9 @@ impl CompiledComponent {
         validate_imports(&self.schema.imports, &permissions)?;
         let mut linker = Linker::new(&self.engine.engine);
         p2::add_to_linker_sync(&mut linker).map_err(Error::Engine)?;
+        if !permissions.clocks {
+            link_instant_subscriptions(&mut linker).map_err(Error::Engine)?;
+        }
 
         let mut store = self.engine.new_store(permissions)?;
         store.set_epoch_deadline(ticks);
