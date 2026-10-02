@@ -22,7 +22,7 @@ if [ "$(uname -s)" != Linux ] || [ "$(uname -m)" != x86_64 ]; then
   exit 1
 fi
 
-version=$(sed -n '/^\[workspace\.package\]/,/^\[/{s/^version = "\(.*\)"$/\1/p}' Cargo.toml)
+version=${RPP_RELEASE_VERSION:-$(sed -n '/^\[workspace\.package\]/,/^\[/{s/^version = "\(.*\)"$/\1/p}' Cargo.toml)}
 if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
   echo "Release archives require a semantic version, got '$version'." >&2
   exit 1
@@ -61,6 +61,7 @@ tar -xzf "$work/typescript.tgz" -C "$work/typescript" --strip-components=1
 tar -xzf "$work/native.tgz" -C "$work/native" --strip-components=1
 install -m 755 "$executable" "$root/rpp"
 install -m 644 LICENSE-MIT LICENSE-APACHE "$root/"
+printf '{"version":"%s","source":"%s"}\n' "$version" "${GITHUB_SHA:-$(git rev-parse HEAD)}" > "$root/release.json"
 cp "$work"/native/lib/* "$compiler/"
 install -m 644 "$work/typescript/LICENSE" "$work/typescript/NOTICE.txt" "$compiler/"
 chmod 755 "$compiler/tsc"
