@@ -3,7 +3,7 @@
 //! A plugin whose `rpp.json` `entry` ends in `.ts`, `.mts`, `.js` or `.mjs` is bundled with
 //! three virtual modules:
 //!
-//! - `#rpp`: the SDK ([`SDK_FILES`]), whose public API is `sdk/index.ts`.
+//! - `#rpp`: the SDK ([`SDK_FILES`]), `sdk/index.ts` followed by `sdk/components.ts`.
 //! - `rpp:runtime`: `sdk/runtime.ts`, the dispatcher below.
 //! - `rpp:entry`: `import plugin from "./<entry>"; import { register } from "rpp:runtime";
 //!   register(plugin); export * from "rpp:runtime";`
@@ -82,8 +82,12 @@ use crate::config::LimitsConfig;
 pub use config::{evaluate_config, ConfigPackage, EvaluatedConfig, CONFIG_FILE};
 pub use factory::{JsPluginFactory, JsPluginSpec};
 
-/// `sdk/index.ts`, the plugin SDK imported as `#rpp`.
-const SDK_INDEX: &str = include_str!("sdk/index.ts");
+/// The plugin SDK imported as `#rpp`: `sdk/index.ts` with `sdk/components.ts` appended.
+const SDK_INDEX: &str = concat!(
+    include_str!("sdk/index.ts"),
+    "\n",
+    include_str!("sdk/components.ts")
+);
 /// `sdk/config.ts`, the config SDK imported as `#rpp/config`.
 const SDK_CONFIG: &str = include_str!("sdk/config.ts");
 

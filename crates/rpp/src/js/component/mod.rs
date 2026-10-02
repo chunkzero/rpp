@@ -1,5 +1,5 @@
 //! WASM components for JavaScript plugins: the `component.load` and `component.call`
-//! host calls. Values cross in the [`wire`] encoding (see `sdk/index.ts`).
+//! host calls. Values cross in the [`wire`] encoding (see `sdk/components.ts`).
 
 mod wire;
 

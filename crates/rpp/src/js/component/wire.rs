@@ -1,4 +1,4 @@
-//! The wire encoding of component values exchanged with `sdk/index.ts`.
+//! The wire encoding of component values exchanged with `sdk/components.ts`.
 
 use rpp_wasm::{Function, Value as WasmValue, ValueType};
 use serde_json::{json, Map, Value};
