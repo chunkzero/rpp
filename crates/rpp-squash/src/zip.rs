@@ -18,13 +18,16 @@ const FILE_MODE: u32 = 0o644;
 
 const COMPRESSION_LEVEL: i64 = 9;
 
+/// Name prefix of the staging files created beside the destination archive.
+const STAGING_PREFIX: &str = ".rpp-release-";
+
 /// Write a deterministic zip archive of `dir` to `zip_path`, replacing any
 /// existing file atomically.
 ///
 /// The archive is staged in a temporary file beside `zip_path`, flushed, given
 /// mode 0644 on unix, and then renamed into place; on failure the previous
 /// archive is left untouched and no temporary file remains. When `zip_path` is
-/// inside `dir` it is excluded from the archive.
+/// inside `dir`, it and any staging files beside it are excluded from the archive.
 ///
 /// Archive bytes are deterministic, see [`zip_to_vec`].
 pub fn write_zip(dir: &Path, zip_path: &Path) -> Result<()> {
@@ -37,7 +40,7 @@ pub fn write_zip(dir: &Path, zip_path: &Path) -> Result<()> {
         .filter(|parent| !parent.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."));
     let mut tmp = tempfile::Builder::new()
-        .prefix(".rpp-release-")
+        .prefix(STAGING_PREFIX)
         .tempfile_in(parent)
         .map_err(|err| Error::io(parent, err))?;
 
@@ -66,16 +69,26 @@ pub fn zip_to_vec(dir: &Path) -> Result<Vec<u8>> {
     Ok(cursor.into_inner())
 }
 
-/// Regular files under `dir` in archive order, skipping `exclude` when present.
+/// Regular files under `dir` in archive order, skipping the destination archive
+/// `exclude` and the staging files beside it when present.
 fn archive_entries(dir: &Path, exclude: Option<&Path>) -> Result<Vec<WalkedFile>> {
     let mut entries = walk_files(dir)?;
-    entries.retain(|entry| Some(entry.abs.as_path()) != exclude);
+    entries.retain(|entry| !exclude.is_some_and(|zip| is_destination_artifact(&entry.abs, zip)));
     entries.sort_by(|a, b| {
         let a_first = a.rel == PACK_MCMETA;
         let b_first = b.rel == PACK_MCMETA;
         b_first.cmp(&a_first).then_with(|| a.rel.cmp(&b.rel))
     });
     Ok(entries)
+}
+
+/// Whether `path` is the destination archive or a staging file beside it.
+fn is_destination_artifact(path: &Path, zip_path: &Path) -> bool {
+    path == zip_path
+        || (path.parent() == zip_path.parent()
+            && path
+                .file_name()
+                .is_some_and(|name| name.to_string_lossy().starts_with(STAGING_PREFIX)))
 }
 
 /// Write `entries` as a zip archive into `sink`. `label` names the archive in errors.
@@ -201,5 +214,21 @@ mod tests {
         write_zip(input.path(), &path).unwrap();
         let archive = zip::ZipArchive::new(fs::File::open(&path).unwrap()).unwrap();
         assert_eq!(archive.file_names().collect::<Vec<_>>(), ["pack.mcmeta"]);
+    }
+
+    #[test]
+    fn staging_files_beside_destination_are_excluded() {
+        let input = pack_dir();
+        let path = input.path().join("pack.zip");
+        fs::write(input.path().join(".rpp-release-other"), "in flight").unwrap();
+        let sub = input.path().join("sub");
+        fs::create_dir(&sub).unwrap();
+        fs::write(sub.join(".rpp-release-keep"), "ordinary").unwrap();
+        write_zip(input.path(), &path).unwrap();
+        let archive = zip::ZipArchive::new(fs::File::open(&path).unwrap()).unwrap();
+        assert_eq!(
+            archive.file_names().collect::<Vec<_>>(),
+            ["pack.mcmeta", "sub/.rpp-release-keep"]
+        );
     }
 }
