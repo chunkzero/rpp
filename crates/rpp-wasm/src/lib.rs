@@ -2,16 +2,16 @@
 
 #![deny(missing_docs)]
 
+mod component;
 mod engine;
 mod error;
 mod instance;
 mod store;
 mod types;
+mod value;
 
-pub use engine::{CompiledComponent, WasmEngine};
+pub use component::CompiledComponent;
+pub use engine::WasmEngine;
 pub use error::{Error, Result};
 pub use instance::WasmInstance;
-pub use types::{
-    Function, Limits, Permissions, Preopen, Schema, Value, ValueType, DEFAULT_DEADLINE,
-    DEFAULT_MEMORY_LIMIT,
-};
+pub use types::{Function, Limits, Permissions, Preopen, Schema, Value, ValueType};

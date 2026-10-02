@@ -346,7 +346,7 @@ pub struct WasmEngine { /* wasmtime Engine, shared */ }
 pub struct CompiledComponent { /* Component + schema, Send+Sync, cheap to instantiate */ }
 pub struct WasmInstance { /* Store + bindings */ }
 
-impl WasmEngine { pub fn new() -> Result<Self>; pub fn load(&self, wasm_path: &Path) -> Result<CompiledComponent>; }
+impl WasmEngine { pub fn new(limits: Limits, cache_dir: Option<&Path>) -> Result<Self>; pub fn load(&self, wasm_path: &Path) -> Result<CompiledComponent>; }
 impl CompiledComponent { pub fn schema(&self) -> &Schema; pub fn instantiate(&self, permissions: Permissions) -> Result<WasmInstance>; }
 impl WasmInstance {
     pub fn call(&mut self, export_path: &str, args: &[Value]) -> Result<Vec<Value>>;

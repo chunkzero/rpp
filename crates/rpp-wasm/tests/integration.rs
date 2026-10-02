@@ -67,7 +67,7 @@ fn schema_and_dynamic_call() {
     let Some(fixture) = build_fixture(&fixture("math-component"), "math_component") else {
         return;
     };
-    let engine = WasmEngine::new().unwrap();
+    let engine = WasmEngine::new(Limits::default(), None).unwrap();
     let component = engine.load(&fixture.wasm).unwrap();
     assert!(component.schema().functions.iter().any(|f| f.path == "add"));
 
@@ -83,10 +83,13 @@ fn timeout_interrupts_guest() {
     let Some(fixture) = build_fixture(&fixture("math-component"), "math_component") else {
         return;
     };
-    let engine = WasmEngine::with_limits(Limits {
-        deadline: Duration::from_millis(100),
-        ..Limits::default()
-    })
+    let engine = WasmEngine::new(
+        Limits {
+            deadline: Duration::from_millis(100),
+            ..Limits::default()
+        },
+        None,
+    )
     .unwrap();
     let component = engine.load(&fixture.wasm).unwrap();
     let mut instance = component.instantiate(Permissions::default()).unwrap();
@@ -101,7 +104,7 @@ fn call_with_deadline_caps_timeout() {
     let Some(fixture) = build_fixture(&fixture("math-component"), "math_component") else {
         return;
     };
-    let engine = WasmEngine::new().unwrap();
+    let engine = WasmEngine::new(Limits::default(), None).unwrap();
     let component = engine.load(&fixture.wasm).unwrap();
     let mut instance = component.instantiate(Permissions::default()).unwrap();
     let limit = Duration::from_millis(100);
@@ -116,7 +119,7 @@ fn sleeping_returns_immediately_on_fixed_clock() {
     let Some(fixture) = build_fixture(&fixture("math-component"), "math_component") else {
         return;
     };
-    let engine = WasmEngine::new().unwrap();
+    let engine = WasmEngine::new(Limits::default(), None).unwrap();
     let component = engine.load(&fixture.wasm).unwrap();
     let mut instance = component.instantiate(Permissions::default()).unwrap();
     let started = std::time::Instant::now();

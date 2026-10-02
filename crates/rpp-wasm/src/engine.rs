@@ -1,4 +1,4 @@
-//! Shared wasmtime engine and compiled component handles.
+//! Shared wasmtime engine.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -10,15 +10,12 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 use sha2::{Digest, Sha256};
-use wasmtime::component::types::{ComponentItem, Type};
-use wasmtime::component::{Component, Linker};
+use wasmtime::component::Component;
 use wasmtime::{Config, Engine, Store};
-use wasmtime_wasi::p2;
 
-use crate::instance::map_timeout;
-use crate::store::{link_instant_subscriptions, StoreData};
-use crate::types::{Function, Limits, Permissions, Schema, ValueType};
-use crate::{Error, Result, WasmInstance};
+use crate::store::StoreData;
+use crate::types::{Limits, Permissions};
+use crate::{CompiledComponent, Error, Result};
 
 const EPOCH_TICK: Duration = Duration::from_millis(50);
 
@@ -69,52 +66,22 @@ impl Limits {
 /// Shared engine used to compile component libraries.
 #[derive(Clone)]
 pub struct WasmEngine {
-    engine: Engine,
-    limits: Limits,
+    pub(crate) engine: Engine,
+    pub(crate) limits: Limits,
     _ticker: Arc<EpochTicker>,
     components: Arc<Mutex<HashMap<[u8; 32], Component>>>,
 }
 
 impl WasmEngine {
-    /// Construct an engine with default limits.
-    pub fn new() -> Result<Self> {
-        Self::build(Limits::default(), None)
-    }
-
-    /// Construct an engine with custom limits.
-    pub fn with_limits(limits: Limits) -> Result<Self> {
-        Self::build(limits, None)
-    }
-
-    /// Construct an engine using a persistent Wasmtime compilation cache.
-    pub fn with_cache_dir(cache_dir: impl AsRef<Path>) -> Result<Self> {
-        Self::build(Limits::default(), Some(cache_dir.as_ref()))
-    }
-
-    /// Construct an engine with custom limits and a persistent compilation cache.
-    pub fn with_limits_and_cache(limits: Limits, cache_dir: impl AsRef<Path>) -> Result<Self> {
-        Self::build(limits, Some(cache_dir.as_ref()))
-    }
-
-    fn build(limits: Limits, cache_dir: Option<&Path>) -> Result<Self> {
+    /// Construct an engine with the given limits. When `cache_dir` is set, Wasmtime
+    /// persists compiled code there; a relative path resolves against the current
+    /// directory.
+    pub fn new(limits: Limits, cache_dir: Option<&Path>) -> Result<Self> {
         let mut config = Config::new();
         config.wasm_component_model(true);
         config.epoch_interruption(true);
         if let Some(cache_dir) = cache_dir {
-            let cache_dir = if cache_dir.is_absolute() {
-                cache_dir.to_path_buf()
-            } else {
-                std::env::current_dir()
-                    .map_err(|source| Error::Io {
-                        path: PathBuf::from("."),
-                        source,
-                    })?
-                    .join(cache_dir)
-            };
-            let mut cache_config = wasmtime::CacheConfig::new();
-            cache_config.with_directory(cache_dir);
-            let cache = wasmtime::Cache::new(cache_config).map_err(Error::Engine)?;
-            config.cache(Some(cache));
+            config.cache(Some(compilation_cache(cache_dir)?));
         }
         let engine = Engine::new(&config).map_err(Error::Engine)?;
         let ticker = EpochTicker::spawn(engine.clone()).map_err(Error::EpochTicker)?;
@@ -150,12 +117,7 @@ impl WasmEngine {
                 component
             }
         };
-        let schema = schema(&self.engine, &component);
-        Ok(CompiledComponent {
-            engine: self.clone(),
-            component,
-            schema,
-        })
+        Ok(CompiledComponent::new(self.clone(), component))
     }
 
     pub(crate) fn new_store(&self, permissions: Permissions) -> Result<Store<StoreData>> {
@@ -168,176 +130,15 @@ impl WasmEngine {
     }
 }
 
-/// A compiled, reusable component library.
-#[derive(Clone)]
-pub struct CompiledComponent {
-    engine: WasmEngine,
-    component: Component,
-    schema: Schema,
-}
-
-impl CompiledComponent {
-    /// Discovered imports and exported function signatures.
-    pub fn schema(&self) -> &Schema {
-        &self.schema
-    }
-
-    /// Instantiate with an explicit capability set.
-    pub fn instantiate(&self, permissions: Permissions) -> Result<WasmInstance> {
-        self.instantiate_with_ticks(
-            permissions,
-            self.engine.limits.epoch_ticks(),
-            self.engine.limits.deadline,
-        )
-    }
-
-    /// Like [`Self::instantiate`], with the deadline for start functions capped at `limit`.
-    /// A timeout reports the effective deadline.
-    pub fn instantiate_with_deadline(
-        &self,
-        permissions: Permissions,
-        limit: Duration,
-    ) -> Result<WasmInstance> {
-        let deadline = limit.min(self.engine.limits.deadline);
-        self.instantiate_with_ticks(permissions, ticks_for(deadline), deadline)
-    }
-
-    fn instantiate_with_ticks(
-        &self,
-        permissions: Permissions,
-        ticks: u64,
-        deadline: Duration,
-    ) -> Result<WasmInstance> {
-        validate_imports(&self.schema.imports, &permissions)?;
-        let mut linker = Linker::new(&self.engine.engine);
-        p2::add_to_linker_sync(&mut linker).map_err(Error::Engine)?;
-        if !permissions.clocks {
-            link_instant_subscriptions(&mut linker).map_err(Error::Engine)?;
-        }
-
-        let mut store = self.engine.new_store(permissions)?;
-        store.set_epoch_deadline(ticks);
-        let instance = linker
-            .instantiate(&mut store, &self.component)
-            .map_err(|error| map_timeout(error, deadline))?;
-        Ok(WasmInstance {
-            store,
-            instance,
-            epoch_ticks: self.engine.limits.epoch_ticks(),
-            deadline: self.engine.limits.deadline,
-        })
-    }
-}
-
-fn schema(engine: &Engine, component: &Component) -> Schema {
-    let ty = component.component_type();
-    let imports = ty
-        .imports(engine)
-        .map(|(name, _)| name.to_string())
-        .collect();
-    let mut functions = Vec::new();
-    for (name, item) in ty.exports(engine) {
-        collect_functions(engine, name, item.ty, &mut functions);
-    }
-    functions.sort_by(|a, b| a.path.cmp(&b.path));
-    Schema { imports, functions }
-}
-
-fn collect_functions(engine: &Engine, path: &str, item: ComponentItem, output: &mut Vec<Function>) {
-    match item {
-        ComponentItem::ComponentFunc(function) => output.push(Function {
-            path: path.to_string(),
-            params: function
-                .params()
-                .map(|(name, ty)| (name.to_string(), value_type(ty)))
-                .collect(),
-            results: function.results().map(value_type).collect(),
-        }),
-        ComponentItem::ComponentInstance(instance) => {
-            for (name, item) in instance.exports(engine) {
-                collect_functions(engine, &format!("{path}#{name}"), item.ty, output);
-            }
-        }
-        _ => {}
-    }
-}
-
-fn value_type(ty: Type) -> ValueType {
-    match ty {
-        Type::Bool => ValueType::Bool,
-        Type::S8 => ValueType::S8,
-        Type::U8 => ValueType::U8,
-        Type::S16 => ValueType::S16,
-        Type::U16 => ValueType::U16,
-        Type::S32 => ValueType::S32,
-        Type::U32 => ValueType::U32,
-        Type::S64 => ValueType::S64,
-        Type::U64 => ValueType::U64,
-        Type::Float32 => ValueType::Float32,
-        Type::Float64 => ValueType::Float64,
-        Type::Char => ValueType::Char,
-        Type::String => ValueType::String,
-        Type::List(list) => ValueType::List(Box::new(value_type(list.ty()))),
-        Type::Record(record) => ValueType::Record(
-            record
-                .fields()
-                .map(|field| (field.name.to_string(), value_type(field.ty)))
-                .collect(),
-        ),
-        Type::Tuple(tuple) => ValueType::Tuple(tuple.types().map(value_type).collect()),
-        Type::Variant(variant) => ValueType::Variant(
-            variant
-                .cases()
-                .map(|case| (case.name.to_string(), case.ty.map(value_type)))
-                .collect(),
-        ),
-        Type::Enum(enum_) => ValueType::Enum(enum_.names().map(str::to_string).collect()),
-        Type::Option(option) => ValueType::Option(Box::new(value_type(option.ty()))),
-        Type::Result(result) => ValueType::Result {
-            ok: result.ok().map(value_type).map(Box::new),
-            err: result.err().map(value_type).map(Box::new),
-        },
-        Type::Flags(flags) => ValueType::Flags(flags.names().map(str::to_string).collect()),
-        Type::Own(_) | Type::Borrow(_) => ValueType::Unsupported("resource".into()),
-        Type::Future(_) => ValueType::Unsupported("future".into()),
-        Type::Stream(_) => ValueType::Unsupported("stream".into()),
-        Type::ErrorContext => ValueType::Unsupported("error-context".into()),
-        Type::Map(_) => ValueType::Unsupported("map".into()),
-        Type::FixedLengthList(_) => ValueType::Unsupported("fixed-length list".into()),
-    }
-}
-
-fn validate_imports(imports: &[String], permissions: &Permissions) -> Result<()> {
-    for import in imports {
-        let allowed = if import.starts_with("wasi:sockets/") {
-            permissions.network
-        } else if import.starts_with("wasi:filesystem/") {
-            !permissions.preopens.is_empty()
-        } else {
-            // Clock and random imports receive deterministic values unless
-            // granted; cli/io are always linked.
-            import.starts_with("wasi:clocks/")
-                || import.starts_with("wasi:random/")
-                || import.starts_with("wasi:cli/environment")
-                || import.starts_with("wasi:cli/exit")
-                || import.starts_with("wasi:cli/std")
-                || import.starts_with("wasi:cli/terminal")
-                || import.starts_with("wasi:io/")
-        };
-        if !allowed {
-            return Err(Error::DeniedCapability(import.clone()));
-        }
-    }
-    Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn clock_imports_are_allowed_without_permission() {
-        let imports = vec!["wasi:clocks/monotonic-clock@0.2.6".to_string()];
-        assert!(validate_imports(&imports, &Permissions::default()).is_ok());
-    }
+fn compilation_cache(cache_dir: &Path) -> Result<wasmtime::Cache> {
+    let cache_dir: PathBuf = if cache_dir.is_absolute() {
+        cache_dir.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map_err(Error::CurrentDir)?
+            .join(cache_dir)
+    };
+    let mut cache_config = wasmtime::CacheConfig::new();
+    cache_config.with_directory(cache_dir);
+    wasmtime::Cache::new(cache_config).map_err(Error::Engine)
 }
