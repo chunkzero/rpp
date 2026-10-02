@@ -1,57 +1,7 @@
 //! The wire encoding of component values exchanged with `sdk/components.ts`.
 
-use rpp_wasm::{Function, Value as WasmValue, ValueType};
+use rpp_wasm::{Value as WasmValue, ValueType};
 use serde_json::{json, Map, Value};
-
-/// The JSON descriptor of an export: `{ path, params: [[name, type]], results: [type] }`.
-pub(super) fn function_json(function: &Function) -> Value {
-    json!({
-        "path": function.path,
-        "params": function
-            .params
-            .iter()
-            .map(|(name, ty)| json!([name, type_json(ty)]))
-            .collect::<Vec<_>>(),
-        "results": function.results.iter().map(type_json).collect::<Vec<_>>(),
-    })
-}
-
-/// The JSON descriptor of a value type.
-fn type_json(ty: &ValueType) -> Value {
-    let optional = |ty: Option<&ValueType>| ty.map_or(Value::Null, type_json);
-    match ty {
-        ValueType::Bool => json!("bool"),
-        ValueType::S8 => json!("s8"),
-        ValueType::U8 => json!("u8"),
-        ValueType::S16 => json!("s16"),
-        ValueType::U16 => json!("u16"),
-        ValueType::S32 => json!("s32"),
-        ValueType::U32 => json!("u32"),
-        ValueType::S64 => json!("s64"),
-        ValueType::U64 => json!("u64"),
-        ValueType::Float32 => json!("float32"),
-        ValueType::Float64 => json!("float64"),
-        ValueType::Char => json!("char"),
-        ValueType::String => json!("string"),
-        ValueType::List(inner) => json!({ "list": type_json(inner) }),
-        ValueType::Record(fields) => {
-            json!({ "record": fields.iter().map(|(n, t)| json!([n, type_json(t)])).collect::<Vec<_>>() })
-        }
-        ValueType::Tuple(types) => {
-            json!({ "tuple": types.iter().map(type_json).collect::<Vec<_>>() })
-        }
-        ValueType::Variant(cases) => {
-            json!({ "variant": cases.iter().map(|(n, t)| json!([n, optional(t.as_ref())])).collect::<Vec<_>>() })
-        }
-        ValueType::Enum(cases) => json!({ "enum": cases }),
-        ValueType::Option(inner) => json!({ "option": type_json(inner) }),
-        ValueType::Result { ok, err } => {
-            json!({ "result": { "ok": optional(ok.as_deref()), "err": optional(err.as_deref()) } })
-        }
-        ValueType::Flags(names) => json!({ "flags": names }),
-        ValueType::Unsupported(kind) => json!({ "unsupported": kind }),
-    }
-}
 
 fn int<T: TryFrom<i64>>(value: &Value, name: &str) -> Result<T, String> {
     value
@@ -100,27 +50,17 @@ fn string<'a>(value: &'a Value, what: &str) -> Result<&'a str, String> {
         .ok_or_else(|| format!("expected {what}, got {value}"))
 }
 
-fn payload<'a>(
-    value: Option<&'a Value>,
-    ty: Option<&ValueType>,
-) -> Result<Option<&'a Value>, String> {
-    let value = value.filter(|v| !v.is_null());
-    match (value, ty) {
-        (Some(v), Some(_)) => Ok(Some(v)),
-        (None, None) => Ok(None),
-        (None, Some(_)) => Err("missing payload".into()),
-        (Some(_), None) => Err("unexpected payload".into()),
-    }
-}
-
-fn boxed(
+/// A variant or result payload; `null` stands for no payload.
+fn payload_from_wire(
     value: Option<&Value>,
     ty: Option<&ValueType>,
     bytes: &[u8],
 ) -> Result<Option<Box<WasmValue>>, String> {
-    match (value, ty) {
+    match (value.filter(|v| !v.is_null()), ty) {
         (Some(v), Some(ty)) => Ok(Some(Box::new(from_wire(v, ty, bytes)?))),
-        _ => Ok(None),
+        (None, None) => Ok(None),
+        (None, Some(_)) => Err("missing payload".into()),
+        (Some(_), None) => Err("unexpected payload".into()),
     }
 }
 
@@ -281,10 +221,8 @@ fn variant_from_wire(
         .and_then(Value::as_str)
         .ok_or("variant requires a string `tag`")?;
     let ty = case(cases, tag, "variant")?;
-    let value = payload(object.get("val"), ty.as_ref())
+    let value = payload_from_wire(object.get("val"), ty.as_ref(), bytes)
         .map_err(|m| format!("variant case `{tag}`: {m}"))?;
-    let value =
-        boxed(value, ty.as_ref(), bytes).map_err(|m| format!("variant case `{tag}`: {m}"))?;
     Ok(WasmValue::Variant(tag.to_string(), value))
 }
 
@@ -300,8 +238,7 @@ fn result_from_wire(
         (None, Some(v)) => (v, err),
         _ => return Err("result must contain exactly one of `ok` or `err`".into()),
     };
-    let value = payload(Some(branch), ty)?;
-    let value = boxed(value, ty, bytes)?;
+    let value = payload_from_wire(Some(branch), ty, bytes)?;
     Ok(WasmValue::Result(if object.contains_key("ok") {
         Ok(value)
     } else {
@@ -344,7 +281,7 @@ fn mismatch<T>(ty: &ValueType) -> Result<T, String> {
     ))
 }
 
-fn payload_wire(
+fn payload_to_wire(
     value: Option<Box<WasmValue>>,
     ty: Option<&ValueType>,
     out: &mut Vec<u8>,
@@ -395,7 +332,7 @@ pub(super) fn to_wire(v: WasmValue, ty: &ValueType, out: &mut Vec<u8>) -> Result
         }
         (WasmValue::Variant(tag, value), ValueType::Variant(cases)) => {
             let ty = case(cases, &tag, "variant")?;
-            let val = payload_wire(value, ty.as_ref(), out)?;
+            let val = payload_to_wire(value, ty.as_ref(), out)?;
             json!({ "tag": tag, "val": val })
         }
         (WasmValue::Enum(name), ValueType::Enum(cases)) if cases.contains(&name) => json!(name),
@@ -404,8 +341,8 @@ pub(super) fn to_wire(v: WasmValue, ty: &ValueType, out: &mut Vec<u8>) -> Result
             None => Value::Array(Vec::new()),
         },
         (WasmValue::Result(result), ValueType::Result { ok, err }) => match result {
-            Ok(value) => json!({ "ok": payload_wire(value, ok.as_deref(), out)? }),
-            Err(value) => json!({ "err": payload_wire(value, err.as_deref(), out)? }),
+            Ok(value) => json!({ "ok": payload_to_wire(value, ok.as_deref(), out)? }),
+            Err(value) => json!({ "err": payload_to_wire(value, err.as_deref(), out)? }),
         },
         (WasmValue::Flags(flags), ValueType::Flags(allowed))
             if flags.iter().all(|f| allowed.contains(f)) =>
@@ -534,59 +471,6 @@ mod tests {
         for ty in [ValueType::Float32, ValueType::Float64] {
             assert_eq!(round_trip(&ty, json!("-0")), json!("-0"));
             assert_eq!(round_trip(&ty, json!(0.0)), json!(0.0));
-        }
-    }
-
-    #[test]
-    fn type_json_covers_every_value_type() {
-        let u = Box::new(ValueType::U32);
-        let cases = [
-            (ValueType::Bool, json!("bool")),
-            (ValueType::S8, json!("s8")),
-            (ValueType::U8, json!("u8")),
-            (ValueType::S16, json!("s16")),
-            (ValueType::U16, json!("u16")),
-            (ValueType::S32, json!("s32")),
-            (ValueType::U32, json!("u32")),
-            (ValueType::S64, json!("s64")),
-            (ValueType::U64, json!("u64")),
-            (ValueType::Float32, json!("float32")),
-            (ValueType::Float64, json!("float64")),
-            (ValueType::Char, json!("char")),
-            (ValueType::String, json!("string")),
-            (ValueType::List(u.clone()), json!({ "list": "u32" })),
-            (
-                ValueType::Record(vec![("a-b".into(), ValueType::Bool)]),
-                json!({ "record": [["a-b", "bool"]] }),
-            ),
-            (
-                ValueType::Tuple(vec![ValueType::Char]),
-                json!({ "tuple": ["char"] }),
-            ),
-            (
-                ValueType::Variant(vec![("x".into(), None), ("y".into(), Some(ValueType::U8))]),
-                json!({ "variant": [["x", null], ["y", "u8"]] }),
-            ),
-            (ValueType::Enum(vec!["a".into()]), json!({ "enum": ["a"] })),
-            (ValueType::Option(u.clone()), json!({ "option": "u32" })),
-            (
-                ValueType::Result {
-                    ok: None,
-                    err: Some(u),
-                },
-                json!({ "result": { "ok": null, "err": "u32" } }),
-            ),
-            (
-                ValueType::Flags(vec!["r".into()]),
-                json!({ "flags": ["r"] }),
-            ),
-            (
-                ValueType::Unsupported("resource".into()),
-                json!({ "unsupported": "resource" }),
-            ),
-        ];
-        for (ty, expected) in cases {
-            assert_eq!(type_json(&ty), expected);
         }
     }
 }

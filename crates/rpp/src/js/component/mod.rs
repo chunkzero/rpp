@@ -1,6 +1,7 @@
 //! WASM components for JavaScript plugins: the `component.load` and `component.call`
 //! host calls. Values cross in the [`wire`] encoding (see `sdk/components.ts`).
 
+mod schema;
 mod wire;
 
 use std::path::PathBuf;
@@ -14,7 +15,8 @@ use rpp_wasm::{
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use self::wire::{from_wire, function_json, to_wire};
+use self::schema::function_json;
+use self::wire::{from_wire, to_wire};
 use super::access::RuntimeAccess;
 
 static NEXT_JOB: AtomicU64 = AtomicU64::new(0);
