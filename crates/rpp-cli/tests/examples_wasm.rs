@@ -3,7 +3,7 @@
 
 mod common;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use common::{build, build_wasm_guest, copy_dir, examples_dir, stderr, wasip2_available, write};
 
@@ -36,19 +36,15 @@ fn decode_gray_alpha(path: &Path) -> Vec<u8> {
     pixels
 }
 
-#[test]
-fn grayscale_example_converts_textures() {
-    if !wasip2_available() {
-        eprintln!("SKIP: wasm32-wasip2 target is unavailable");
-        return;
-    }
-    let tmp = tempfile::tempdir().unwrap();
-    let root = tmp.path().join("project");
+/// Copies the example plugin into a fresh project under `tmp` with its guest built, and
+/// seeds two textures. Returns the project root.
+fn grayscale_project(tmp: &Path) -> PathBuf {
+    let root = tmp.join("project");
     let plugin = root.join("plugins/grayscale-wasm");
     copy_dir(&examples_dir().join("plugins/grayscale-wasm"), &plugin);
     let guest = build_wasm_guest(
         &examples_dir().join("plugins/grayscale-wasm/guest"),
-        &tmp.path().join("guest-target"),
+        &tmp.join("guest-target"),
         "grayscale_wasm_guest.wasm",
         true,
         &[],
@@ -98,6 +94,17 @@ export default defineConfig({
             Some(vec![0, 255, 0, 0, 0, 0]),
         ),
     );
+    root
+}
+
+#[test]
+fn grayscale_example_converts_textures() {
+    if !wasip2_available() {
+        eprintln!("SKIP: wasm32-wasip2 target is unavailable");
+        return;
+    }
+    let tmp = tempfile::tempdir().unwrap();
+    let root = grayscale_project(tmp.path());
 
     let out = build(&root, &["--no-squash"]);
     assert!(out.status.success(), "{}", stderr(&out));
