@@ -30,13 +30,9 @@ impl PackStore {
         })
     }
 
-    // Create outside the engine-owned output, then swap only after every step succeeds.
+    // Build the archive in memory, then swap only after every step succeeds.
     pub fn publish(&self, output: &Path) -> Result<bool> {
-        let temp = tempfile::tempdir().context("creating dev archive staging directory")?;
-        let archive = temp.path().join("pack.zip");
-        rpp_squash::write_zip(output, &archive, &Default::default())
-            .context("creating dev pack archive")?;
-        let bytes = std::fs::read(archive).context("reading dev pack archive")?;
+        let bytes = rpp_squash::zip_to_vec(output).context("creating dev pack archive")?;
         let sha1 = format!("{:x}", Sha1::digest(&bytes));
         let mut current = self.0.write().unwrap();
         if current.as_ref().is_some_and(|pack| pack.sha1 == sha1) {

@@ -1,48 +1,26 @@
 //! Single-file optimization.
 
-use crate::error::Result;
 use crate::options::{PngLevel, SquashOptions};
 
-/// Optimize a single file's bytes in isolation.
-///
-/// Dispatches by the file extension of `path`:
+/// Optimize a single file's bytes, dispatching by the extension of `path`:
 /// - `.json` / `.mcmeta`: parse with `serde_json` and re-serialize compactly.
-///   Invalid JSON is **not** an error — it is passed through and a warning is
-///   surfaced (see below); the function returns `Ok(None)`.
 /// - `.png`: optimize with oxipng ([`PngLevel::Fast`] = preset 2,
 ///   [`PngLevel::Max`] = preset 6), always stripping safe metadata chunks.
 ///
-/// Returns `Ok(Some(bytes))` only when the result is **strictly smaller** than
-/// the input; otherwise `Ok(None)` (file unchanged, not applicable, or it would
-/// have grown). `path` is used only for extension dispatch; `contents` are the
-/// bytes to optimize.
-///
-/// Warnings (e.g. invalid JSON) are emitted via `tracing::warn!` when the
-/// `tracing` feature is enabled. Callers needing to *collect* warnings should
-/// use [`crate::squash_dir`], which records them into the report.
-pub fn squash_file(path: &str, contents: Vec<u8>, opts: &SquashOptions) -> Result<Option<Vec<u8>>> {
-    let mut warnings = Vec::new();
-    let out = squash_file_collecting(path, contents, opts, &mut warnings)?;
-    for warning in warnings {
-        emit_warning(&warning);
-    }
-    Ok(out)
-}
-
-/// Like [`squash_file`] but pushes warnings into `warnings` instead of emitting
-/// them, so directory walks can aggregate them into the report.
-pub(crate) fn squash_file_collecting(
+/// Returns `Some(bytes)` only when the result is strictly smaller than the
+/// input; otherwise `None` (file unchanged, not applicable, or it would have
+/// grown). Recoverable problems (invalid JSON, PNG failures) push a message
+/// into `warnings` and also yield `None`.
+pub(crate) fn squash_file(
     path: &str,
-    contents: Vec<u8>,
+    contents: &[u8],
     opts: &SquashOptions,
     warnings: &mut Vec<String>,
-) -> Result<Option<Vec<u8>>> {
-    match Kind::of(path) {
-        Some(Kind::Json) if opts.json => Ok(squash_json(path, &contents, warnings)),
-        Some(Kind::Png) if opts.png.is_enabled() => {
-            Ok(squash_png(path, &contents, opts.png, warnings))
-        }
-        _ => Ok(None),
+) -> Option<Vec<u8>> {
+    match Kind::of(path)? {
+        Kind::Json if opts.json => squash_json(path, contents, warnings),
+        Kind::Png if opts.png != PngLevel::Off => squash_png(path, contents, opts.png, warnings),
+        _ => None,
     }
 }
 
@@ -63,11 +41,9 @@ impl Kind {
     }
 }
 
-/// Minify JSON; returns `Some` only if strictly smaller. Invalid JSON records a
-/// warning and returns `None`.
 fn squash_json(path: &str, contents: &[u8], warnings: &mut Vec<String>) -> Option<Vec<u8>> {
     let value: serde_json::Value = match serde_json::from_slice(contents) {
-        Ok(v) => v,
+        Ok(value) => value,
         Err(err) => {
             warnings.push(format!(
                 "{path}: invalid JSON, passed through unchanged ({err})"
@@ -75,32 +51,21 @@ fn squash_json(path: &str, contents: &[u8], warnings: &mut Vec<String>) -> Optio
             return None;
         }
     };
-    // Compact serialization. serde_json never fails serializing a Value it
-    // parsed, but handle the Result without unwrapping regardless.
     let minified = serde_json::to_vec(&value).ok()?;
-    if minified.len() < contents.len() {
-        Some(minified)
-    } else {
-        None
-    }
+    (minified.len() < contents.len()).then_some(minified)
 }
 
-/// Optimize a PNG; returns `Some` only if strictly smaller. Any oxipng failure
-/// yields `None` (the original is kept).
 fn squash_png(
     path: &str,
     contents: &[u8],
     level: PngLevel,
     warnings: &mut Vec<String>,
 ) -> Option<Vec<u8>> {
-    let preset = level.preset()?;
-    let mut options = oxipng::Options::from_preset(preset);
-    // Strip metadata that does not affect image display (safe, lossless).
+    let mut options = oxipng::Options::from_preset(level.preset()?);
     options.strip = oxipng::StripChunks::Safe;
 
     match oxipng::optimize_from_memory(contents, &options) {
-        Ok(optimized) if optimized.len() < contents.len() => Some(optimized),
-        Ok(_) => None,
+        Ok(optimized) => (optimized.len() < contents.len()).then_some(optimized),
         Err(err) => {
             warnings.push(format!(
                 "{path}: png optimization failed, kept original ({err})"
@@ -110,10 +75,101 @@ fn squash_png(
     }
 }
 
-/// Emit a warning via tracing when enabled; no-op otherwise.
-fn emit_warning(message: &str) {
-    #[cfg(feature = "tracing")]
-    tracing::warn!("{message}");
-    #[cfg(not(feature = "tracing"))]
-    let _ = message;
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn run(path: &str, contents: &[u8], opts: &SquashOptions) -> (Option<Vec<u8>>, Vec<String>) {
+        let mut warnings = Vec::new();
+        let out = squash_file(path, contents, opts, &mut warnings);
+        (out, warnings)
+    }
+
+    /// A 16x16 RGBA PNG with redundant data that oxipng can shrink.
+    fn make_png() -> Vec<u8> {
+        let mut buf = Vec::new();
+        {
+            let mut encoder = png::Encoder::new(&mut buf, 16, 16);
+            encoder.set_color(png::ColorType::Rgba);
+            encoder.set_depth(png::BitDepth::Eight);
+            encoder.set_compression(png::Compression::Fast);
+            let mut writer = encoder.write_header().unwrap();
+            let data = [40u8, 100, 180, 128].repeat(16 * 16);
+            writer.write_image_data(&data).unwrap();
+        }
+        buf
+    }
+
+    fn decode_png(bytes: &[u8]) -> (u32, u32, Vec<u8>) {
+        let mut decoder = png::Decoder::new(bytes);
+        decoder.set_transformations(png::Transformations::EXPAND);
+        let mut reader = decoder.read_info().expect("output must decode as PNG");
+        let mut out = vec![0; reader.output_buffer_size()];
+        let info = reader.next_frame(&mut out).expect("decode frame");
+        assert_eq!(info.color_type, png::ColorType::Rgba);
+        assert_eq!(info.bit_depth, png::BitDepth::Eight);
+        out.truncate(info.buffer_size());
+        (info.width, info.height, out)
+    }
+
+    #[test]
+    fn json_is_minified_when_smaller() {
+        let input = b"{\n  \"a\": 1,\n  \"b\": [1, 2, 3]\n}\n";
+        let (out, warnings) = run("foo.json", input, &SquashOptions::default());
+        assert_eq!(out.unwrap(), br#"{"a":1,"b":[1,2,3]}"#);
+        assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn already_minified_json_returns_none() {
+        let (out, _) = run("foo.json", br#"{"a":1}"#, &SquashOptions::default());
+        assert!(out.is_none());
+    }
+
+    #[test]
+    fn mcmeta_is_treated_as_json() {
+        let input = b"{\n  \"pack\": {\n    \"pack_format\": 34\n  }\n}";
+        let (out, _) = run("pack.mcmeta", input, &SquashOptions::default());
+        assert_eq!(out.unwrap(), br#"{"pack":{"pack_format":34}}"#);
+    }
+
+    #[test]
+    fn invalid_json_passes_through_with_warning() {
+        let (out, warnings) = run("bad.json", b"{ nope ", &SquashOptions::default());
+        assert!(out.is_none());
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("bad.json"));
+    }
+
+    #[test]
+    fn json_disabled_returns_none() {
+        let opts = SquashOptions {
+            json: false,
+            ..Default::default()
+        };
+        assert!(run("foo.json", b"{\n  \"a\": 1\n}", &opts).0.is_none());
+    }
+
+    #[test]
+    fn png_shrinks_and_preserves_pixels() {
+        let input = make_png();
+        for png in [PngLevel::Fast, PngLevel::Max] {
+            let opts = SquashOptions {
+                png,
+                ..Default::default()
+            };
+            let out = run("tex.png", &input, &opts)
+                .0
+                .expect("redundant PNG shrinks");
+            assert!(out.len() < input.len());
+            assert_eq!(decode_png(&out), decode_png(&input));
+        }
+    }
+
+    #[test]
+    fn png_disabled_returns_none() {
+        assert!(run("tex.png", &make_png(), &SquashOptions::default())
+            .0
+            .is_none());
+    }
 }

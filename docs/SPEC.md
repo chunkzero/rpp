@@ -501,14 +501,15 @@ not individual emitted files. External written/removed paths are reported separa
 ```rust
 pub struct SquashOptions { pub json: bool, pub png: PngLevel, pub strip: Vec<String>, /* … */ }
 pub enum PngLevel { Off, Fast, Max }
-pub struct SquashReport { pub files_optimized: usize, pub bytes_before: u64, pub bytes_after: u64, /* per-file details */ }
+pub struct SquashReport { pub files_optimized: usize, pub files_stripped: usize, pub bytes_before: u64, pub bytes_after: u64, pub warnings: Vec<String> }
 
 /// Optimize files in-place in a release staging directory, honoring options.
 pub fn squash_dir(dir: &Path, opts: &SquashOptions) -> Result<SquashReport>;
-/// Optimize a single file's bytes (used for incremental squash; keyed by caller).
-pub fn squash_file(path: &str, contents: Vec<u8>, opts: &SquashOptions) -> Result<Option<Vec<u8>>>;
-/// Write a deterministic zip of `dir` (sorted entries, fixed timestamps, deflate).
-pub fn write_zip(dir: &Path, zip_path: &Path, opts: &ZipOptions) -> Result<()>;
+/// Write a deterministic zip of `dir` (sorted entries, fixed timestamps, deflate)
+/// atomically: staged in a temp file beside `zip_path`, mode 0644, then renamed.
+pub fn write_zip(dir: &Path, zip_path: &Path) -> Result<()>;
+/// The same deterministic zip bytes, built in memory.
+pub fn zip_to_vec(dir: &Path) -> Result<Vec<u8>>;
 /// engine = "packsquash": invoke external binary with a generated/passthrough options file.
 pub fn run_packsquash(binary: &str, pack_dir: &Path, zip_path: &Path, options_file: Option<&Path>) -> Result<()>;
 ```

@@ -29,17 +29,14 @@ pub fn run_packsquash(
     zip_path: &Path,
     options_file: Option<&Path>,
 ) -> Result<()> {
-    // Hold the temp file alive for the duration of the call when we generate one.
-    let generated = match options_file {
-        Some(_) => None,
-        None => Some(generate_options_file(pack_dir, zip_path)?),
-    };
-    let options_path: &Path = match options_file {
+    // Keeps a generated options file alive for the duration of the call.
+    let generated;
+    let options_path = match options_file {
         Some(path) => path,
-        None => generated
-            .as_ref()
-            .expect("generated options file present")
-            .path(),
+        None => {
+            generated = generate_options_file(pack_dir, zip_path)?;
+            generated.path()
+        }
     };
 
     let output = Command::new(binary)
@@ -64,12 +61,7 @@ pub fn run_packsquash(
 }
 
 /// Write a minimal PackSquash options file to a temp file and return its handle.
-///
-/// Exposed at crate-internal visibility so tests can assert its contents.
-pub(crate) fn generate_options_file(
-    pack_dir: &Path,
-    zip_path: &Path,
-) -> Result<tempfile::NamedTempFile> {
+fn generate_options_file(pack_dir: &Path, zip_path: &Path) -> Result<tempfile::NamedTempFile> {
     let mut file = tempfile::Builder::new()
         .prefix("rpp-packsquash-")
         .suffix(".toml")
@@ -85,8 +77,7 @@ pub(crate) fn generate_options_file(
 
 /// Render the minimal options TOML body. TOML basic strings require escaping
 /// backslashes and quotes (relevant on Windows paths).
-#[doc(hidden)]
-pub fn render_options(pack_dir: &Path, zip_path: &Path) -> String {
+fn render_options(pack_dir: &Path, zip_path: &Path) -> String {
     format!(
         "pack_directory = \"{}\"\noutput_file_path = \"{}\"\n",
         toml_escape(&pack_dir.to_string_lossy()),
@@ -107,4 +98,30 @@ fn toml_escape(value: &str) -> String {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn missing_binary_errors_clearly() {
+        let dir = tempfile::tempdir().unwrap();
+        let err = run_packsquash(
+            "rpp-definitely-not-a-real-binary",
+            dir.path(),
+            &dir.path().join("out.zip"),
+            None,
+        )
+        .unwrap_err();
+        assert!(matches!(err, Error::PackSquashNotFound));
+        assert!(err.to_string().contains("builtin"));
+    }
+
+    #[test]
+    fn options_file_names_pack_and_output() {
+        let body = render_options(Path::new("/tmp/some pack"), Path::new("/tmp/out.zip"));
+        assert!(body.contains("pack_directory = \"/tmp/some pack\""));
+        assert!(body.contains("output_file_path = \"/tmp/out.zip\""));
+    }
 }
