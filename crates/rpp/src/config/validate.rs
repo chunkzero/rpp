@@ -2,6 +2,8 @@
 
 use std::path::{Component, Path};
 
+use serde_json::Value;
+
 use super::{Config, PluginConfig, SecurityMode};
 use crate::error::{Error, Result};
 use crate::manifest::{is_valid_id, ID_GRAMMAR};
@@ -73,8 +75,8 @@ impl Config {
 }
 
 impl PluginConfig {
-    /// Validate the package name, capability policy and output roots, attributing errors to
-    /// `path`.
+    /// Validate the package name, options, capability policy and output roots, attributing
+    /// errors to `path`.
     pub(crate) fn validate(&self, path: &Path) -> Result<()> {
         let package = &self.package;
         let fail = |message: String| config_error(path, message);
@@ -83,6 +85,7 @@ impl PluginConfig {
                 "plugin package `{package}` must match {ID_GRAMMAR}"
             )));
         }
+        reject_nulls(&self.options, "options").map_err(&fail)?;
         if self.security == SecurityMode::Sandboxed && !self.permissions.is_empty() {
             return Err(fail(format!(
                 "plugin `{package}` grants permissions but uses `security: \"sandboxed\"`"
@@ -112,6 +115,21 @@ impl PluginConfig {
             })?;
         }
         Ok(())
+    }
+}
+
+/// Rejects `null` anywhere in `value`, naming its path from `at`.
+pub(crate) fn reject_nulls(value: &Value, at: &str) -> std::result::Result<(), String> {
+    match value {
+        Value::Null => Err(format!("`{at}` must not be null")),
+        Value::Array(items) => items
+            .iter()
+            .enumerate()
+            .try_for_each(|(i, item)| reject_nulls(item, &format!("{at}[{i}]"))),
+        Value::Object(map) => map
+            .iter()
+            .try_for_each(|(key, item)| reject_nulls(item, &format!("{at}.{key}"))),
+        _ => Ok(()),
     }
 }
 

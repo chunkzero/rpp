@@ -454,6 +454,24 @@ fn load_rejects_permissions_on_sandboxed_plugin() {
 }
 
 #[test]
+fn load_rejects_null_options() {
+    let dir = write_plugin("export default {};\n");
+    for (options, path) in [
+        ("null", "`options`"),
+        (r#"{"nested":[null]}"#, "`options.nested[0]`"),
+    ] {
+        let error = try_load(dir.path(), options).err().unwrap();
+        assert!(matches!(error, Error::Config { .. }), "{error}");
+        assert!(
+            error
+                .to_string()
+                .contains(&format!("{path} must not be null")),
+            "{error}"
+        );
+    }
+}
+
+#[test]
 fn missing_default_export_fails_to_load() {
     let dir = write_plugin("export const plugin = {};\n");
     assert!(matches!(

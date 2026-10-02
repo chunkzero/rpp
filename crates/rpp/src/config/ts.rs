@@ -4,6 +4,7 @@ use std::path::PathBuf;
 
 use serde_json::Value;
 
+use super::validate::reject_nulls;
 use super::Config;
 use crate::error::{Error, Result};
 
@@ -26,20 +27,6 @@ pub(super) fn from_json(value: &Value, path: PathBuf) -> Result<Config> {
 /// Appends the migration guide to a rejection of a key from the removed TOML schema.
 fn guided(message: &str) -> String {
     format!("{message}; see {}", crate::MIGRATION_GUIDE)
-}
-
-fn reject_nulls(value: &Value, at: &str) -> std::result::Result<(), String> {
-    match value {
-        Value::Null => Err(format!("`{at}` must not be null")),
-        Value::Array(items) => items
-            .iter()
-            .enumerate()
-            .try_for_each(|(i, item)| reject_nulls(item, &format!("{at}[{i}]"))),
-        Value::Object(map) => map
-            .iter()
-            .try_for_each(|(key, item)| reject_nulls(item, &format!("{at}.{key}"))),
-        _ => Ok(()),
-    }
 }
 
 /// Serde derives also read arrays as positional structs, so objects are required explicitly.
