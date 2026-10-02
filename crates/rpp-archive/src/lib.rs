@@ -83,9 +83,11 @@ impl Tally {
 ///
 /// # Errors
 ///
-/// [`Error::UnsafePath`] for a path that is not portable (relative, `/`-separated, no
-/// empty, `.` or `..` components, and no `\` or `:` that Windows treats as a separator
-/// or drive prefix), or a limit error when the files exceed what [`unpack`] accepts.
+/// [`Error::UnsafePath`] for a path that is not portable to Windows: it must be relative
+/// and `/`-separated with no empty, `.` or `..` components, no control characters or
+/// `< > : " \ | ? *`, no component ending in `.` or a space, and no component whose stem
+/// is a reserved device name such as `CON` or `LPT1`. A limit error is returned when the
+/// files exceed what [`unpack`] accepts.
 pub fn pack(files: &BTreeMap<String, Vec<u8>>) -> Result<Vec<u8>> {
     pack_with(files, LIMITS)
 }
@@ -179,10 +181,26 @@ fn extract(mut entry: tar::Entry<'_, impl Read>, dest: &Path, tally: &mut Tally)
     Ok(())
 }
 
+/// Characters Windows rejects in file names.
+const WINDOWS_INVALID_CHARS: [char; 8] = ['<', '>', ':', '"', '\\', '|', '?', '*'];
+
+/// Device names Windows reserves regardless of extension or case.
+const WINDOWS_RESERVED_NAMES: [&str; 22] = [
+    "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
+    "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+];
+
 /// Whether `path` extracts to the same place on every supported platform.
 fn is_portable(path: &str) -> bool {
-    path.split('/')
-        .all(|s| !matches!(s, "" | "." | "..") && !s.contains(['\\', ':']))
+    path.split('/').all(|component| {
+        let stem = component.split('.').next().unwrap_or_default();
+        !matches!(component, "" | "." | "..")
+            && !component.contains(|c: char| c < ' ' || WINDOWS_INVALID_CHARS.contains(&c))
+            && !component.ends_with(['.', ' '])
+            && !WINDOWS_RESERVED_NAMES
+                .iter()
+                .any(|name| stem.eq_ignore_ascii_case(name))
+    })
 }
 
 /// `path` without `.` components, or `None` if it is absolute or has `..` components.
@@ -279,10 +297,28 @@ mod tests {
             "C:\\escape",
             "C:/escape",
             "a/C:",
+            "tool?.wasm",
+            "tool*.wasm",
+            "a|b",
+            "con.txt",
+            "dir/LPT1",
+            "trailing.",
+            "trailing ",
+            &format!("{}\0", "a".repeat(101)),
         ] {
             let result = pack(&files(&[(path, b"")]));
             assert!(matches!(result, Err(Error::UnsafePath(_))), "{path}");
         }
+    }
+
+    #[test]
+    fn pack_accepts_ordinary_paths() {
+        let input = files(&[
+            ("dist/plugin.js", b"a"),
+            ("components/math.wasm", b"b"),
+            ("a.b.c", b"c"),
+        ]);
+        assert!(pack(&input).is_ok());
     }
 
     #[test]

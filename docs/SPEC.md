@@ -569,8 +569,10 @@ sha256}` on stdout. `rpp.json` must set `rpp`. The archive holds the manifest wi
 
 A plugin archive (`.rpp.tgz`) is a gzipped tar of regular files at the archive root.
 `rpp_archive::pack` writes entries sorted by path with mtime 0, owner 0 and mode 0644, so
-equal files give byte-identical archives, and rejects paths that are not normalized
-`/`-separated relative paths. `rpp_archive::unpack`, used by installs (§6) and by
+equal files give byte-identical archives, and rejects paths that are not
+normalized `/`-separated relative paths that Windows can extract: no control characters
+or `< > : " \ | ? *`, no component ending in `.` or a space, and no component whose
+stem is a reserved device name such as `CON` or `LPT1`. `rpp_archive::unpack`, used by installs (§6) and by
 `rpp plugin pack`'s check, extracts only regular files and directories beneath its
 destination and rejects absolute or `..` paths, symlinks, hard links and other special
 entries. Both enforce the same limits: at most 20,000 entries, 64 MiB per file and
