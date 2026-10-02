@@ -6,14 +6,16 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use notify_debouncer_full::notify::{RecommendedWatcher, RecursiveMode, Watcher};
-use notify_debouncer_full::{new_debouncer, DebouncedEvent, Debouncer, FileIdMap};
+use notify_debouncer_full::{
+    new_debouncer, DebounceEventResult, DebouncedEvent, Debouncer, FileIdMap,
+};
 use tokio::sync::mpsc;
 
 use crate::project::Project;
 
 /// What kind of change a filesystem event represents.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ChangeKind {
+enum ChangeKind {
     /// A source file under the build source dir.
     Source,
     /// A plugin file (rebuild the engine with reloaded factories).
@@ -61,11 +63,7 @@ pub struct DevWatcher {
 impl DevWatcher {
     /// Treat `files` as project config files, watching their directories.
     pub fn set_config_files(&mut self, files: Vec<PathBuf>) -> Result<()> {
-        let plugin_dirs = self
-            .plugin_dirs
-            .read()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone();
+        let plugin_dirs = snapshot(&self.plugin_dirs);
         for dir in files.iter().filter_map(|file| file.parent()) {
             if self.watched_dirs.iter().any(|d| d == dir)
                 || dir.starts_with(&self.source_dir)
@@ -85,11 +83,7 @@ impl DevWatcher {
 
     /// Watch `dirs` instead of the current plugin directories.
     pub fn set_plugin_dirs(&mut self, dirs: Vec<PathBuf>) -> Result<()> {
-        let current = self
-            .plugin_dirs
-            .read()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone();
+        let current = snapshot(&self.plugin_dirs);
         let mut added = Vec::new();
         for dir in dirs.iter().filter(|dir| !current.contains(dir)) {
             if let Err(error) = self
@@ -123,17 +117,13 @@ pub fn spawn_watcher(
 ) -> Result<DevWatcher> {
     let source_dir = source_dir.to_path_buf();
     let config_files = Arc::new(RwLock::new(vec![config_path.to_path_buf()]));
-    let ignore_dir = root.join(".rpp");
     let plugin_dirs = Arc::new(RwLock::new(Vec::new()));
-
-    let cls_source = source_dir.clone();
-    let cls_config = Arc::clone(&config_files);
-    let cls_plugins = Arc::clone(&plugin_dirs);
-
-    let mut debouncer = new_debouncer(
-        Duration::from_millis(150),
-        None,
-        move |result: notify_debouncer_full::DebounceEventResult| {
+    let handler = {
+        let source_dir = source_dir.clone();
+        let config_files = Arc::clone(&config_files);
+        let plugin_dirs = Arc::clone(&plugin_dirs);
+        let ignore_dir = root.join(".rpp");
+        move |result: DebounceEventResult| {
             let events = match result {
                 Ok(events) => events,
                 Err(errors) => {
@@ -143,17 +133,15 @@ pub fn spawn_watcher(
                     return;
                 }
             };
-            let plugins = cls_plugins
-                .read()
-                .unwrap_or_else(|e| e.into_inner())
-                .clone();
-            let configs = cls_config.read().unwrap_or_else(|e| e.into_inner()).clone();
-            if let Some(batch) = classify(&events, &cls_source, &configs, &plugins, &ignore_dir) {
+            let configs = snapshot(&config_files);
+            let plugins = snapshot(&plugin_dirs);
+            if let Some(batch) = classify(&events, &source_dir, &configs, &plugins, &ignore_dir) {
                 let _ = tx.send(batch);
             }
-        },
-    )
-    .context("creating filesystem watcher")?;
+        }
+    };
+    let mut debouncer = new_debouncer(Duration::from_millis(150), None, handler)
+        .context("creating filesystem watcher")?;
 
     debouncer
         .watcher()
@@ -178,9 +166,14 @@ pub fn spawn_watcher(
     Ok(watcher)
 }
 
+/// A copy of the paths in `lock`, ignoring poisoning.
+fn snapshot(lock: &RwLock<Vec<PathBuf>>) -> Vec<PathBuf> {
+    lock.read().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
 /// Classify a debounced event batch into a [`ChangeBatch`], ignoring writes
 /// under `.rpp` (our own cache/output bookkeeping).
-pub fn classify(
+fn classify(
     events: &[DebouncedEvent],
     source_dir: &Path,
     config_files: &[PathBuf],
@@ -210,7 +203,7 @@ pub fn classify(
     }
 }
 
-pub fn classify_path(
+fn classify_path(
     path: &Path,
     source_dir: &Path,
     config_files: &[PathBuf],
@@ -242,6 +235,22 @@ pub fn local_plugin_dirs(project: &Project) -> Vec<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn classify_kinds() {
+        let src = PathBuf::from("/proj/src");
+        let cfg = vec![PathBuf::from("/proj/rpp.config.ts")];
+        let plugins = vec![PathBuf::from("/proj/plugins/hello")];
+        let kind = |path: &str| classify_path(Path::new(path), &src, &cfg, &plugins);
+
+        assert_eq!(kind("/proj/rpp.config.ts"), Some(ChangeKind::Config));
+        assert_eq!(
+            kind("/proj/plugins/hello/src/plugin.ts"),
+            Some(ChangeKind::Plugin)
+        );
+        assert_eq!(kind("/proj/src/assets/x.json"), Some(ChangeKind::Source));
+        assert_eq!(kind("/proj/other/x"), None);
+    }
 
     #[test]
     fn failed_retarget_preserves_previous_watches() {

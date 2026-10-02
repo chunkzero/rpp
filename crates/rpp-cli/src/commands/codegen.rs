@@ -2,10 +2,10 @@
 
 use std::path::{Path, PathBuf};
 
-use anyhow::{bail, Result};
+use anyhow::{Context, Result};
 use rpp_fetch::registry::PACKAGE_MANIFEST;
 
-use crate::project::CONFIG_FILE;
+use crate::project::{is_plugin_manifest, nearest, CONFIG_FILE};
 use crate::{codegen, ui};
 
 /// Run the codegen command from `dir`.
@@ -18,24 +18,17 @@ pub fn run(dir: &Path) -> Result<()> {
 }
 
 /// The nearest ancestor of `start` containing `rpp.config.ts` or an
-/// `rpp.json` plugin manifest (one with `name` and `version`).
+/// `rpp.json` plugin manifest.
 pub(crate) fn find_root(start: &Path) -> Result<PathBuf> {
     let start = std::path::absolute(start)?;
-    let found = start.ancestors().find(|dir| {
+    nearest(&start, |dir| {
         dir.join(CONFIG_FILE).is_file() || is_plugin_manifest(&dir.join(PACKAGE_MANIFEST))
-    });
-    match found {
-        Some(dir) => Ok(dir.to_path_buf()),
-        None => bail!(
-            "no `{CONFIG_FILE}` or plugin `{PACKAGE_MANIFEST}` found in `{}` or any parent directory",
+    })?
+    .with_context(|| {
+        format!(
+            "no `{CONFIG_FILE}` or plugin `{PACKAGE_MANIFEST}` found in `{}` or any parent \
+             directory",
             start.display()
-        ),
-    }
-}
-
-pub(crate) fn is_plugin_manifest(path: &Path) -> bool {
-    std::fs::read_to_string(path)
-        .ok()
-        .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
-        .is_some_and(|json| json.get("name").is_some() && json.get("version").is_some())
+        )
+    })
 }

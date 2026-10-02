@@ -4,8 +4,9 @@ use std::path::Path;
 use std::time::Instant;
 
 use anyhow::{Context, Result};
-use rpp::config::PngSetting;
-use rpp::engine::BuildResult;
+use clap::Args;
+use rpp::config::{PngSetting, SquashEngine};
+use rpp::engine::{BuildResult, Engine};
 use rpp_squash::{
     copy_tree, run_packsquash, squash_dir, write_zip, PngLevel, SquashOptions, SquashReport,
 };
@@ -15,13 +16,16 @@ use crate::project::Project;
 use crate::ui;
 
 /// Arguments for `rpp build`.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Args)]
 pub struct BuildArgs {
-    /// Clean the cache before building (a full rebuild).
+    /// Clean the cache first (a full rebuild).
+    #[arg(long)]
     pub no_cache: bool,
-    /// Skip the squash/zip phase entirely.
+    /// Skip the squash/zip phase.
+    #[arg(long)]
     pub no_squash: bool,
-    /// Override the worker count (`None` = config / available parallelism).
+    /// Worker thread count (0 / unset = available parallelism).
+    #[arg(long)]
     pub jobs: Option<usize>,
 }
 
@@ -36,35 +40,14 @@ pub fn run(dir: &Path, args: BuildArgs) -> Result<()> {
     codegen::write_best_effort(&project.root);
 
     if args.no_cache {
-        ui::phase("Cleaning cache");
-        // Remove only the cache, keep the output (the engine resyncs it).
-        let cache = project.root.join(".rpp").join("cache");
-        if cache.exists() {
-            std::fs::remove_dir_all(&cache)
-                .with_context(|| format!("removing {}", cache.display()))?;
-        }
+        clean_cache(&project)?;
+    }
+    let squash = &project.config.build.squash;
+    if args.no_squash && squash.enabled && squash.zip {
+        remove_stale_zip(&project.release_zip())?;
     }
 
-    if args.no_squash && project.config.build.squash.enabled && project.config.build.squash.zip {
-        let zip = project
-            .output_dir()
-            .join(format!("{}.zip", project.config.pack.name));
-        match std::fs::remove_file(&zip) {
-            Ok(()) => ui::detail(format!("removed stale release archive {}", zip.display())),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(error).with_context(|| format!("removing {}", zip.display())),
-        }
-    }
-
-    ui::phase("Resolving plugins");
-    let resolve_start = Instant::now();
-    let engine = project.build_engine()?;
-    let plugin_count = engine.plugin_count();
-    ui::detail(format!(
-        "{plugin_count} plugin{} resolved in {}",
-        if plugin_count == 1 { "" } else { "s" },
-        ui::fmt_duration(resolve_start.elapsed())
-    ));
+    let engine = resolve_plugins(&project)?;
 
     ui::phase("Building");
     let build_start = Instant::now();
@@ -75,10 +58,8 @@ pub fn run(dir: &Path, args: BuildArgs) -> Result<()> {
     ));
     report_build(&result);
 
-    let output_dir = project.output_dir().clone();
-
     if !args.no_squash && project.config.build.squash.enabled {
-        run_squash(&project, &output_dir)?;
+        run_squash(&project)?;
     } else {
         ui::detail("squash disabled");
     }
@@ -86,9 +67,42 @@ pub fn run(dir: &Path, args: BuildArgs) -> Result<()> {
     ui::success(format!(
         "Done in {} -> {}",
         ui::fmt_duration(result.duration),
-        output_dir.display()
+        project.output_dir().display()
     ));
     Ok(())
+}
+
+/// Remove only the cache and keep the output, which the engine resyncs.
+fn clean_cache(project: &Project) -> Result<()> {
+    ui::phase("Cleaning cache");
+    let cache = project.root.join(".rpp").join("cache");
+    if cache.exists() {
+        std::fs::remove_dir_all(&cache).with_context(|| format!("removing {}", cache.display()))?;
+    }
+    Ok(())
+}
+
+/// Remove a release archive left by an earlier build so it cannot go stale.
+fn remove_stale_zip(zip: &Path) -> Result<()> {
+    match std::fs::remove_file(zip) {
+        Ok(()) => ui::detail(format!("removed stale release archive {}", zip.display())),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error).with_context(|| format!("removing {}", zip.display())),
+    }
+    Ok(())
+}
+
+fn resolve_plugins(project: &Project) -> Result<Engine> {
+    ui::phase("Resolving plugins");
+    let start = Instant::now();
+    let engine = project.build_engine(&mut None)?;
+    let plugin_count = engine.plugin_count();
+    ui::detail(format!(
+        "{plugin_count} plugin{} resolved in {}",
+        if plugin_count == 1 { "" } else { "s" },
+        ui::fmt_duration(start.elapsed())
+    ));
+    Ok(engine)
 }
 
 fn report_build(result: &BuildResult) {
@@ -111,61 +125,68 @@ fn report_build(result: &BuildResult) {
 }
 
 /// Run the squash + zip phase against the materialized output directory.
-fn run_squash(project: &Project, output_dir: &Path) -> Result<()> {
-    let cfg = &project.config.build.squash;
-    let pack_name = &project.config.pack.name;
-    let zip_path = output_dir.join(format!("{pack_name}.zip"));
-
-    if !cfg.zip {
+fn run_squash(project: &Project) -> Result<()> {
+    let squash = &project.config.build.squash;
+    if !squash.zip {
         ui::detail("release archive disabled; squash skipped");
         return Ok(());
     }
-
-    match cfg.engine.as_str() {
-        "packsquash" => {
-            ui::phase("Squashing (packsquash)");
-            let start = Instant::now();
-            let options_file = cfg
-                .packsquash_options
-                .as_ref()
-                .map(|p| project.root.join(p));
-            run_packsquash(
-                &cfg.packsquash_binary,
-                output_dir,
-                &zip_path,
-                options_file.as_deref(),
-            )
-            .context("running packsquash")?;
-            match &options_file {
-                Some(file) => ui::detail(format!("output path controlled by {}", file.display())),
-                None => ui::detail(format!("zip -> {}", zip_path.display())),
-            }
-            ui::detail(format!(
-                "packsquash finished in {}",
-                ui::fmt_duration(start.elapsed())
-            ));
-        }
-        _ => {
-            ui::phase("Squashing (builtin)");
-            let start = Instant::now();
-            let staging = stage_release(project, output_dir, &zip_path)?;
-            let opts = SquashOptions {
-                json: cfg.json,
-                png: png_level(cfg.png),
-                strip: cfg.strip.clone(),
-            };
-            let report = squash_dir(staging.path(), &opts).context("optimizing release files")?;
-            report_squash(&report);
-
-            write_zip(staging.path(), &zip_path)
-                .with_context(|| format!("writing zip {}", zip_path.display()))?;
-            ui::detail(format!("zip -> {}", zip_path.display()));
-            ui::detail(format!(
-                "squash finished in {}",
-                ui::fmt_duration(start.elapsed())
-            ));
-        }
+    match squash.engine {
+        SquashEngine::Packsquash => squash_packsquash(project),
+        SquashEngine::Builtin => squash_builtin(project),
     }
+}
+
+/// Hand the output directory to the external PackSquash binary.
+fn squash_packsquash(project: &Project) -> Result<()> {
+    let squash = &project.config.build.squash;
+    let zip_path = project.release_zip();
+    ui::phase("Squashing (packsquash)");
+    let start = Instant::now();
+    let options_file = squash
+        .packsquash_options
+        .as_ref()
+        .map(|p| project.root.join(p));
+    run_packsquash(
+        &squash.packsquash_binary,
+        &project.output_dir(),
+        &zip_path,
+        options_file.as_deref(),
+    )
+    .context("running packsquash")?;
+    match &options_file {
+        Some(file) => ui::detail(format!("output path controlled by {}", file.display())),
+        None => ui::detail(format!("zip -> {}", zip_path.display())),
+    }
+    ui::detail(format!(
+        "packsquash finished in {}",
+        ui::fmt_duration(start.elapsed())
+    ));
+    Ok(())
+}
+
+/// Optimize a staged copy of the output and zip it.
+fn squash_builtin(project: &Project) -> Result<()> {
+    let squash = &project.config.build.squash;
+    let zip_path = project.release_zip();
+    ui::phase("Squashing (builtin)");
+    let start = Instant::now();
+    let staging = stage_release(project, &zip_path)?;
+    let opts = SquashOptions {
+        json: squash.json,
+        png: png_level(squash.png),
+        strip: squash.strip.clone(),
+    };
+    let report = squash_dir(staging.path(), &opts).context("optimizing release files")?;
+    report_squash(&report);
+
+    write_zip(staging.path(), &zip_path)
+        .with_context(|| format!("writing zip {}", zip_path.display()))?;
+    ui::detail(format!("zip -> {}", zip_path.display()));
+    ui::detail(format!(
+        "squash finished in {}",
+        ui::fmt_duration(start.elapsed())
+    ));
     Ok(())
 }
 
@@ -184,11 +205,7 @@ fn report_squash(report: &SquashReport) {
 }
 
 /// Copy the engine-owned loose output to a temporary release staging directory.
-fn stage_release(
-    project: &Project,
-    output_dir: &Path,
-    zip_path: &Path,
-) -> Result<tempfile::TempDir> {
+fn stage_release(project: &Project, zip_path: &Path) -> Result<tempfile::TempDir> {
     let temp_root = project.root.join(".rpp");
     std::fs::create_dir_all(&temp_root)
         .with_context(|| format!("creating {}", temp_root.display()))?;
@@ -196,7 +213,7 @@ fn stage_release(
         .prefix("release-")
         .tempdir_in(&temp_root)
         .context("creating release staging directory")?;
-    copy_tree(output_dir, staging.path(), zip_path).context("staging release files")?;
+    copy_tree(&project.output_dir(), staging.path(), zip_path).context("staging release files")?;
     Ok(staging)
 }
 

@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use rpp::engine::Engine;
-use rpp_wasm::WasmEngine;
+use rpp_wasm::{Limits, WasmEngine};
 use tokio::sync::{broadcast, mpsc};
 
 use crate::project::Project;
@@ -17,9 +17,42 @@ use super::watch::{local_plugin_dirs, ChangeBatch, DevWatcher};
 pub struct DevSession {
     project: Project,
     runtime: Runtime,
-    wasm_engine: Option<WasmEngine>,
+    wasm: WasmState<WasmEngine>,
     watcher: DevWatcher,
     packs: PackStore,
+}
+
+/// The WASM engine committed by the last successful build and the limits it was built with.
+struct WasmState<E> {
+    limits: Limits,
+    engine: Option<E>,
+}
+
+impl<E: Clone> WasmState<E> {
+    fn new(limits: Limits) -> Self {
+        Self {
+            limits,
+            engine: None,
+        }
+    }
+
+    /// Run `build` with the committed engine when `limits` are unchanged, otherwise with an
+    /// empty slot. Only a successful build commits its limits and slot; a failure keeps both.
+    fn build_with<T, Er>(
+        &mut self,
+        limits: Limits,
+        build: impl FnOnce(&mut Option<E>) -> std::result::Result<T, Er>,
+    ) -> std::result::Result<T, Er> {
+        let mut slot = if limits == self.limits {
+            self.engine.clone()
+        } else {
+            None
+        };
+        let built = build(&mut slot)?;
+        self.limits = limits;
+        self.engine = slot;
+        Ok(built)
+    }
 }
 
 enum Runtime {
@@ -30,9 +63,9 @@ enum Runtime {
 impl DevSession {
     pub fn new(project: Project, watcher: DevWatcher, packs: PackStore) -> Self {
         Self {
+            wasm: WasmState::new(project.wasm_limits()),
             project,
             runtime: Runtime::NeedsReload { config: false },
-            wasm_engine: None,
             watcher,
             packs,
         }
@@ -65,46 +98,45 @@ impl DevSession {
             return Ok(());
         };
         let reloaded = if config {
-            let reloaded =
-                Project::discover(&self.project.root).context("reloading the project config")?;
-            // The served directory, watched source tree, and listening address
-            // are fixed for the session; everything else reloads in place.
-            let fixed_changed = self.project.source_dir() != reloaded.source_dir()
-                || self.project.output_dir() != reloaded.output_dir()
-                || self.project.config.dev.host != reloaded.config.dev.host
-                || self.project.config.dev.port != reloaded.config.dev.port;
-            if fixed_changed {
-                anyhow::bail!(
-                    "`build.source`, `build.output`, or `[dev]` changed; restart `rpp dev` to apply"
-                );
-            }
-            // Watch replacement plugins before loading so repairing a broken
-            // plugin triggers another attempt. Failure keeps the reload pending.
-            self.watcher
-                .set_plugin_dirs(local_plugin_dirs(&reloaded))
-                .context("updating watched plugin directories")?;
-            self.watcher
-                .set_config_files(reloaded.config_files())
-                .context("updating watched config files")?;
-            if self.project.config.build.wasm.memory_limit_mb
-                != reloaded.config.build.wasm.memory_limit_mb
-                || self.project.config.build.wasm.execution_deadline_seconds
-                    != reloaded.config.build.wasm.execution_deadline_seconds
-            {
-                self.wasm_engine = None;
-            }
-            Some(reloaded)
+            Some(self.reload_project()?)
         } else {
             None
         };
         let project = reloaded.as_ref().unwrap_or(&self.project);
-        let (engine, wasm) = project.build_engine_with_wasm(self.wasm_engine.take())?;
+        let engine = self
+            .wasm
+            .build_with(project.wasm_limits(), |slot| project.build_engine(slot))?;
         if let Some(project) = reloaded {
             self.project = project;
         }
-        self.wasm_engine = wasm;
         self.runtime = Runtime::Ready(Box::new(engine));
         Ok(())
+    }
+
+    /// Load the project config again and retarget the watcher at its files.
+    fn reload_project(&mut self) -> Result<Project> {
+        let reloaded =
+            Project::discover(&self.project.root).context("reloading the project config")?;
+        // The served directory, watched source tree, and listening address
+        // are fixed for the session; everything else reloads in place.
+        let fixed_changed = self.project.source_dir() != reloaded.source_dir()
+            || self.project.output_dir() != reloaded.output_dir()
+            || self.project.config.dev.host != reloaded.config.dev.host
+            || self.project.config.dev.port != reloaded.config.dev.port;
+        if fixed_changed {
+            anyhow::bail!(
+                "`build.source`, `build.output`, or `[dev]` changed; restart `rpp dev` to apply"
+            );
+        }
+        // Watch replacement plugins before loading so repairing a broken
+        // plugin triggers another attempt. Failure keeps the reload pending.
+        self.watcher
+            .set_plugin_dirs(local_plugin_dirs(&reloaded))
+            .context("updating watched plugin directories")?;
+        self.watcher
+            .set_config_files(reloaded.config_files())
+            .context("updating watched config files")?;
+        Ok(reloaded)
     }
 
     /// Whether a changed source path is a plugin authoring input, which the engine only
@@ -216,6 +248,8 @@ pub async fn rebuild_loop(
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use super::super::watch::spawn_watcher;
     use super::*;
 
@@ -274,5 +308,75 @@ export default defineConfig({ pack: { name: "test" } });
             })
             .is_err());
         assert_eq!(packs.metadata(), recovered["pack"]);
+    }
+
+    #[test]
+    fn wasm_state_reuses_engine_only_for_unchanged_limits_and_commits_on_success() {
+        let base = Limits::default();
+        let deadline = Limits {
+            deadline: base.deadline + Duration::from_secs(1),
+            ..base
+        };
+        let memory = Limits {
+            memory_bytes: base.memory_bytes + 1,
+            ..base
+        };
+        // Each step is (limits, build fails); `seen` is the slot each build starts with.
+        let cases = [
+            (
+                "unchanged",
+                vec![(base, false)],
+                vec![Some("old")],
+                base,
+                "old",
+            ),
+            (
+                "deadline",
+                vec![(deadline, false)],
+                vec![None],
+                deadline,
+                "fresh",
+            ),
+            ("memory", vec![(memory, false)], vec![None], memory, "fresh"),
+            ("failure", vec![(memory, true)], vec![None], base, "old"),
+            (
+                "retry applies pending limits",
+                vec![(memory, true), (memory, false)],
+                vec![None, None],
+                memory,
+                "fresh",
+            ),
+            (
+                "retry with committed limits",
+                vec![(memory, true), (base, false)],
+                vec![None, Some("old")],
+                base,
+                "old",
+            ),
+        ];
+        for (name, steps, expected_seen, limits, engine) in cases {
+            let mut state = WasmState {
+                limits: base,
+                engine: Some("old"),
+            };
+            let mut seen = Vec::new();
+            for (limits, fails) in steps {
+                let _ = state.build_with(limits, |slot| {
+                    seen.push(*slot);
+                    slot.get_or_insert("fresh");
+                    if fails {
+                        Err(())
+                    } else {
+                        Ok(())
+                    }
+                });
+            }
+            assert_eq!(seen, expected_seen, "{name}: slot passed to build");
+            assert_eq!(
+                (state.limits, state.engine),
+                (limits, Some(engine)),
+                "{name}"
+            );
+        }
     }
 }

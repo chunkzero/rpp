@@ -85,13 +85,13 @@ pub use config::{evaluate_config, ConfigPackage, EvaluatedConfig, CONFIG_FILE};
 pub use factory::{JsPluginFactory, JsPluginSpec};
 
 /// The plugin SDK imported as `#rpp`: `sdk/index.ts` with `sdk/components.ts` appended.
-const SDK_INDEX: &str = concat!(
+pub const SDK_INDEX: &str = concat!(
     include_str!("sdk/index.ts"),
     "\n",
     include_str!("sdk/components.ts")
 );
 /// `sdk/config.ts`, the config SDK imported as `#rpp/config`.
-const SDK_CONFIG: &str = include_str!("sdk/config.ts");
+pub const SDK_CONFIG: &str = include_str!("sdk/config.ts");
 /// `sdk/bridge.d.ts`, the `__rpp` declaration the SDK sources reference. Not a bundled module.
 const SDK_BRIDGE: &str = include_str!("sdk/bridge.d.ts");
 

@@ -14,7 +14,7 @@ mod validate;
 
 pub use schema::{
     BuildConfig, Config, DevConfig, LimitsConfig, PackConfig, PluginConfig, PluginPermissions,
-    PngSetting, SecurityMode, SquashConfig, WasmConfig,
+    PngSetting, SecurityMode, SquashConfig, SquashEngine, WasmConfig,
 };
 
 impl Config {

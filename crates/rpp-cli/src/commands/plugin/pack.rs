@@ -5,7 +5,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
-use rpp::js::SDK_FILES;
+use rpp::js::{SDK_CONFIG, SDK_INDEX};
 use rpp::manifest::PluginManifest;
 use rpp_fetch::registry::PACKAGE_MANIFEST;
 use rpp_js::{BundleRequest, PackOutput, PackRequest};
@@ -128,22 +128,15 @@ fn self_check(archive: &[u8]) -> Result<()> {
     let dir = tempfile::tempdir()?;
     rpp_archive::unpack(archive, dir.path()).context("unpacking the archive")?;
     let manifest = PluginManifest::load(dir.path()).context("checking the packed manifest")?;
-    let sdk = |name: &str| {
-        SDK_FILES
-            .iter()
-            .find(|(file, _)| *file == name)
-            .map(|(_, source)| (*source).to_string())
-            .expect("embedded SDK file")
-    };
-    let mut entries = vec![(manifest.entry, "#rpp", sdk("index.ts"))];
+    let mut entries = vec![(manifest.entry, "#rpp", SDK_INDEX)];
     if let Some(config) = manifest.config {
-        entries.push((config, "#rpp/config", sdk("config.ts")));
+        entries.push((config, "#rpp/config", SDK_CONFIG));
     }
     for (entry, specifier, source) in entries {
         let request = BundleRequest {
             root: dir.path().to_path_buf(),
             entry: entry.clone(),
-            virtual_modules: BTreeMap::from([(specifier.to_string(), source)]),
+            virtual_modules: BTreeMap::from([(specifier.to_string(), source.to_string())]),
             ..Default::default()
         };
         rpp_js::bundle(&request)

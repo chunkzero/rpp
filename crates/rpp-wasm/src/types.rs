@@ -9,7 +9,7 @@ const DEFAULT_DEADLINE: Duration = Duration::from_secs(60);
 const DEFAULT_MEMORY_LIMIT: usize = 512 * 1024 * 1024;
 
 /// Resource limits applied to every component instance.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Limits {
     /// Maximum wall-clock time a single guest call may run.
     pub deadline: Duration,

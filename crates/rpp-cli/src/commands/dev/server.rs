@@ -147,6 +147,18 @@ mod tests {
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
 
+    /// The next SSE frame's raw text and its `data:` payload.
+    async fn next_frame(stream: &mut axum::body::BodyDataStream) -> (String, String) {
+        let bytes = stream.next().await.unwrap().unwrap();
+        let text = String::from_utf8(bytes.to_vec()).unwrap();
+        let data = text
+            .lines()
+            .find_map(|line| line.strip_prefix("data: "))
+            .unwrap()
+            .to_string();
+        (text, data)
+    }
+
     #[tokio::test]
     async fn sse_starts_with_current_pack_without_waiting_for_an_edit() {
         let source = tempfile::tempdir().unwrap();
@@ -162,14 +174,8 @@ mod tests {
         .await
         .into_response();
         let mut stream = response.into_body().into_data_stream();
-        let bytes = stream.next().await.unwrap().unwrap();
-        let text = std::str::from_utf8(&bytes).unwrap();
-        let event: serde_json::Value = serde_json::from_str(
-            text.lines()
-                .find_map(|line| line.strip_prefix("data: "))
-                .unwrap(),
-        )
-        .unwrap();
+        let (text, data) = next_frame(&mut stream).await;
+        let event: serde_json::Value = serde_json::from_str(&data).unwrap();
         assert_eq!(event["pack"], metadata);
         assert_eq!(event["type"], "pack");
         assert!(event.get("changed").is_none());
@@ -177,26 +183,16 @@ mod tests {
 
         std::fs::write(source.path().join("pack.mcmeta"), "new pack").unwrap();
         packs.publish(source.path()).unwrap();
+        let stale = serde_json::json!({
+            "type": "reload", "changed": ["pack.mcmeta"], "pack": metadata
+        });
         for _ in 0..3 {
-            reloads
-                .send(
-                    serde_json::json!({
-                        "type": "reload", "changed": ["pack.mcmeta"], "pack": metadata
-                    })
-                    .to_string(),
-                )
-                .unwrap();
+            reloads.send(stale.to_string()).unwrap();
         }
         // Capacity is two: recover from lag, then consume older queued notifications.
         for index in 0..3 {
-            let bytes = stream.next().await.unwrap().unwrap();
-            let text = std::str::from_utf8(&bytes).unwrap();
-            let event: serde_json::Value = serde_json::from_str(
-                text.lines()
-                    .find_map(|line| line.strip_prefix("data: "))
-                    .unwrap(),
-            )
-            .unwrap();
+            let (text, data) = next_frame(&mut stream).await;
+            let event: serde_json::Value = serde_json::from_str(&data).unwrap();
             assert_eq!(event["pack"], packs.metadata());
             assert_eq!(event["type"], if index == 0 { "pack" } else { "reload" });
             assert_eq!(text.contains("event: pack"), index == 0);
@@ -204,14 +200,9 @@ mod tests {
 
         for payload in [r#"{"type":"reload","changed":["other.json"]}"#, "not JSON"] {
             reloads.send(payload.to_string()).unwrap();
-            let bytes = stream.next().await.unwrap().unwrap();
-            let text = std::str::from_utf8(&bytes).unwrap();
+            let (text, data) = next_frame(&mut stream).await;
             assert!(!text.contains("event: pack"));
-            let data = text
-                .lines()
-                .find_map(|line| line.strip_prefix("data: "))
-                .unwrap();
-            if let Ok(event) = serde_json::from_str::<serde_json::Value>(data) {
+            if let Ok(event) = serde_json::from_str::<serde_json::Value>(&data) {
                 assert_eq!(event["type"], "reload");
                 assert!(event.get("pack").is_none());
             } else {
