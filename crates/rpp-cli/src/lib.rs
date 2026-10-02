@@ -6,5 +6,4 @@ pub mod ui;
 
 mod atomic;
 mod codegen;
-mod component_dts;
 mod ordered_json;

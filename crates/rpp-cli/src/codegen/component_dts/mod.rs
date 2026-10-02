@@ -1,5 +1,7 @@
 //! TypeScript declarations for WASM components, following the jco type mapping.
 
+mod names;
+
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use anyhow::{bail, Context, Result};
@@ -7,6 +9,8 @@ use wit_parser::{
     Function, FunctionKind, Resolve, Result_, Type, TypeDefKind, TypeId, TypeOwner, WorldId,
     WorldItem, WorldKey,
 };
+
+use self::names::{identifier, pascal_case, property_key, quote_key, type_name};
 
 /// Declarations for the component binary `bytes`, exposed as `name` in `ComponentMap`.
 pub fn from_wasm(name: &str, bytes: &[u8]) -> Result<String> {
@@ -159,15 +163,7 @@ impl<'a> Generator<'a> {
             Type::ErrorContext => "unknown".into(),
             Type::Id(id) => {
                 let def = &self.resolve.types[*id];
-                match &def.kind {
-                    TypeDefKind::Resource
-                    | TypeDefKind::Handle(_)
-                    | TypeDefKind::Future(_)
-                    | TypeDefKind::Stream(_)
-                    | TypeDefKind::Unknown => "unknown".into(),
-                    _ if def.name.is_some() => self.name_of(*id),
-                    kind => self.body(kind),
-                }
+                self.body(def.name.as_ref().map(|_| *id), &def.kind)
             }
         }
     }
@@ -207,7 +203,7 @@ impl<'a> Generator<'a> {
         }
         let body = match kind {
             TypeDefKind::Type(inner) => self.type_ref(inner),
-            kind => self.body(kind),
+            kind => self.body(None, kind),
         };
         format!("export type {name} = {body};\n")
     }
@@ -226,13 +222,23 @@ impl<'a> Generator<'a> {
             .collect()
     }
 
-    fn body(&mut self, kind: &TypeDefKind) -> String {
-        match kind {
-            TypeDefKind::Record(record) => {
+    /// Renders `kind`, referencing it by name when `named` is set and it has a TypeScript form.
+    fn body(&mut self, named: Option<TypeId>, kind: &TypeDefKind) -> String {
+        match (kind, named) {
+            (
+                TypeDefKind::Resource
+                | TypeDefKind::Handle(_)
+                | TypeDefKind::Future(_)
+                | TypeDefKind::Stream(_)
+                | TypeDefKind::Unknown,
+                _,
+            ) => "unknown".into(),
+            (_, Some(id)) => self.name_of(id),
+            (TypeDefKind::Record(record), None) => {
                 let fields = self.record_fields(record);
                 inline_object(&fields)
             }
-            TypeDefKind::Flags(flags) => {
+            (TypeDefKind::Flags(flags), None) => {
                 let fields: Vec<String> = flags
                     .flags
                     .iter()
@@ -240,36 +246,19 @@ impl<'a> Generator<'a> {
                     .collect();
                 inline_object(&fields)
             }
-            TypeDefKind::Tuple(tuple) => {
+            (TypeDefKind::Tuple(tuple), None) => {
                 let items: Vec<String> = tuple.types.iter().map(|ty| self.type_ref(ty)).collect();
                 format!("[{}]", items.join(", "))
             }
-            TypeDefKind::Variant(variant) => {
-                let cases: Vec<String> = variant
-                    .cases
-                    .iter()
-                    .map(|case| {
-                        let val = case.ty.as_ref().map(|ty| self.type_ref(ty));
-                        tagged(&case.name, val.as_deref())
-                    })
-                    .collect();
-                union(cases)
-            }
-            TypeDefKind::Enum(en) => union(
+            (TypeDefKind::Variant(variant), None) => self.variant_body(variant),
+            (TypeDefKind::Enum(en), None) => union(
                 en.cases
                     .iter()
                     .map(|case| format!("{:?}", case.name))
                     .collect(),
             ),
-            TypeDefKind::Option(inner) => {
-                let val = self.type_ref(inner);
-                if matches!(self.resolved_kind(inner), Some(TypeDefKind::Option(_))) {
-                    union(vec![tagged("some", Some(&val)), tagged("none", None)])
-                } else {
-                    format!("{val} | undefined")
-                }
-            }
-            TypeDefKind::Result(result) => {
+            (TypeDefKind::Option(inner), None) => self.option_body(inner),
+            (TypeDefKind::Result(result), None) => {
                 let ok = result.ok.as_ref().map(|ty| self.type_ref(ty));
                 let err = result.err.as_ref().map(|ty| self.type_ref(ty));
                 union(vec![
@@ -277,24 +266,44 @@ impl<'a> Generator<'a> {
                     tagged("err", err.as_deref()),
                 ])
             }
-            TypeDefKind::List(Type::U8) => "Uint8Array".into(),
-            TypeDefKind::List(inner) | TypeDefKind::FixedLengthList(inner, _) => {
-                let item = self.type_ref(inner);
-                if has_top_level_union(&item) {
-                    format!("({item})[]")
-                } else {
-                    format!("{item}[]")
-                }
+            (TypeDefKind::List(Type::U8), None) => "Uint8Array".into(),
+            (TypeDefKind::List(inner) | TypeDefKind::FixedLengthList(inner, _), None) => {
+                self.list_body(inner)
             }
-            TypeDefKind::Map(key, value) => {
+            (TypeDefKind::Map(key, value), None) => {
                 format!("Map<{}, {}>", self.type_ref(key), self.type_ref(value))
             }
-            TypeDefKind::Type(inner) => self.type_ref(inner),
-            TypeDefKind::Resource
-            | TypeDefKind::Handle(_)
-            | TypeDefKind::Future(_)
-            | TypeDefKind::Stream(_)
-            | TypeDefKind::Unknown => "unknown".into(),
+            (TypeDefKind::Type(inner), None) => self.type_ref(inner),
+        }
+    }
+
+    fn variant_body(&mut self, variant: &wit_parser::Variant) -> String {
+        let cases: Vec<String> = variant
+            .cases
+            .iter()
+            .map(|case| {
+                let val = case.ty.as_ref().map(|ty| self.type_ref(ty));
+                tagged(&case.name, val.as_deref())
+            })
+            .collect();
+        union(cases)
+    }
+
+    fn option_body(&mut self, inner: &Type) -> String {
+        let val = self.type_ref(inner);
+        if matches!(self.resolved_kind(inner), Some(TypeDefKind::Option(_))) {
+            union(vec![tagged("some", Some(&val)), tagged("none", None)])
+        } else {
+            format!("{val} | undefined")
+        }
+    }
+
+    fn list_body(&mut self, inner: &Type) -> String {
+        let item = self.type_ref(inner);
+        if has_top_level_union(&item) {
+            format!("({item})[]")
+        } else {
+            format!("{item}[]")
         }
     }
 }
@@ -336,66 +345,6 @@ fn object(members: &[String], depth: usize) -> String {
     out
 }
 
-fn words(value: &str) -> impl Iterator<Item = &str> {
-    value.split(['-', '_']).filter(|word| !word.is_empty())
-}
-
-fn capitalize(word: &str) -> String {
-    let mut chars = word.chars();
-    match chars.next() {
-        Some(first) => first
-            .to_uppercase()
-            .chain(chars.flat_map(char::to_lowercase))
-            .collect(),
-        None => String::new(),
-    }
-}
-
-/// Lower camelCase of a kebab-case name, as the Rust `heck` crate does.
-fn camel_case(value: &str) -> String {
-    words(value)
-        .enumerate()
-        .map(|(index, word)| {
-            if index == 0 {
-                word.to_lowercase()
-            } else {
-                capitalize(word)
-            }
-        })
-        .collect()
-}
-
-/// Names the generated declarations must not shadow: TS globals and common lib types.
-const GLOBAL_TYPES: &[&str] = &[
-    "Array",
-    "ReadonlyArray",
-    "Uint8Array",
-    "BigInt",
-    "Record",
-    "Partial",
-    "Promise",
-    "Error",
-    "Object",
-    "String",
-    "Number",
-    "Boolean",
-    "Map",
-    "Set",
-    "Date",
-    "Symbol",
-    "Function",
-];
-
-/// A PascalCase type name that does not shadow a TS global.
-fn type_name(value: &str) -> String {
-    let name = pascal_case(value);
-    if GLOBAL_TYPES.contains(&name.as_str()) {
-        format!("{name}_")
-    } else {
-        name
-    }
-}
-
 /// Whether `ty` contains a `|` outside brackets and string literals.
 fn has_top_level_union(ty: &str) -> bool {
     let (mut depth, mut quoted, mut escaped) = (0usize, false, false);
@@ -414,96 +363,6 @@ fn has_top_level_union(ty: &str) -> bool {
     false
 }
 
-fn pascal_case(value: &str) -> String {
-    let name: String = words(value).map(capitalize).collect();
-    if name.starts_with(|c: char| c.is_ascii_digit()) {
-        format!("_{name}")
-    } else {
-        name
-    }
-}
-
-/// `name` exactly, quoted when it is not a valid identifier.
-fn quote_key(name: &str) -> String {
-    let valid = name.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_')
-        && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
-    if valid {
-        name.to_string()
-    } else {
-        format!("{name:?}")
-    }
-}
-
-/// A camelCase property name, quoted when it is not a valid identifier.
-fn property_key(name: &str) -> String {
-    let camel = camel_case(name);
-    let valid = camel.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_')
-        && camel.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
-    if valid {
-        camel
-    } else {
-        format!("{camel:?}")
-    }
-}
-
-/// A camelCase parameter name that is not a reserved word.
-fn identifier(name: &str) -> String {
-    const RESERVED: &[&str] = &[
-        "break",
-        "case",
-        "catch",
-        "class",
-        "const",
-        "continue",
-        "debugger",
-        "default",
-        "delete",
-        "do",
-        "else",
-        "enum",
-        "export",
-        "extends",
-        "false",
-        "finally",
-        "for",
-        "function",
-        "if",
-        "import",
-        "in",
-        "instanceof",
-        "new",
-        "null",
-        "return",
-        "super",
-        "switch",
-        "this",
-        "throw",
-        "true",
-        "try",
-        "typeof",
-        "var",
-        "void",
-        "while",
-        "with",
-        "yield",
-        "let",
-        "static",
-        "implements",
-        "interface",
-        "package",
-        "private",
-        "protected",
-        "public",
-        "await",
-    ];
-    let camel = camel_case(name);
-    if RESERVED.contains(&camel.as_str()) || camel.starts_with(|c: char| c.is_ascii_digit()) {
-        format!("_{camel}")
-    } else {
-        camel
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -517,20 +376,6 @@ mod tests {
 
     fn dts(wit: &str) -> String {
         dts_named("compiler", wit)
-    }
-
-    #[test]
-    fn camel_case_matches_shared_vectors() {
-        for (input, expected) in [
-            ("foo", "foo"),
-            ("foo-bar", "fooBar"),
-            ("HTTP-get", "httpGet"),
-            ("a-b-c", "aBC"),
-            ("x2-y", "x2Y"),
-        ] {
-            assert_eq!(camel_case(input), expected);
-        }
-        assert_eq!(pascal_case("parse-error"), "ParseError");
     }
 
     #[test]
