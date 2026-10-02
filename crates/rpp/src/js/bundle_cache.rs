@@ -6,6 +6,7 @@ use rpp_js::{Bundle, BundleRequest};
 use serde::{Deserialize, Serialize};
 
 use crate::util::hash::{u64_hex, xxh3, HashWriter};
+use crate::util::versioned::{self, Versioned};
 
 const VERSION: u32 = 1;
 
@@ -17,6 +18,14 @@ struct BundleCacheEntry {
     inputs: Vec<(String, u64)>,
     code: String,
     source_map: String,
+}
+
+impl Versioned for BundleCacheEntry {
+    const VERSION: u32 = VERSION;
+
+    fn version(&self) -> u32 {
+        self.version
+    }
 }
 
 /// Return the bundle cached for plugin `id` when `request` and every file the previous bundle
@@ -55,10 +64,8 @@ fn real_dirs(dir: &Path, bundles: &Path) -> bool {
 }
 
 fn load(path: &Path, request_key: u64) -> Option<Bundle> {
-    let bytes = std::fs::read(path).ok()?;
-    let (entry, _): (BundleCacheEntry, usize) =
-        bincode::serde::decode_from_slice(&bytes, bincode::config::standard()).ok()?;
-    if entry.version != VERSION || entry.request_key != request_key {
+    let entry: BundleCacheEntry = versioned::load(path).ok().flatten()?;
+    if entry.request_key != request_key {
         return None;
     }
     for (input, hash) in &entry.inputs {
@@ -97,9 +104,6 @@ fn store(path: &Path, request_key: u64, bundle: &Bundle) {
         code: bundle.code.clone(),
         source_map: bundle.source_map.clone(),
     };
-    let Ok(bytes) = bincode::serde::encode_to_vec(&entry, bincode::config::standard()) else {
-        return;
-    };
     let Some(bundles) = path.parent() else {
         return;
     };
@@ -109,7 +113,7 @@ fn store(path: &Path, request_key: u64, bundle: &Bundle) {
     if std::fs::create_dir_all(bundles).is_err() || !real_dirs(dir, bundles) {
         return;
     }
-    let _ = crate::util::atomic::write(path, &bytes);
+    let _ = versioned::save(path, &entry);
 }
 
 fn request_key(request: &BundleRequest) -> u64 {

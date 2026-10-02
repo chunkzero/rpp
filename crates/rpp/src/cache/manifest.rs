@@ -8,7 +8,8 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
-use crate::error::{Error, Result};
+use crate::error::Result;
+use crate::util::versioned::{self, Versioned};
 
 /// Current on-disk manifest format version. Bumping forces a full rebuild.
 pub(crate) const MANIFEST_VERSION: u32 = 3;
@@ -124,25 +125,12 @@ impl Manifest {
     /// Load a manifest from disk, returning `None` if it is missing, corrupt, or
     /// a version mismatch (all of which mean "rebuild from scratch").
     pub(crate) fn load(path: &Path) -> Option<Self> {
-        let bytes = std::fs::read(path).ok()?;
-        let config = bincode::config::standard();
-        let (manifest, _): (Manifest, usize) =
-            bincode::serde::decode_from_slice(&bytes, config).ok()?;
-        if manifest.version != MANIFEST_VERSION {
-            return None;
-        }
-        Some(manifest)
+        versioned::load(path).ok().flatten()
     }
 
     /// Persist the manifest to disk (creating parent directories).
     pub(crate) fn save(&self, path: &Path) -> Result<()> {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| Error::io(parent, e))?;
-        }
-        let config = bincode::config::standard();
-        let bytes =
-            bincode::serde::encode_to_vec(self, config).map_err(|e| Error::Build(e.to_string()))?;
-        crate::util::atomic::write(path, &bytes).map_err(|e| Error::io(path, e))
+        versioned::save(path, self)
     }
 
     /// Every CAS object referenced by file outputs or generator emits.
@@ -161,5 +149,13 @@ impl Manifest {
                 GeneratorMutation::Remove(_) => None,
             });
         files.chain(generators).collect()
+    }
+}
+
+impl Versioned for Manifest {
+    const VERSION: u32 = MANIFEST_VERSION;
+
+    fn version(&self) -> u32 {
+        self.version
     }
 }

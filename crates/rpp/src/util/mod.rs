@@ -5,3 +5,4 @@ pub(crate) mod canonical;
 pub(crate) mod glob;
 pub(crate) mod hash;
 pub(crate) mod path;
+pub(crate) mod versioned;
