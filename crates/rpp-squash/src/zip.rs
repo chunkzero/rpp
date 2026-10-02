@@ -27,22 +27,29 @@ const STAGING_PREFIX: &str = ".rpp-release-";
 /// The archive is staged in a temporary file beside `zip_path`, flushed, given
 /// mode 0644 on unix, and then renamed into place; on failure the previous
 /// archive is left untouched and no temporary file remains. When `zip_path` is
-/// inside `dir`, it and any staging files beside it are excluded from the archive.
+/// inside `dir`, it and any staging files beside it are excluded from the archive;
+/// paths are compared canonically, so `..` components and symlinks do not matter.
 ///
 /// Archive bytes are deterministic, see [`zip_to_vec`].
 pub fn write_zip(dir: &Path, zip_path: &Path) -> Result<()> {
-    let dir = std::path::absolute(dir).map_err(|err| Error::io(dir, err))?;
-    let zip_abs = std::path::absolute(zip_path).map_err(|err| Error::io(zip_path, err))?;
-    let entries = archive_entries(&dir, Some(&zip_abs))?;
-
     let parent = zip_path
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."));
+    let parent = parent
+        .canonicalize()
+        .map_err(|err| Error::io(parent, err))?;
+    let file_name = zip_path.file_name().ok_or_else(|| {
+        let err = std::io::Error::from(std::io::ErrorKind::InvalidInput);
+        Error::io(zip_path, err)
+    })?;
+    let dir = dir.canonicalize().map_err(|err| Error::io(dir, err))?;
+    let entries = archive_entries(&dir, Some(&parent.join(file_name)))?;
+
     let mut tmp = tempfile::Builder::new()
         .prefix(STAGING_PREFIX)
-        .tempfile_in(parent)
-        .map_err(|err| Error::io(parent, err))?;
+        .tempfile_in(&parent)
+        .map_err(|err| Error::io(&parent, err))?;
 
     write_archive(&entries, tmp.as_file_mut(), zip_path)?;
     tmp.as_file()
@@ -230,5 +237,30 @@ mod tests {
             archive.file_names().collect::<Vec<_>>(),
             ["pack.mcmeta", "sub/.rpp-release-keep"]
         );
+    }
+
+    #[test]
+    fn dotdot_alias_of_destination_excludes_staging_files() {
+        let input = pack_dir();
+        fs::create_dir(input.path().join("sub")).unwrap();
+        fs::write(input.path().join(".rpp-release-other"), "in flight").unwrap();
+        let path = input.path().join("sub/../pack.zip");
+        write_zip(input.path(), &path).unwrap();
+        let archive = zip::ZipArchive::new(fs::File::open(&path).unwrap()).unwrap();
+        assert_eq!(archive.file_names().collect::<Vec<_>>(), ["pack.mcmeta"]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_destination_parent_excludes_staging_files() {
+        let input = pack_dir();
+        fs::write(input.path().join(".rpp-release-other"), "in flight").unwrap();
+        let links = tempfile::tempdir().unwrap();
+        let alias = links.path().join("alias");
+        std::os::unix::fs::symlink(input.path(), &alias).unwrap();
+        let path = alias.join("pack.zip");
+        write_zip(input.path(), &path).unwrap();
+        let archive = zip::ZipArchive::new(fs::File::open(&path).unwrap()).unwrap();
+        assert_eq!(archive.file_names().collect::<Vec<_>>(), ["pack.mcmeta"]);
     }
 }
