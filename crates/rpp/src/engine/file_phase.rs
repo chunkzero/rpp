@@ -6,8 +6,8 @@ use std::sync::Arc;
 use crate::cache::{FileEntry, Fingerprint, ObjectStore, OutputRef};
 use crate::error::{Error, Result};
 use crate::model::PackFile;
+use crate::source::SourceFile;
 
-use super::discovery::SourceFile;
 use super::keys::{chain_for, chain_key};
 use super::output::OutputContent;
 use super::session::BuildSession;
@@ -145,7 +145,7 @@ mod tests {
         std::fs::create_dir(&source).unwrap();
         std::fs::write(source.join("a.txt"), "old").unwrap();
         std::fs::write(source.join("b.txt"), "b").unwrap();
-        let sources = super::super::discovery::discover(&source).unwrap();
+        let sources = crate::source::discover(&source).unwrap();
         std::fs::remove_file(source.join("b.txt")).unwrap();
         let config = crate::config::Config::new("test");
         let engine = Engine::builder(config)

@@ -1,4 +1,4 @@
-//! Source discovery and fingerprinting (spec §7).
+//! Pack source discovery and fingerprinting (spec §7).
 
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;

@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 #[cfg(feature = "wasm")]
-use rpp_wasm::{CompiledComponent, Permissions};
+use rpp_wasm::CompiledComponent;
 
 use super::factory::JsPluginSpec;
 use crate::config::{PluginPermissions, SecurityMode};
@@ -55,38 +55,5 @@ impl RuntimeAccess {
     /// ambient capability, so they do not disable cache replay.
     pub(crate) fn is_deterministic(&self) -> bool {
         self.permissions.is_empty()
-    }
-
-    #[cfg(feature = "wasm")]
-    pub(crate) fn wasm_permissions(&self) -> Permissions {
-        let env = self
-            .permissions
-            .environment
-            .iter()
-            .filter_map(|name| std::env::var(name).ok().map(|value| (name.clone(), value)))
-            .collect();
-        let mut preopens = Vec::new();
-        for path in &self.permissions.read {
-            preopens.push(rpp_wasm::Preopen {
-                host: self.project_root.join(path),
-                guest: path.to_string_lossy().replace('\\', "/"),
-                writable: false,
-            });
-        }
-        for path in &self.permissions.write {
-            preopens.push(rpp_wasm::Preopen {
-                host: self.project_root.join(path),
-                guest: path.to_string_lossy().replace('\\', "/"),
-                writable: true,
-            });
-        }
-        Permissions {
-            clocks: self.permissions.clocks,
-            random: self.permissions.random,
-            stdio: self.permissions.stdio,
-            network: self.permissions.network,
-            environment: env,
-            preopens,
-        }
     }
 }

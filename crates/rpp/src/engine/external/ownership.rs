@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use crate::cache::{GeneratorMutation, Manifest};
 use crate::config::Config;
 use crate::error::{Error, Result};
+use crate::util::versioned::{self, Versioned};
 
 use super::super::boundary;
 
@@ -44,20 +45,14 @@ impl OwnershipManifest {
 
     pub(super) fn load(project_root: &Path) -> Result<Self> {
         let path = project_root.join(MANIFEST_PATH);
-        let bytes = match std::fs::read(&path) {
-            Ok(bytes) => bytes,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                return Ok(Self::default())
-            }
-            Err(error) => return Err(Error::io(path, error)),
-        };
         // A corrupt or outdated manifest must not brick `build` or `clean`.
         // Treat it as empty: previously generated files are then left in
         // place rather than removed.
-        let config = bincode::config::standard();
-        match bincode::serde::decode_from_slice::<Self, _>(&bytes, config) {
-            Ok((manifest, _)) if manifest.version == VERSION => Ok(manifest),
-            _ => {
+        match versioned::load(&path) {
+            Ok(Some(manifest)) => Ok(manifest),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
+            Err(error) => Err(Error::io(path, error)),
+            Ok(None) => {
                 #[cfg(feature = "tracing")]
                 tracing::warn!(
                     "ignoring unreadable external-output ownership manifest {}",
@@ -102,13 +97,7 @@ impl OwnershipManifest {
     }
 
     pub(super) fn save(&self, project_root: &Path) -> Result<()> {
-        let path = project_root.join(MANIFEST_PATH);
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| Error::io(parent, e))?;
-        }
-        let bytes = bincode::serde::encode_to_vec(self, bincode::config::standard())
-            .map_err(|e| Error::Build(e.to_string()))?;
-        crate::util::atomic::write(&path, &bytes).map_err(|e| Error::io(&path, e))
+        versioned::save(&project_root.join(MANIFEST_PATH), self)
     }
 
     /// Owned outputs keyed by their checked absolute destination.
@@ -126,6 +115,14 @@ impl OwnershipManifest {
                 ))
             })
             .collect()
+    }
+}
+
+impl Versioned for OwnershipManifest {
+    const VERSION: u32 = VERSION;
+
+    fn version(&self) -> u32 {
+        self.version
     }
 }
 
