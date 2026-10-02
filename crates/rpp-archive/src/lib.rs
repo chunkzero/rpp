@@ -185,15 +185,20 @@ fn extract(mut entry: tar::Entry<'_, impl Read>, dest: &Path, tally: &mut Tally)
 const WINDOWS_INVALID_CHARS: [char; 8] = ['<', '>', ':', '"', '\\', '|', '?', '*'];
 
 /// Device names Windows reserves regardless of extension or case.
-const WINDOWS_RESERVED_NAMES: [&str; 22] = [
+const WINDOWS_RESERVED_NAMES: [&str; 24] = [
     "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
-    "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+    "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9", "CONIN$",
+    "CONOUT$",
 ];
 
 /// Whether `path` extracts to the same place on every supported platform.
 fn is_portable(path: &str) -> bool {
     path.split('/').all(|component| {
-        let stem = component.split('.').next().unwrap_or_default();
+        let stem = component
+            .split('.')
+            .next()
+            .unwrap_or_default()
+            .trim_end_matches(' ');
         !matches!(component, "" | "." | "..")
             && !component.contains(|c: char| c < ' ' || WINDOWS_INVALID_CHARS.contains(&c))
             && !component.ends_with(['.', ' '])
@@ -301,6 +306,10 @@ mod tests {
             "tool*.wasm",
             "a|b",
             "con.txt",
+            "CON .wasm",
+            "nul .txt",
+            "CONIN$",
+            "conout$.log",
             "dir/LPT1",
             "trailing.",
             "trailing ",
