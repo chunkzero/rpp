@@ -20,12 +20,12 @@ fn compiler() -> OsString {
 }
 
 fn bundled_compiler() -> Option<PathBuf> {
-    let exe = std::env::current_exe().ok()?;
+    let exe = std::env::current_exe().ok()?.canonicalize().ok()?;
     let path = exe
         .parent()?
         .join("toolchain/typescript")
         .join(TYPESCRIPT_VERSION)
-        .join("tsc");
+        .join(format!("tsc{}", std::env::consts::EXE_SUFFIX));
     path.is_file().then_some(path)
 }
 

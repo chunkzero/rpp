@@ -22,15 +22,19 @@ rpp is alpha software (`0.1.0-alpha.0`). Expect breaking changes.
 
 ## Install
 
-Linux x64:
+Linux x64/arm64 and macOS Intel/Apple Silicon (use a published version):
 
 ```bash
-curl -fsSLO https://github.com/chunkzero/rpp/releases/download/v0.1.0-alpha.0/install.sh
-sh install.sh 0.1.0-alpha.0
+version=RELEASE_VERSION
+curl -fsSLO "https://github.com/chunkzero/rpp/releases/download/v$version/install.sh"
+sh install.sh "$version"
 ```
 
 This installs into `~/.local/share/rpp/<version>` and links `~/.local/bin/rpp`. Set
 `RPP_INSTALL_DIR` to use another prefix.
+
+Windows x64 archives are available through the Chunkzero aqua registry and mise.
+The registry selects the native archive automatically.
 
 On other platforms, build from source with Rust 1.96 or newer:
 
@@ -46,11 +50,13 @@ and `publish=true`; `publish=false` only packages and verifies. Version tags mat
 the workspace version and `mode=release` use the same stable/beta packaging. Manual
 publishing supports `main` and version tags, never PR refs.
 
-Archives retain the registry's `rpp-<version>-linux-x64` layout and bundled TypeScript
+Archives use the registry's `rpp-<version>-<os>-<arch>` layout and bundled TypeScript
 compiler. `rpp --version` reports the full version; `release.json` beside the executable
 records the full source SHA. Assets and SHA-256 sidecars are downloaded and compared
 in a draft before publication; prereleases never replace the latest stable release.
-A clean Ubuntu consumer checks the installer without Rust, Node or a global compiler,
+A native matrix builds Linux x64/arm64, macOS x64/arm64, and Windows x64. Each
+packaged binary checks TypeScript and builds a Window WASIp2 UI without a compiler
+on PATH. A clean Ubuntu consumer also checks the installer without Rust or Node,
 and the publish job installs the release through the pinned Chunkzero aqua registry
 and runs `rpp check` using its bundled compiler.
 
