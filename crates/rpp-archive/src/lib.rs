@@ -83,11 +83,11 @@ impl Tally {
 ///
 /// # Errors
 ///
-/// [`Error::UnsafePath`] for a path that is not portable to Windows: it must be relative
-/// and `/`-separated with no empty, `.` or `..` components, no control characters or
-/// `< > : " \ | ? *`, no component ending in `.` or a space, and no component whose stem
-/// is a reserved device name such as `CON` or `LPT1`. A limit error is returned when the
-/// files exceed what [`unpack`] accepts.
+/// [`Error::UnsafePath`] for a path that is not portable: it must be relative and
+/// `/`-separated, with no empty, `.` or `..` components, and made only of printable ASCII
+/// other than `< > : " \ | ? *`. No component may end in `.` or a space, or have a stem
+/// that is a reserved Windows device name such as `CON` or `LPT1`. A limit error is
+/// returned when the files exceed what [`unpack`] accepts.
 pub fn pack(files: &BTreeMap<String, Vec<u8>>) -> Result<Vec<u8>> {
     pack_with(files, LIMITS)
 }
@@ -181,7 +181,7 @@ fn extract(mut entry: tar::Entry<'_, impl Read>, dest: &Path, tally: &mut Tally)
     Ok(())
 }
 
-/// Characters Windows rejects in file names.
+/// Printable ASCII characters Windows rejects in file names.
 const WINDOWS_INVALID_CHARS: [char; 8] = ['<', '>', ':', '"', '\\', '|', '?', '*'];
 
 /// Device names Windows reserves regardless of extension or case.
@@ -200,7 +200,9 @@ fn is_portable(path: &str) -> bool {
             .unwrap_or_default()
             .trim_end_matches(' ');
         !matches!(component, "" | "." | "..")
-            && !component.contains(|c: char| c < ' ' || WINDOWS_INVALID_CHARS.contains(&c))
+            && component
+                .chars()
+                .all(|c| matches!(c, ' '..='~') && !WINDOWS_INVALID_CHARS.contains(&c))
             && !component.ends_with(['.', ' '])
             && !WINDOWS_RESERVED_NAMES
                 .iter()
@@ -313,6 +315,10 @@ mod tests {
             "dir/LPT1",
             "trailing.",
             "trailing ",
+            "COM¹.wasm",
+            "LPT².wasm",
+            "conın$.wasm",
+            "é.js",
             &format!("{}\0", "a".repeat(101)),
         ] {
             let result = pack(&files(&[(path, b"")]));

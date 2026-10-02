@@ -34,7 +34,8 @@ pub enum Error {
     },
 
     /// A path is absolute or escapes the archive root. Packing also rejects empty, `.`
-    /// and `..` segments and names Windows cannot extract.
+    /// and `..` components, characters outside printable ASCII or in `< > : " \ | ? *`,
+    /// components ending in `.` or a space, and reserved Windows device names.
     #[error("`{0}` is not a portable relative path inside the archive")]
     UnsafePath(String),
 
