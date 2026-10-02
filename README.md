@@ -25,8 +25,9 @@ rpp is alpha software (`0.1.0-alpha.0`). Expect breaking changes.
 Linux x64/arm64 and macOS Intel/Apple Silicon (use a published version):
 
 ```bash
-curl -fsSLO https://github.com/chunkzero/rpp/releases/download/v0.1.0-alpha.0/install.sh
-sh install.sh 0.1.0-alpha.0
+version=RELEASE_VERSION
+curl -fsSLO "https://github.com/chunkzero/rpp/releases/download/v$version/install.sh"
+sh install.sh "$version"
 ```
 
 This installs into `~/.local/share/rpp/<version>` and links `~/.local/bin/rpp`. Set
