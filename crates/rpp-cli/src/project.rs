@@ -13,8 +13,7 @@ use std::sync::Arc;
 use anyhow::{anyhow, bail, Context, Result};
 use rpp::config::{Config, PluginConfig};
 use rpp::engine::{Engine, EngineBuilder};
-use rpp::host::{PackInfo, RuntimeAccess};
-use rpp::js::{evaluate_config, ConfigPackage, JsPluginFactory, JsPluginLimits};
+use rpp::js::{evaluate_config, ConfigPackage, JsPluginFactory, JsPluginSpec};
 use rpp::manifest::PluginManifest;
 use rpp::model::PluginFactory;
 use rpp_fetch::registry::{
@@ -147,7 +146,7 @@ impl Project {
         let mut shared_wasm = wasm_engine;
         let mut factories = Vec::new();
         for plugin_cfg in &self.config.plugins {
-            let name = plugin_cfg.label();
+            let name = &plugin_cfg.package;
             let package = self.ts.packages.get(name).ok_or_else(|| {
                 anyhow!(
                     "plugin package `{name}` is not a dependency in {PACKAGE_MANIFEST}\n\
@@ -180,7 +179,6 @@ impl Project {
             root,
             config: plugin_cfg,
         } = package;
-        plugin_cfg.validate(&self.config_path())?;
         let id = manifest.id.clone();
 
         let engine = if manifest.components.is_empty() {
@@ -212,33 +210,14 @@ impl Project {
                 components.insert(name.clone(), compiled);
             }
         }
-        let access = RuntimeAccess::new(
-            plugin_cfg.security,
-            plugin_cfg.permissions.clone(),
-            self.root.clone(),
-            components,
-            plugin_cfg.outputs.clone(),
-        );
-        let pack = PackInfo {
-            name: self.config.pack.name.clone(),
-            description: self.config.pack.description.clone(),
-            format: self.config.pack.pack_format,
-        };
-        let limits = &self.config.build.limits;
-        let limits = JsPluginLimits {
-            memory_limit: limits.memory_limit_mb as usize * 1024 * 1024,
-            execution_limit: std::time::Duration::from_secs(limits.execution_deadline_seconds),
-        };
         let factory: Arc<dyn PluginFactory> = Arc::new(
-            JsPluginFactory::load(
-                &root,
-                plugin_cfg.options.clone(),
-                pack,
-                limits,
-                access,
-                &self.source_dir(),
-                Some(&self.root.join(".rpp/cache")),
-            )
+            JsPluginFactory::load(JsPluginSpec {
+                dir: &root,
+                project_root: &self.root,
+                config: &self.config,
+                plugin: &plugin_cfg,
+                components,
+            })
             .with_context(|| format!("loading TypeScript plugin `{id}`"))?,
         );
 
@@ -326,7 +305,7 @@ fn load_ts(root: &Path) -> Result<(Config, TsProject)> {
             )
         })
         .collect();
-    let evaluated = evaluate_config(root, &config_packages, JsPluginLimits::default())?;
+    let evaluated = evaluate_config(root, &config_packages)?;
     Ok((
         evaluated.config,
         TsProject {

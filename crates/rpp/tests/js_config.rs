@@ -5,20 +5,13 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use rpp::js::{evaluate_config, ConfigPackage, JsPluginLimits};
+use rpp::js::{evaluate_config, ConfigPackage};
 use rpp::Error;
 
 fn write_file(root: &Path, rel: &str, contents: &str) {
     let path = root.join(rel);
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::fs::write(path, contents).unwrap();
-}
-
-fn evaluate(
-    root: &Path,
-    packages: &BTreeMap<String, ConfigPackage>,
-) -> rpp::Result<rpp::js::EvaluatedConfig> {
-    evaluate_config(root, packages, JsPluginLimits::default())
 }
 
 fn config_error(result: rpp::Result<rpp::js::EvaluatedConfig>) -> String {
@@ -64,7 +57,7 @@ fn evaluates_minimal_config() {
 export default defineConfig({ pack: { name: "mini", packFormat: 34 } });
 "##,
     );
-    let evaluated = evaluate(dir.path(), &BTreeMap::new()).unwrap();
+    let evaluated = evaluate_config(dir.path(), &BTreeMap::new()).unwrap();
     assert_eq!(evaluated.config.pack.name, "mini");
     assert!(evaluated.config.plugins.is_empty());
     assert!(evaluated
@@ -88,18 +81,12 @@ export default defineConfig({
 });
 "##,
     );
-    let evaluated = evaluate(dir.path(), &packages).unwrap();
+    let evaluated = evaluate_config(dir.path(), &packages).unwrap();
     let plugins = &evaluated.config.plugins;
     assert_eq!(plugins.len(), 2);
     assert_eq!(plugins[0].package, "demo");
-    assert_eq!(
-        plugins[0].options.get("level").unwrap().as_integer(),
-        Some(1)
-    );
-    assert_eq!(
-        plugins[1].options.get("level").unwrap().as_integer(),
-        Some(5)
-    );
+    assert_eq!(plugins[0].options["level"].as_i64(), Some(1));
+    assert_eq!(plugins[1].options["level"].as_i64(), Some(5));
     assert!(evaluated
         .inputs
         .iter()
@@ -117,7 +104,7 @@ fn factory_validation_errors_name_plugin() {
 export default { pack: { name: "p" }, plugins: [demo({ level: -1 })] };
 "##,
     );
-    let message = config_error(evaluate(dir.path(), &packages));
+    let message = config_error(evaluate_config(dir.path(), &packages));
     assert!(message.contains("level must be positive"), "{message}");
     assert!(message.contains("demo"), "{message}");
 }
@@ -135,7 +122,7 @@ fn config_can_import_local_helpers() {
         "rpp.config.ts",
         "import { name } from \"./config/helper.ts\";\nexport default { pack: { name } };\n",
     );
-    let evaluated = evaluate(dir.path(), &BTreeMap::new()).unwrap();
+    let evaluated = evaluate_config(dir.path(), &BTreeMap::new()).unwrap();
     assert_eq!(evaluated.config.pack.name, "helped");
     assert!(evaluated
         .inputs
@@ -157,7 +144,7 @@ export default {
 };
 "#,
     );
-    let message = config_error(evaluate(dir.path(), &BTreeMap::new()));
+    let message = config_error(evaluate_config(dir.path(), &BTreeMap::new()));
     assert!(
         message.contains("host functions are unavailable in rpp.config.ts"),
         "{message}"
@@ -172,5 +159,5 @@ fn missing_default_export_errors() {
         "rpp.config.ts",
         "export const pack = { name: \"x\" };\n",
     );
-    config_error(evaluate(dir.path(), &BTreeMap::new()));
+    config_error(evaluate_config(dir.path(), &BTreeMap::new()));
 }

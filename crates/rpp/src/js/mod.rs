@@ -59,28 +59,42 @@
 //!
 //! [`PluginInstance`]: crate::model::PluginInstance
 
+mod access;
+mod bundle;
 mod bundle_cache;
 #[cfg(feature = "wasm")]
 mod component;
 mod config;
 mod discover;
 mod factory;
+mod hash;
 mod host;
 mod instance;
+mod keys;
+mod log;
+mod process;
+mod toml_json;
+
+use std::time::Duration;
+
+use crate::config::LimitsConfig;
 
 pub use config::{evaluate_config, ConfigPackage, EvaluatedConfig, CONFIG_FILE};
-pub use factory::{JsPluginFactory, JsPluginLimits};
+pub use factory::{JsPluginFactory, JsPluginSpec};
+
+/// `sdk/index.ts`, the plugin SDK imported as `#rpp`.
+const SDK_INDEX: &str = include_str!("sdk/index.ts");
+/// `sdk/config.ts`, the config SDK imported as `#rpp/config`.
+const SDK_CONFIG: &str = include_str!("sdk/config.ts");
 
 /// The embedded SDK, as `(relative path, contents)`. `rpp codegen` writes these
 /// under `.rpp/sdk/`.
-pub const SDK_FILES: &[(&str, &str)] = &[
-    ("index.ts", include_str!("sdk/index.ts")),
-    ("config.ts", include_str!("sdk/config.ts")),
-];
+pub const SDK_FILES: &[(&str, &str)] = &[("index.ts", SDK_INDEX), ("config.ts", SDK_CONFIG)];
 
-/// Whether an `rpp.json` entry selects the JavaScript runtime.
-pub fn is_js_entry(entry: &str) -> bool {
-    [".ts", ".mts", ".js", ".mjs"]
-        .iter()
-        .any(|ext| entry.ends_with(ext))
+/// The runtime limits `build.limits` sets for each plugin runtime and call.
+fn runtime_limits(limits: &LimitsConfig) -> rpp_js::Limits {
+    rpp_js::Limits {
+        heap_bytes: limits.memory_limit_mb as usize * 1024 * 1024,
+        time: Duration::from_secs(limits.execution_deadline_seconds),
+    }
 }

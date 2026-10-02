@@ -70,7 +70,7 @@ export default defineConfig({
     source: "src", // pack source dir (contains pack.mcmeta, assets/)
     output: "dist", // output dir; zip goes to dist/<name>.zip
     workers: 0, // 0 = available_parallelism
-    limits: { memoryLimitMb: 256, executionDeadlineSeconds: 30 }, // per plugin runtime / call
+    limits: { memoryLimitMb: 256, executionDeadlineSeconds: 60 }, // per plugin runtime / call
     wasm: { memoryLimitMb: 512, executionDeadlineSeconds: 60 }, // per component instance / call
     squash: {
       enabled: true,

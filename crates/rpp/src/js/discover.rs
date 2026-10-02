@@ -2,16 +2,19 @@
 
 use std::collections::BTreeMap;
 use std::path::Path;
-use std::sync::LazyLock;
 
-use regex::Regex;
 use serde_json::Value;
 
 use crate::engine::discovery;
 use crate::util::glob::{self, Glob};
 
-static NAMESPACE_REGEX: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^[a-z0-9_.-]+$").expect("static namespace regex is valid"));
+/// Whether `namespace` matches `^[a-z0-9_.-]+$`.
+fn is_valid_namespace(namespace: &str) -> bool {
+    !namespace.is_empty()
+        && namespace.bytes().all(|b| {
+            b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'_' | b'.' | b'-')
+        })
+}
 
 /// A source file matched by a discovery pattern.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -70,7 +73,7 @@ impl Discovery {
                     .and_then(|index| file.rel.split('/').nth(index))
                     .map(str::to_string);
                 if let Some(namespace) = &namespace {
-                    if !NAMESPACE_REGEX.is_match(namespace) {
+                    if !is_valid_namespace(namespace) {
                         return Err(format!(
                             "namespace `{namespace}` of `{}` must match ^[a-z0-9_.-]+$",
                             file.rel

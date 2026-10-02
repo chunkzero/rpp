@@ -2,11 +2,11 @@
 
 use std::path::PathBuf;
 
-use serde_json::{Map, Value};
+use serde_json::Value;
 
+use super::validate::reject_nulls;
 use super::Config;
 use crate::error::{Error, Result};
-use crate::util::json_toml::json_to_toml;
 
 const REJECTED_PLUGIN_KEYS: [&str; 4] = ["id", "source", "ref", "subdir"];
 
@@ -15,20 +15,12 @@ pub(super) fn from_json(value: &Value, path: PathBuf) -> Result<Config> {
         path: path.clone(),
         message,
     };
-
     reject_nulls(value, "config").map_err(&fail)?;
-    let converted = convert_root(value).map_err(&fail)?;
-    let table = json_to_toml(&converted).map_err(&fail)?;
-    let config: Config = table
-        .try_into()
-        .map_err(|e| fail(to_camel_names(&e.to_string())))?;
-    config.validate(&path).map_err(|e| match e {
-        Error::Config { path, message } => Error::Config {
-            path,
-            message: to_camel_names(&message),
-        },
-        other => other,
-    })?;
+    reject_wrong_shapes(value).map_err(&fail)?;
+    reject_legacy_keys(value).map_err(&fail)?;
+    let config: Config =
+        serde_path_to_error::deserialize(value).map_err(|e| fail(e.to_string()))?;
+    config.validate(&path)?;
     Ok(config)
 }
 
@@ -37,161 +29,46 @@ fn guided(message: &str) -> String {
     format!("{message}; see {}", crate::MIGRATION_GUIDE)
 }
 
-fn reject_nulls(value: &Value, at: &str) -> std::result::Result<(), String> {
-    match value {
-        Value::Null => Err(format!("`{at}` must not be null")),
-        Value::Array(items) => items
-            .iter()
-            .enumerate()
-            .try_for_each(|(i, item)| reject_nulls(item, &format!("{at}[{i}]"))),
-        Value::Object(map) => map
-            .iter()
-            .try_for_each(|(key, item)| reject_nulls(item, &format!("{at}.{key}"))),
-        _ => Ok(()),
-    }
-}
-
-fn convert_root(value: &Value) -> std::result::Result<Value, String> {
-    let map = value.as_object().ok_or("the config must be an object")?;
-    let mut out = Map::new();
-    for (key, item) in map {
-        match key.as_str() {
-            "plugins" => {
-                let items = item.as_array().ok_or("`plugins` must be an array")?;
-                let plugins = items
-                    .iter()
-                    .enumerate()
-                    .map(|(i, plugin)| convert_plugin(plugin, i))
-                    .collect::<std::result::Result<Vec<_>, _>>()?;
-                out.insert("plugin".into(), Value::Array(plugins));
-            }
-            "plugin" => return Err("unknown field `plugin`; use `plugins`".into()),
-            "build" => {
-                out.insert(key.clone(), convert_build(item)?);
-            }
-            _ => {
-                out.insert(snake_key(key)?, convert_keys(item)?);
-            }
-        }
-    }
-    Ok(Value::Object(out))
-}
-
-fn convert_build(value: &Value) -> std::result::Result<Value, String> {
-    let Value::Object(map) = convert_keys(value)? else {
+/// Serde derives also read arrays as positional structs, so objects are required explicitly.
+fn reject_wrong_shapes(value: &Value) -> std::result::Result<(), String> {
+    let root = value.as_object().ok_or("the config must be an object")?;
+    if root.get("build").is_some_and(|build| !build.is_object()) {
         return Err("`build` must be an object".into());
+    }
+    let plugins = match root.get("plugins") {
+        None => return Ok(()),
+        Some(Value::Array(plugins)) => plugins,
+        Some(_) => return Err("`plugins` must be an array".into()),
     };
-    let mut out = Map::new();
-    for (key, item) in map {
-        match key.as_str() {
-            "lua" => return Err(guided("`build.lua` is not supported; use `build.limits`")),
-            _ => out.insert(key, item),
-        };
+    match plugins.iter().position(|plugin| !plugin.is_object()) {
+        Some(index) => Err(format!("`plugins[{index}]` must be an object")),
+        None => Ok(()),
     }
-    Ok(Value::Object(out))
 }
 
-fn convert_plugin(value: &Value, index: usize) -> std::result::Result<Value, String> {
-    let at = format!("plugins[{index}]");
-    let map = value
-        .as_object()
-        .ok_or_else(|| format!("`{at}` must be an object"))?;
-    let mut out = Map::new();
-    for (key, item) in map {
-        match key.as_str() {
-            "plugin" => {
-                out.insert("package".into(), item.clone());
-            }
-            "options" | "outputs" => {
-                out.insert(key.clone(), item.clone());
-            }
-            "security" if item.as_str() == Some("native") => {
-                return Err(guided(&format!("`{at}.security` must not be \"native\"")));
-            }
-            "permissions" => {
-                if item.get("lua").is_some() {
-                    return Err(guided(&format!("`{at}.permissions.lua` is not supported")));
-                }
-                out.insert(key.clone(), convert_keys(item)?);
-            }
-            key if REJECTED_PLUGIN_KEYS.contains(&key) => {
-                return Err(guided(&format!(
-                    "`{at}.{key}` is not supported; use `plugin`"
-                )));
-            }
-            _ => {
-                out.insert(snake_key(key)?, convert_keys(item)?);
-            }
+fn reject_legacy_keys(value: &Value) -> std::result::Result<(), String> {
+    if value.pointer("/build/lua").is_some() {
+        return Err(guided("`build.lua` is not supported; use `build.limits`"));
+    }
+    let plugins = value.get("plugins").and_then(Value::as_array);
+    for (index, plugin) in plugins.into_iter().flatten().enumerate() {
+        let at = format!("plugins[{index}]");
+        if plugin.get("security").and_then(Value::as_str) == Some("native") {
+            return Err(guided(&format!("`{at}.security` must not be \"native\"")));
+        }
+        if plugin.pointer("/permissions/lua").is_some() {
+            return Err(guided(&format!("`{at}.permissions.lua` is not supported")));
+        }
+        if let Some(key) = REJECTED_PLUGIN_KEYS
+            .iter()
+            .find(|key| plugin.get(**key).is_some())
+        {
+            return Err(guided(&format!(
+                "`{at}.{key}` is not supported; use `plugin`"
+            )));
         }
     }
-    if !out.contains_key("package") {
-        return Err(format!("`{at}` must set `plugin`"));
-    }
-    Ok(Value::Object(out))
-}
-
-/// Recursively converts object keys from camelCase to snake_case.
-fn convert_keys(value: &Value) -> std::result::Result<Value, String> {
-    Ok(match value {
-        Value::Object(map) => Value::Object(
-            map.iter()
-                .map(|(key, item)| Ok((snake_key(key)?, convert_keys(item)?)))
-                .collect::<std::result::Result<_, String>>()?,
-        ),
-        Value::Array(items) => Value::Array(
-            items
-                .iter()
-                .map(convert_keys)
-                .collect::<std::result::Result<_, _>>()?,
-        ),
-        other => other.clone(),
-    })
-}
-
-fn snake_key(key: &str) -> std::result::Result<String, String> {
-    if key.contains('_') {
-        return Err(format!("unknown field `{key}`; keys are camelCase"));
-    }
-    let mut out = String::with_capacity(key.len() + 2);
-    for c in key.chars() {
-        if c.is_ascii_uppercase() {
-            out.push('_');
-        }
-        out.push(c.to_ascii_lowercase());
-    }
-    Ok(out)
-}
-
-/// Rewrites backtick-quoted snake_case names in `message` to camelCase.
-fn to_camel_names(message: &str) -> String {
-    message
-        .split('`')
-        .enumerate()
-        .map(|(i, part)| {
-            if i % 2 == 1 {
-                camel_name(part)
-            } else {
-                part.to_string()
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("`")
-}
-
-fn camel_name(name: &str) -> String {
-    let mut out = String::with_capacity(name.len());
-    let mut upper = false;
-    for c in name.chars() {
-        if c == '_' && !out.is_empty() {
-            upper = true;
-        } else if upper {
-            out.push(c.to_ascii_uppercase());
-            upper = false;
-        } else {
-            out.push(c);
-        }
-    }
-    out
+    Ok(())
 }
 
 #[cfg(test)]
@@ -241,11 +118,11 @@ mod tests {
         assert_eq!(config.build.squash.packsquash_binary, "ps");
         assert_eq!(config.dev.port, 9000);
         assert_eq!(config.plugins[0].package, "window");
-        assert_eq!(config.plugins[0].label(), "window");
         assert_eq!(
-            config.plugins[0].options["someKey"]["innerKey"].as_integer(),
+            config.plugins[0].options["someKey"]["innerKey"].as_i64(),
             Some(1)
         );
+        assert_eq!(config.plugins[1].options, json!({}));
         assert_eq!(config.plugins[1].security, SecurityMode::Trusted);
         assert_eq!(config.plugins[1].permissions.process, ["git"]);
         assert!(config.plugins[1].permissions.network);
@@ -270,6 +147,55 @@ mod tests {
     }
 
     #[test]
+    fn rejects_positional_arrays() {
+        let pack = json!({ "name": "demo" });
+        let cases = [
+            (json!([{ "name": "demo" }]), "the config must be an object"),
+            (
+                json!({ "pack": pack, "build": [] }),
+                "`build` must be an object",
+            ),
+            (
+                json!({ "pack": pack, "plugins": {} }),
+                "`plugins` must be an array",
+            ),
+            (
+                json!({ "pack": pack, "plugins": [{ "plugin": "a" }, ["a"]] }),
+                "`plugins[1]` must be an object",
+            ),
+        ];
+        for (value, expected) in cases {
+            assert_eq!(
+                message(value),
+                format!("invalid config rpp.config.ts: {expected}")
+            );
+        }
+    }
+
+    #[test]
+    fn reports_full_paths() {
+        let pack = json!({ "name": "demo" });
+        let cases = [
+            (
+                json!({ "pack": pack, "build": { "limits": { "memoryLimitMb": "big" } } }),
+                "build.limits.memoryLimitMb: invalid type: string \"big\", expected u32",
+            ),
+            (
+                json!({ "pack": pack, "plugins": [{ "plugin": "a" }, { "options": {} }] }),
+                "plugins[1]: missing field `plugin`",
+            ),
+            (
+                json!({ "pack": pack, "plugins": [{ "plugin": "a", "security": "root" }] }),
+                "plugins[0].security: unknown variant `root`",
+            ),
+        ];
+        for (value, expected) in cases {
+            let message = message(value);
+            assert!(message.contains(expected), "{message}");
+        }
+    }
+
+    #[test]
     fn rejects_unsupported_values() {
         let pack = json!({ "name": "demo" });
         assert!(message(
@@ -278,19 +204,23 @@ mod tests {
         .contains("must not be null"));
         assert!(
             message(json!({ "pack": pack, "plugins": [{ "options": {} }] }))
-                .contains("must set `plugin`")
+                .contains("missing field `plugin`")
         );
         assert!(message(
             json!({ "pack": pack, "plugins": [{ "plugin": "a", "source": "path:x" }] })
         )
         .contains("`plugins[0].source`"));
-        assert!(message(
-            json!({ "pack": pack, "plugin": [{ "package": "a", "security": "native" }] })
-        )
-        .contains("unknown field `plugin`"));
+        assert!(
+            message(json!({ "pack": pack, "plugin": [{ "package": "a" }] }))
+                .contains("unknown field `plugin`")
+        );
         assert!(
             message(json!({ "pack": { "name": "demo", "packFromat": 1 } }))
                 .contains("`packFromat`")
+        );
+        assert!(
+            message(json!({ "pack": { "name": "demo", "pack_format": 1 } }))
+                .contains("unknown field `pack_format`")
         );
         assert!(
             message(json!({ "pack": pack, "build": { "limits": { "memoryLimitMb": 0 } } }))

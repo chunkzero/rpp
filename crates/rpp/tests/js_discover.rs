@@ -2,10 +2,10 @@
 
 #![cfg(feature = "js")]
 
-use std::path::PathBuf;
+use std::path::Path;
 
-use rpp::host::{PackInfo, RuntimeAccess};
-use rpp::js::{JsPluginFactory, JsPluginLimits};
+use rpp::config::{Config, PluginConfig, PluginPermissions, SecurityMode};
+use rpp::js::{JsPluginFactory, JsPluginSpec};
 use rpp::model::{GeneratorHost, PackFile, PluginFactory, ProcessOutcome};
 use tempfile::TempDir;
 
@@ -25,14 +25,32 @@ export default definePlugin({
 
 struct Project {
     dir: TempDir,
-    cache: Option<PathBuf>,
+}
+
+/// Load the plugin at `dir` into a project rooted at `root` whose source is `src`.
+fn load_plugin(root: &Path, dir: &Path) -> rpp::Result<JsPluginFactory> {
+    let mut config = Config::new("test-pack");
+    config.pack.pack_format = Some(34);
+    JsPluginFactory::load(JsPluginSpec {
+        dir,
+        project_root: root,
+        config: &config,
+        plugin: &PluginConfig {
+            package: "shop-ui".into(),
+            options: serde_json::json!({}),
+            security: SecurityMode::Sandboxed,
+            permissions: PluginPermissions::default(),
+            outputs: Default::default(),
+        },
+        #[cfg(feature = "wasm")]
+        components: Default::default(),
+    })
 }
 
 impl Project {
     fn new(plugin: &str) -> Self {
         let project = Self {
             dir: tempfile::tempdir().unwrap(),
-            cache: None,
         };
         project.write(
             "plugin/rpp.json",
@@ -55,19 +73,7 @@ impl Project {
     }
 
     fn load(&self) -> rpp::Result<JsPluginFactory> {
-        JsPluginFactory::load(
-            self.dir.path().join("plugin"),
-            toml::Value::Table(Default::default()),
-            PackInfo {
-                name: "test-pack".into(),
-                description: None,
-                format: Some(34),
-            },
-            JsPluginLimits::default(),
-            RuntimeAccess::sandboxed(".".into()),
-            &self.dir.path().join("src"),
-            self.cache.as_deref(),
-        )
+        load_plugin(self.dir.path(), &self.dir.path().join("plugin"))
     }
 
     fn found(&self) -> rpp::Result<serde_json::Value> {
@@ -168,18 +174,9 @@ fn plugin_inside_source_dir_is_rejected() {
     );
     project.write("src/plugins/p/src/plugin.ts", PLUGIN);
     project.write("src/plugins/p/src/config.ts", "export const x = 1;\n");
-    let error = JsPluginFactory::load(
-        project.dir.path().join("src/plugins/p"),
-        toml::Value::Table(Default::default()),
-        PackInfo {
-            name: "test-pack".into(),
-            description: None,
-            format: Some(34),
-        },
-        JsPluginLimits::default(),
-        RuntimeAccess::sandboxed(".".into()),
-        &project.dir.path().join("src"),
-        None,
+    let error = load_plugin(
+        project.dir.path(),
+        &project.dir.path().join("src/plugins/p"),
     )
     .err()
     .expect("load fails")
@@ -314,10 +311,9 @@ fn processor_cannot_read_discovered() {
 
 #[test]
 fn second_load_reuses_cached_bundle() {
-    let mut project = Project::new(PLUGIN);
+    let project = Project::new(PLUGIN);
     project.write("src/shop/window/window.ts", &window("Main"));
-    let cache = project.dir.path().join("cache");
-    project.cache = Some(cache.clone());
+    let cache = project.dir.path().join(".rpp/cache");
     let first = keys(&project);
 
     let entries = || std::fs::read_dir(cache.join("bundles")).unwrap().count();

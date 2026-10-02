@@ -7,16 +7,6 @@ pub(crate) fn xxh3(bytes: &[u8]) -> u64 {
     XxHash3_64::oneshot(bytes)
 }
 
-/// Render bytes as a lowercase hex string.
-pub(crate) fn to_hex(bytes: &[u8]) -> String {
-    let mut out = String::with_capacity(bytes.len() * 2);
-    for b in bytes {
-        out.push(char::from_digit((b >> 4) as u32, 16).unwrap_or('0'));
-        out.push(char::from_digit((b & 0x0f) as u32, 16).unwrap_or('0'));
-    }
-    out
-}
-
 /// Render a `u64` as a fixed-width 16-character lowercase hex string.
 pub(crate) fn u64_hex(value: u64) -> String {
     format!("{value:016x}")
