@@ -163,10 +163,7 @@ impl<'a> Generator<'a> {
             Type::ErrorContext => "unknown".into(),
             Type::Id(id) => {
                 let def = &self.resolve.types[*id];
-                match &def.kind {
-                    kind if def.name.is_some() && !is_opaque(kind) => self.name_of(*id),
-                    kind => self.body(kind),
-                }
+                self.body(def.name.as_ref().map(|_| *id), &def.kind)
             }
         }
     }
@@ -206,7 +203,7 @@ impl<'a> Generator<'a> {
         }
         let body = match kind {
             TypeDefKind::Type(inner) => self.type_ref(inner),
-            kind => self.body(kind),
+            kind => self.body(None, kind),
         };
         format!("export type {name} = {body};\n")
     }
@@ -225,13 +222,23 @@ impl<'a> Generator<'a> {
             .collect()
     }
 
-    fn body(&mut self, kind: &TypeDefKind) -> String {
-        match kind {
-            TypeDefKind::Record(record) => {
+    /// Renders `kind`, referencing it by name when `named` is set and it has a TypeScript form.
+    fn body(&mut self, named: Option<TypeId>, kind: &TypeDefKind) -> String {
+        match (kind, named) {
+            (
+                TypeDefKind::Resource
+                | TypeDefKind::Handle(_)
+                | TypeDefKind::Future(_)
+                | TypeDefKind::Stream(_)
+                | TypeDefKind::Unknown,
+                _,
+            ) => "unknown".into(),
+            (_, Some(id)) => self.name_of(id),
+            (TypeDefKind::Record(record), None) => {
                 let fields = self.record_fields(record);
                 inline_object(&fields)
             }
-            TypeDefKind::Flags(flags) => {
+            (TypeDefKind::Flags(flags), None) => {
                 let fields: Vec<String> = flags
                     .flags
                     .iter()
@@ -239,19 +246,19 @@ impl<'a> Generator<'a> {
                     .collect();
                 inline_object(&fields)
             }
-            TypeDefKind::Tuple(tuple) => {
+            (TypeDefKind::Tuple(tuple), None) => {
                 let items: Vec<String> = tuple.types.iter().map(|ty| self.type_ref(ty)).collect();
                 format!("[{}]", items.join(", "))
             }
-            TypeDefKind::Variant(variant) => self.variant_body(variant),
-            TypeDefKind::Enum(en) => union(
+            (TypeDefKind::Variant(variant), None) => self.variant_body(variant),
+            (TypeDefKind::Enum(en), None) => union(
                 en.cases
                     .iter()
                     .map(|case| format!("{:?}", case.name))
                     .collect(),
             ),
-            TypeDefKind::Option(inner) => self.option_body(inner),
-            TypeDefKind::Result(result) => {
+            (TypeDefKind::Option(inner), None) => self.option_body(inner),
+            (TypeDefKind::Result(result), None) => {
                 let ok = result.ok.as_ref().map(|ty| self.type_ref(ty));
                 let err = result.err.as_ref().map(|ty| self.type_ref(ty));
                 union(vec![
@@ -259,15 +266,14 @@ impl<'a> Generator<'a> {
                     tagged("err", err.as_deref()),
                 ])
             }
-            TypeDefKind::List(Type::U8) => "Uint8Array".into(),
-            TypeDefKind::List(inner) | TypeDefKind::FixedLengthList(inner, _) => {
+            (TypeDefKind::List(Type::U8), None) => "Uint8Array".into(),
+            (TypeDefKind::List(inner) | TypeDefKind::FixedLengthList(inner, _), None) => {
                 self.list_body(inner)
             }
-            TypeDefKind::Map(key, value) => {
+            (TypeDefKind::Map(key, value), None) => {
                 format!("Map<{}, {}>", self.type_ref(key), self.type_ref(value))
             }
-            TypeDefKind::Type(inner) => self.type_ref(inner),
-            _ => "unknown".into(),
+            (TypeDefKind::Type(inner), None) => self.type_ref(inner),
         }
     }
 
@@ -300,18 +306,6 @@ impl<'a> Generator<'a> {
             format!("{item}[]")
         }
     }
-}
-
-/// Kinds with no TypeScript representation, always emitted as `unknown`.
-fn is_opaque(kind: &TypeDefKind) -> bool {
-    matches!(
-        kind,
-        TypeDefKind::Resource
-            | TypeDefKind::Handle(_)
-            | TypeDefKind::Future(_)
-            | TypeDefKind::Stream(_)
-            | TypeDefKind::Unknown
-    )
 }
 
 fn tagged(tag: &str, val: Option<&str>) -> String {
