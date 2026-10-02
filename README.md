@@ -38,6 +38,28 @@ On other platforms, build from source with Rust 1.96 or newer:
 cargo install --locked --git https://github.com/chunkzero/rpp rpp-cli
 ```
 
+## Nightly releases
+
+Daily builds and manual `Release binaries` dispatches on `main` publish immutable
+`v0.1.0-nightly.<UTC date>.g<12-character commit>` prereleases. Choose `mode=nightly`
+and `publish=true`; `publish=false` only packages and verifies. Version tags matching
+the workspace version and `mode=release` use the same stable/beta packaging. Manual
+publishing supports `main` and version tags, never PR refs.
+
+Archives retain the registry's `rpp-<version>-linux-x64` layout and bundled TypeScript
+compiler. `rpp --version` reports the full version; `release.json` beside the executable
+records the full source SHA. Assets and SHA-256 sidecars are downloaded and compared
+in a draft before publication; prereleases never replace the latest stable release.
+A clean Ubuntu consumer checks the installer without Rust, Node or a global compiler,
+and the publish job installs the release through the pinned Chunkzero aqua registry
+and runs `rpp check` using its bundled compiler.
+
+Scheduled runs skip a source SHA already present in the latest published nightly;
+drafts remain retryable. Publication is serialized. Only the latest 30 published
+nightlies are retained; stable/beta releases are never pruned. Deleted nightlies cannot
+be freshly installed, so pin stable/beta releases or retain verified artifacts for
+long-lived deployments.
+
 ## Getting started
 
 ```bash

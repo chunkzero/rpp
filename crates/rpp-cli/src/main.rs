@@ -14,9 +14,14 @@ use rpp_cli::commands::init::InitArgs;
 use rpp_cli::commands::plugin::PluginCommand;
 use rpp_cli::ui;
 
+const RELEASE_VERSION: &str = match option_env!("RPP_RELEASE_VERSION") {
+    Some(version) => version,
+    None => env!("CARGO_PKG_VERSION"),
+};
+
 /// rpp — a Minecraft resource pack build tool.
 #[derive(Debug, Parser)]
-#[command(name = "rpp", version, about, long_about = None)]
+#[command(name = "rpp", version = RELEASE_VERSION, about, long_about = None)]
 struct Cli {
     /// Run as if rpp were started in `<dir>` instead of the current directory.
     #[arg(short = 'C', long = "dir", global = true)]

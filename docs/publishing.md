@@ -72,3 +72,12 @@ to publish. The first publish of a new plugin name registers it; later publishes
 
 A plugin's public types must not reference types from its npm dependencies, because declarations from `node_modules`
 are not packed.
+
+## Preverified releases
+
+Repositories coordinating several artifacts can package and verify them in read-only
+jobs, publish their release through a draft, and then invoke this action with
+`packed-directory` (containing `packed.json`, the plugin archive and its checksum) and
+`release-tag`. This skips installation, packaging and asset upload, and only validates
+and opens the registry PR. An identical registered version or existing registry PR is
+reused on retry; conflicting registered bytes fail.

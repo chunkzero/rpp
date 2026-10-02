@@ -1,0 +1,13 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/aquaproj/aqua/v2.63.0/json-schema/policy.json
+registries:
+  - type: local
+    name: chunkzero
+    path: registry.yaml
+  - type: github_content
+    name: chunkzero-github
+    repo_owner: chunkzero
+    repo_name: aqua-registry
+    path: registry.yaml
+packages:
+  - registry: chunkzero
+  - registry: chunkzero-github

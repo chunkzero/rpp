@@ -2,6 +2,12 @@ name: Publish rpp plugin
 description: Pack an rpp plugin, upload it to the tag's GitHub release and open a registry pull request.
 
 inputs:
+  packed-directory:
+    description: Existing packed.json and archive directory from a verified, already-published release. Skips install, pack, and upload.
+    default: ""
+  release-tag:
+    description: Immutable release tag when consuming a prepacked release.
+    default: ""
   rpp-version:
     description: rpp release to install, without the leading v.
     required: true
@@ -19,6 +25,7 @@ runs:
   using: composite
   steps:
     - name: Install dependencies
+      if: inputs.packed-directory == ''
       shell: bash
       working-directory: ${{ inputs.working-directory }}
       env:
@@ -34,6 +41,7 @@ runs:
         fi
 
     - name: Install rpp
+      if: inputs.packed-directory == ''
       shell: bash
       env:
         RPP_VERSION: ${{ inputs.rpp-version }}
@@ -45,12 +53,19 @@ runs:
       id: pack
       shell: bash
       working-directory: ${{ inputs.working-directory }}
+      env:
+        PACKED_DIRECTORY: ${{ inputs.packed-directory }}
+        RELEASE_TAG: ${{ inputs.release-tag || github.ref_name }}
       run: |
-        out="$RUNNER_TEMP/rpp-pack"
-        mkdir -p "$out"
-        rpp plugin pack --json --out "$out" > "$out/packed.json"
+        if [ -n "$PACKED_DIRECTORY" ]; then
+          out=$(realpath "$GITHUB_WORKSPACE/$PACKED_DIRECTORY")
+        else
+          out="$RUNNER_TEMP/rpp-pack"
+          mkdir -p "$out"
+          rpp plugin pack --json --out "$out" > "$out/packed.json"
+        fi
         version=$(jq -r .version "$out/packed.json")
-        if [ "$GITHUB_REF_NAME" != "v$version" ]; then
+        if [ "$RELEASE_TAG" != "v$version" ]; then
           echo "::error::tag $GITHUB_REF_NAME does not match plugin version v$version"
           exit 1
         fi
@@ -59,6 +74,7 @@ runs:
         echo "sha256=$(jq -r .sha256 "$out/packed.json")" >> "$GITHUB_OUTPUT"
 
     - name: Upload release asset
+      if: inputs.packed-directory == ''
       shell: bash
       env:
         GH_TOKEN: ${{ github.token }}
@@ -83,10 +99,12 @@ runs:
         fi
 
     - name: Prepare registry update
+      id: registry
       shell: bash
       env:
         GH_TOKEN: ${{ inputs.registry-token }}
         OUT: ${{ steps.pack.outputs.out }}
+        RELEASE_TAG: ${{ inputs.release-tag || github.ref_name }}
         UPDATE_ENTRY: ${{ github.action_path }}/update_entry.py
       run: |
         registry=chunkzero/rpp-registry
@@ -98,21 +116,34 @@ runs:
         cd "$RUNNER_TEMP/registry"
         git checkout -b "$name-$version"
 
+        if [ -f "plugins/$name.json" ] && jq -e --arg version "$version" '.versions[] | select(.version == $version)' "plugins/$name.json" > existing.json; then
+          test "$(jq -r .sha256 existing.json)" = "$(jq -r .sha256 "$OUT/packed.json")"
+          test "$(jq -r .url existing.json)" = "https://github.com/$GITHUB_REPOSITORY/releases/download/$RELEASE_TAG/$(jq -r .file "$OUT/packed.json")"
+          echo "registered=true" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
         python3 "$UPDATE_ENTRY" --registry . --repository "https://github.com/$GITHUB_REPOSITORY" \
-          --tag "$GITHUB_REF_NAME" --packed "$OUT/packed.json"
+          --tag "$RELEASE_TAG" --packed "$OUT/packed.json"
         python3 scripts/registry.py index
         python3 scripts/registry.py check --base origin/main
 
     - name: Open registry pull request
+      if: steps.registry.outputs.registered != 'true'
       shell: bash
       env:
         GH_TOKEN: ${{ inputs.registry-token }}
         OUT: ${{ steps.pack.outputs.out }}
+        RELEASE_TAG: ${{ inputs.release-tag || github.ref_name }}
       run: |
         name=$(jq -r .name "$OUT/packed.json")
         version=$(jq -r .version "$OUT/packed.json")
         branch="$name-$version"
 
+        existing=$(gh pr list --repo chunkzero/rpp-registry --head "$branch" --state all --json url --jq '.[0].url // empty')
+        if [ -n "$existing" ]; then
+          echo "$existing"
+          exit 0
+        fi
         cd "$RUNNER_TEMP/registry"
         git config user.name "github-actions[bot]"
         git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -122,7 +153,12 @@ runs:
         # Other tokens push to their owner's fork.
         case "$GH_TOKEN" in
           ghs_*)
-            git push --force-with-lease="refs/heads/$branch:" origin "$branch"
+            if git ls-remote --exit-code origin "refs/heads/$branch" >/dev/null; then
+              git fetch origin "$branch"
+              test "$(git rev-parse HEAD^{tree})" = "$(git rev-parse FETCH_HEAD^{tree})"
+            else
+              git push --force-with-lease="refs/heads/$branch:" origin "$branch"
+            fi
             head="$branch"
             ;;
           *)
@@ -135,4 +171,4 @@ runs:
         esac
         gh pr create --repo chunkzero/rpp-registry --head "$head" \
           --title "feat: add $name $version" \
-          --body "Publishes $name $version from https://github.com/$GITHUB_REPOSITORY/releases/tag/$GITHUB_REF_NAME."
+          --body "Publishes $name $version from https://github.com/$GITHUB_REPOSITORY/releases/tag/$RELEASE_TAG."
