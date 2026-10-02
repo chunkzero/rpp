@@ -83,72 +83,72 @@ impl Serialize for Object {
 
 impl<'de> Deserialize<'de> for Json {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        struct JsonVisitor;
-
-        impl<'de> Visitor<'de> for JsonVisitor {
-            type Value = Json;
-
-            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                f.write_str("any JSON value")
-            }
-
-            fn visit_unit<E>(self) -> Result<Json, E> {
-                Ok(Json::Null)
-            }
-
-            fn visit_bool<E>(self, v: bool) -> Result<Json, E> {
-                Ok(Json::Bool(v))
-            }
-
-            fn visit_i64<E>(self, v: i64) -> Result<Json, E> {
-                Ok(Json::Number(v.into()))
-            }
-
-            fn visit_u64<E>(self, v: u64) -> Result<Json, E> {
-                Ok(Json::Number(v.into()))
-            }
-
-            fn visit_f64<E: serde::de::Error>(self, v: f64) -> Result<Json, E> {
-                Number::from_f64(v)
-                    .map(Json::Number)
-                    .ok_or_else(|| E::custom("non-finite number"))
-            }
-
-            fn visit_str<E>(self, v: &str) -> Result<Json, E> {
-                Ok(Json::String(v.to_string()))
-            }
-
-            fn visit_string<E>(self, v: String) -> Result<Json, E> {
-                Ok(Json::String(v))
-            }
-
-            fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Json, A::Error> {
-                let mut items = Vec::new();
-                while let Some(item) = seq.next_element()? {
-                    items.push(item);
-                }
-                Ok(Json::Array(items))
-            }
-
-            fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Json, A::Error> {
-                let mut object = Object::default();
-                while let Some(key) = map.next_key::<String>()? {
-                    // With `serde_json/arbitrary_precision`, numbers arrive as this one-entry map.
-                    if key == NUMBER_TOKEN && object.0.is_empty() {
-                        let text: String = map.next_value()?;
-                        return text
-                            .parse()
-                            .map(Json::Number)
-                            .map_err(serde::de::Error::custom);
-                    }
-                    let value = map.next_value()?;
-                    object.insert(key, value);
-                }
-                Ok(Json::Object(object))
-            }
-        }
-
         deserializer.deserialize_any(JsonVisitor)
+    }
+}
+
+struct JsonVisitor;
+
+impl<'de> Visitor<'de> for JsonVisitor {
+    type Value = Json;
+
+    fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("any JSON value")
+    }
+
+    fn visit_unit<E>(self) -> Result<Json, E> {
+        Ok(Json::Null)
+    }
+
+    fn visit_bool<E>(self, v: bool) -> Result<Json, E> {
+        Ok(Json::Bool(v))
+    }
+
+    fn visit_i64<E>(self, v: i64) -> Result<Json, E> {
+        Ok(Json::Number(v.into()))
+    }
+
+    fn visit_u64<E>(self, v: u64) -> Result<Json, E> {
+        Ok(Json::Number(v.into()))
+    }
+
+    fn visit_f64<E: serde::de::Error>(self, v: f64) -> Result<Json, E> {
+        Number::from_f64(v)
+            .map(Json::Number)
+            .ok_or_else(|| E::custom("non-finite number"))
+    }
+
+    fn visit_str<E>(self, v: &str) -> Result<Json, E> {
+        Ok(Json::String(v.to_string()))
+    }
+
+    fn visit_string<E>(self, v: String) -> Result<Json, E> {
+        Ok(Json::String(v))
+    }
+
+    fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Json, A::Error> {
+        let mut items = Vec::new();
+        while let Some(item) = seq.next_element()? {
+            items.push(item);
+        }
+        Ok(Json::Array(items))
+    }
+
+    fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Json, A::Error> {
+        let mut object = Object::default();
+        while let Some(key) = map.next_key::<String>()? {
+            // With `serde_json/arbitrary_precision`, numbers arrive as this one-entry map.
+            if key == NUMBER_TOKEN && object.0.is_empty() {
+                let text: String = map.next_value()?;
+                return text
+                    .parse()
+                    .map(Json::Number)
+                    .map_err(serde::de::Error::custom);
+            }
+            let value = map.next_value()?;
+            object.insert(key, value);
+        }
+        Ok(Json::Object(object))
     }
 }
 
