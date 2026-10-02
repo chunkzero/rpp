@@ -115,6 +115,17 @@ fn tsconfig(plugin_configs: Option<&BTreeMap<String, PathBuf>>) -> String {
     if let Some(plugin_configs) = plugin_configs {
         text.push_str(",\n      \"#rpp/config\": [\"./sdk/config.ts\"]");
         for (name, path) in plugin_configs {
+            let declaration = match path.extension().and_then(|extension| extension.to_str()) {
+                Some("js") => path.with_extension("d.ts"),
+                Some("mjs") => path.with_extension("d.mts"),
+                Some("cjs") => path.with_extension("d.cts"),
+                _ => path.clone(),
+            };
+            let path = if declaration.is_file() {
+                &declaration
+            } else {
+                path
+            };
             let path = path.to_string_lossy().replace('\\', "/");
             text.push_str(&format!(",\n      \"#plugins/{name}\": [{path:?}]"));
         }
@@ -210,5 +221,27 @@ fn write_if_changed(path: &Path, contents: &str) -> Result<bool> {
 pub(crate) fn write_best_effort(root: &Path) {
     if let Err(error) = write(root) {
         crate::ui::warn(format!("TypeScript definitions: {error:#}"));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn packed_config_maps_to_its_declarations() {
+        let root = tempfile::tempdir().unwrap();
+        let config = root.path().join("config.js");
+        std::fs::write(&config, "export default () => {};\n").unwrap();
+        let configs = BTreeMap::from([("packed".to_string(), config.clone())]);
+        assert!(tsconfig(Some(&configs)).contains("config.js"));
+        std::fs::write(
+            config.with_extension("d.ts"),
+            "export default function(): void;\n",
+        )
+        .unwrap();
+        let generated = tsconfig(Some(&configs));
+        assert!(generated.contains("config.d.ts"));
+        assert!(!generated.contains("config.js"));
     }
 }
