@@ -1,5 +1,5 @@
 //! `rpp` core library: project config, the runtime-agnostic plugin model,
-//! shared host services, the TypeScript plugin runtime, and the incremental build engine.
+//! the TypeScript plugin runtime and its host services, and the incremental build engine.
 //!
 //! The pipeline is defined entirely in terms of [`model`] traits. The V8 runtime
 //! ([`js::JsPluginFactory`]) is one implementation; the build engine
@@ -7,7 +7,6 @@
 
 pub mod config;
 pub mod engine;
-pub mod host;
 pub mod manifest;
 pub mod model;
 

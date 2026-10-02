@@ -62,9 +62,3 @@ pub(crate) fn compile(pattern: &str) -> Result<Glob, String> {
         .map(Glob)
         .map_err(|e| format!("invalid glob `{pattern}`: {e}"))
 }
-
-/// Match a single glob pattern against a path (forward-slash relative).
-#[cfg_attr(not(feature = "js"), allow(dead_code))]
-pub(crate) fn matches(pattern: &str, path: &str) -> bool {
-    compile(pattern).is_ok_and(|glob| glob.matches(path))
-}

@@ -222,7 +222,7 @@ fn destination_boundaries_reject_external_aliases_and_protected_roots() {
         let mut config = project.config();
         config.plugins.push(PluginConfig {
             package: "plugin".into(),
-            options: toml::Value::Table(Default::default()),
+            options: serde_json::json!({}),
             security: SecurityMode::Sandboxed,
             permissions: PluginPermissions::default(),
             outputs: BTreeMap::from([("code".to_string(), root.into())]),

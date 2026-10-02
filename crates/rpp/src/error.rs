@@ -20,10 +20,6 @@ pub enum Error {
         source: std::io::Error,
     },
 
-    /// An I/O error without an associated path.
-    #[error("io error: {0}")]
-    IoBare(#[source] std::io::Error),
-
     /// Failed to convert or validate `rpp.config.ts`.
     #[error("invalid config {path}: {message}")]
     Config {

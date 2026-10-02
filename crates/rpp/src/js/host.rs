@@ -7,18 +7,30 @@ use serde::de::DeserializeOwned;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
+use super::access::RuntimeAccess;
 #[cfg(feature = "wasm")]
 use super::component::Components;
-use crate::host::process::{self, ProcessRequest};
-use crate::host::{hash, Phase, RuntimeAccess};
+use super::hash;
+use super::process::{self, ProcessRequest};
+use super::toml_json::{json_to_toml, toml_to_json};
 use crate::model::GeneratorHost;
 use crate::util::glob;
-use crate::util::json_toml::{json_to_toml, toml_to_json};
 use crate::util::path::validate_relative;
+
+/// What the plugin is running, which decides the host calls it may make.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Phase {
+    /// Bundle evaluation, `describe` and `init`.
+    Load,
+    Processor,
+    Generator,
+    Hook,
+}
 
 /// The host for one JavaScript call.
 pub(super) struct JsHost<'a> {
     access: &'a RuntimeAccess,
+    phase: Phase,
     deadline: Instant,
     generator: Option<&'a mut dyn GeneratorHost>,
     /// The final path and drop flag reported by the `file` call.
@@ -110,11 +122,13 @@ fn null() -> Result<HostReply, String> {
 impl<'a> JsHost<'a> {
     pub(super) fn new(
         access: &'a RuntimeAccess,
+        phase: Phase,
         deadline: Instant,
         generator: Option<&'a mut dyn GeneratorHost>,
     ) -> Self {
         Self {
             access,
+            phase,
             deadline,
             generator,
             file: None,
@@ -134,7 +148,7 @@ impl<'a> JsHost<'a> {
         if !access.allows_process() {
             return Err("process execution requires trusted process permissions".into());
         }
-        if !matches!(access.phase.get(), Phase::Generator | Phase::Hook) {
+        if !matches!(self.phase, Phase::Generator | Phase::Hook) {
             return Err("process execution is only available in generators and hooks".into());
         }
         let remaining = self.deadline.saturating_duration_since(Instant::now());
@@ -172,20 +186,15 @@ impl<'a> JsHost<'a> {
     }
 }
 
-impl Host for JsHost<'_> {
-    fn call(
+impl JsHost<'_> {
+    /// Host calls that read or write through the generator host.
+    fn generator_call(
         &mut self,
         name: &str,
         value: Value,
         bytes: Option<Vec<u8>>,
     ) -> Result<HostReply, String> {
         match name {
-            "file" => {
-                let args: FileArgs = parse(name, value)?;
-                relative(&args.path)?;
-                self.file = Some((args.path, args.dropped));
-                null()
-            }
             "files" | "source_files" => {
                 let args: GlobArgs = parse(name, value)?;
                 let host = self.generator(name)?;
@@ -211,17 +220,15 @@ impl Host for JsHost<'_> {
                     bytes: contents,
                 })
             }
-            "emit" => {
+            "emit" | "remove" => {
                 let args: PathArgs = parse(name, value)?;
                 relative(&args.path)?;
-                self.generator(name)?
-                    .emit(&args.path, bytes.unwrap_or_default());
-                null()
-            }
-            "remove" => {
-                let args: PathArgs = parse(name, value)?;
-                relative(&args.path)?;
-                self.generator(name)?.remove(&args.path);
+                let host = self.generator(name)?;
+                if name == "emit" {
+                    host.emit(&args.path, bytes.unwrap_or_default());
+                } else {
+                    host.remove(&args.path);
+                }
                 null()
             }
             "emit_output" => {
@@ -234,33 +241,64 @@ impl Host for JsHost<'_> {
                 );
                 null()
             }
-            "toml.parse" => {
-                let args: TomlParseArgs = parse(name, value)?;
-                let parsed: toml::Value =
-                    toml::from_str(&args.text).map_err(|e| format!("toml parse error: {e}"))?;
-                Ok(reply(toml_to_json(&parsed)))
+            _ => Err(format!("unknown host call `{name}`")),
+        }
+    }
+}
+
+/// Host calls that only transform their arguments.
+fn utility_call(name: &str, value: Value, bytes: Option<Vec<u8>>) -> Result<HostReply, String> {
+    match name {
+        "toml.parse" => {
+            let args: TomlParseArgs = parse(name, value)?;
+            let parsed: toml::Value =
+                toml::from_str(&args.text).map_err(|e| format!("toml parse error: {e}"))?;
+            Ok(reply(toml_to_json(&parsed)))
+        }
+        "toml.stringify" => {
+            let args: TomlStringifyArgs = parse(name, value)?;
+            let value =
+                json_to_toml(&args.value).map_err(|e| format!("toml stringify error: {e}"))?;
+            let text = toml::to_string(&value).map_err(|e| format!("toml stringify error: {e}"))?;
+            Ok(reply(Value::String(text)))
+        }
+        "hash" => {
+            let args: HashArgs = parse(name, value)?;
+            let data = bytes.unwrap_or_default();
+            Ok(reply(match args.algorithm {
+                Algorithm::Xxh3 => json!(hash::xxh3_hex(&data)),
+                Algorithm::Sha256 => json!(hash::sha256_hex(&data)),
+                Algorithm::Md5 => json!(hash::md5_hex(&data)),
+                Algorithm::Crc32 => json!(hash::crc32(&data)),
+            }))
+        }
+        "glob.match" => {
+            let args: MatchArgs = parse(name, value)?;
+            let matched = glob::compile(&args.pattern).is_ok_and(|g| g.matches(&args.path));
+            Ok(reply(json!(matched)))
+        }
+        _ => Err(format!("unknown host call `{name}`")),
+    }
+}
+
+impl Host for JsHost<'_> {
+    fn call(
+        &mut self,
+        name: &str,
+        value: Value,
+        bytes: Option<Vec<u8>>,
+    ) -> Result<HostReply, String> {
+        match name {
+            "file" => {
+                let args: FileArgs = parse(name, value)?;
+                relative(&args.path)?;
+                self.file = Some((args.path, args.dropped));
+                null()
             }
-            "toml.stringify" => {
-                let args: TomlStringifyArgs = parse(name, value)?;
-                let value =
-                    json_to_toml(&args.value).map_err(|e| format!("toml stringify error: {e}"))?;
-                let text =
-                    toml::to_string(&value).map_err(|e| format!("toml stringify error: {e}"))?;
-                Ok(reply(Value::String(text)))
-            }
-            "hash" => {
-                let args: HashArgs = parse(name, value)?;
-                let data = bytes.unwrap_or_default();
-                Ok(reply(match args.algorithm {
-                    Algorithm::Xxh3 => json!(hash::xxh3_hex(&data)),
-                    Algorithm::Sha256 => json!(hash::sha256_hex(&data)),
-                    Algorithm::Md5 => json!(hash::md5_hex(&data)),
-                    Algorithm::Crc32 => json!(hash::crc32(&data)),
-                }))
-            }
-            "glob.match" => {
-                let args: MatchArgs = parse(name, value)?;
-                Ok(reply(json!(glob::matches(&args.pattern, &args.path))))
+            "files" | "source_files" | "read" | "read_source" | "emit" | "remove"
+            | "emit_output" => self.generator_call(name, value, bytes),
+            "toml.parse" | "toml.stringify" | "hash" | "glob.match" => {
+                utility_call(name, value, bytes)
             }
             "process.run" => {
                 let args: RunArgs = parse(name, value)?;

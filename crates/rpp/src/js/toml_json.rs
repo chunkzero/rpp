@@ -1,15 +1,13 @@
-//! Explicit JSON/TOML conversions. Serde-based conversion between the two is avoided
-//! because dependencies may enable `serde_json/arbitrary_precision`, which changes how
-//! numbers deserialize.
-
-#![cfg_attr(not(feature = "js"), allow(dead_code))]
+//! JSON/TOML conversions for the `toml.parse` and `toml.stringify` host calls. Serde-based
+//! conversion between the two is avoided because dependencies may enable
+//! `serde_json/arbitrary_precision`, which changes how numbers deserialize.
 
 use serde_json::Value;
 
 /// The single key of the object that stands for a TOML datetime in tagged JSON.
 const DATETIME_KEY: &str = "$__toml_private_datetime";
 
-pub(crate) fn toml_to_json(value: &toml::Value) -> Value {
+pub(super) fn toml_to_json(value: &toml::Value) -> Value {
     match value {
         toml::Value::String(s) => Value::String(s.clone()),
         toml::Value::Integer(i) => Value::from(*i),
@@ -26,7 +24,7 @@ pub(crate) fn toml_to_json(value: &toml::Value) -> Value {
     }
 }
 
-pub(crate) fn json_to_toml(value: &Value) -> Result<toml::Value, String> {
+pub(super) fn json_to_toml(value: &Value) -> Result<toml::Value, String> {
     Ok(match value {
         Value::Null => return Err("null has no TOML representation".into()),
         Value::Bool(b) => toml::Value::Boolean(*b),

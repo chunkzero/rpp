@@ -2,9 +2,7 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::LazyLock;
 
-use regex::Regex;
 use semver::{Version, VersionReq};
 use serde::Deserialize;
 
@@ -12,9 +10,17 @@ use crate::error::{Error, Result};
 use crate::util::glob;
 use crate::util::path::validate_relative;
 
-/// Plugin id grammar: `^[a-z0-9][a-z0-9_-]*$`.
-static ID_REGEX: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^[a-z0-9][a-z0-9_-]*$").expect("static id regex is valid"));
+/// The plugin id grammar, also used for package, component and discover names.
+pub(crate) const ID_GRAMMAR: &str = "^[a-z0-9][a-z0-9_-]*$";
+
+/// Whether `name` matches [`ID_GRAMMAR`].
+pub(crate) fn is_valid_id(name: &str) -> bool {
+    let mut bytes = name.bytes();
+    bytes
+        .next()
+        .is_some_and(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
+        && bytes.all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'_' | b'-'))
+}
 
 /// A validated `rpp.json` manifest.
 #[derive(Debug, Clone)]
@@ -72,18 +78,80 @@ struct RawJsonManifest {
     dependencies: Option<serde::de::IgnoredAny>,
 }
 
-fn validate_overrides(overrides: &[String]) -> std::result::Result<(), String> {
-    for pattern in overrides {
-        validate_relative(pattern).map_err(|m| format!("invalid `overrides` pattern: {m}"))?;
-        glob::compile(pattern).map_err(|m| format!("invalid `overrides` pattern: {m}"))?;
+type Check<T> = std::result::Result<T, String>;
+
+fn validate_id(field: &str, name: &str) -> Check<()> {
+    if is_valid_id(name) {
+        Ok(())
+    } else {
+        Err(format!("{field} `{name}` must match {ID_GRAMMAR}"))
     }
-    Ok(())
 }
 
+fn parse_version(version: &str) -> Check<Version> {
+    Version::parse(version).map_err(|e| format!("`version` `{version}` is not valid semver: {e}"))
+}
+
+fn parse_rpp(req: Option<&str>) -> Check<Option<VersionReq>> {
+    req.map(|req| {
+        VersionReq::parse(req)
+            .map_err(|e| format!("`rpp` `{req}` is not a valid version range: {e}"))
+    })
+    .transpose()
+}
+
+/// Whether `entry` names a module the JavaScript runtime can load.
 fn is_script_entry(entry: &str) -> bool {
     [".ts", ".mts", ".js", ".mjs"]
         .iter()
         .any(|ext| entry.ends_with(ext))
+}
+
+fn validate_entry(entry: &str) -> Check<()> {
+    validate_relative(entry).map_err(|m| format!("invalid `entry`: {m}"))?;
+    if entry.ends_with(".lua") {
+        return Err(format!(
+            "`entry` `{entry}` is a Lua script; Lua plugins are no longer supported, \
+             write the entry as a TypeScript module; see {}",
+            crate::MIGRATION_GUIDE
+        ));
+    }
+    if !is_script_entry(entry) {
+        return Err(format!(
+            "`entry` `{entry}` must be a .ts, .mts, .js or .mjs file"
+        ));
+    }
+    Ok(())
+}
+
+fn parse_components(raw: BTreeMap<String, String>) -> Check<BTreeMap<String, ComponentManifest>> {
+    raw.into_iter()
+        .map(|(name, module)| {
+            validate_id("component name", &name)?;
+            validate_relative(&module)
+                .map_err(|m| format!("invalid module for component `{name}`: {m}"))?;
+            Ok((name, ComponentManifest { module }))
+        })
+        .collect()
+}
+
+fn validate_discover(discover: &BTreeMap<String, String>) -> Check<()> {
+    for (name, pattern) in discover {
+        validate_id("discover name", name)?;
+        validate_relative(pattern)
+            .and_then(|()| glob::compile(pattern).map(drop))
+            .map_err(|m| format!("invalid pattern for discover `{name}`: {m}"))?;
+    }
+    Ok(())
+}
+
+fn validate_overrides(overrides: &[String]) -> Check<()> {
+    for pattern in overrides {
+        validate_relative(pattern)
+            .and_then(|()| glob::compile(pattern).map(drop))
+            .map_err(|m| format!("invalid `overrides` pattern: {m}"))?;
+    }
+    Ok(())
 }
 
 impl PluginManifest {
@@ -105,81 +173,27 @@ impl PluginManifest {
     /// `discover` maps names (same grammar) to one glob each, relative to the pack source
     /// directory. `name` becomes [`PluginManifest::id`] (same grammar). `entry` defaults to
     /// `src/plugin.ts` and must be a JavaScript entry; `entry`, `config` and component
-    /// paths must be relative. `rpp` is a version requirement checked by [`PluginManifest::load`]. Unknown keys are rejected, except
-    /// `dependencies`, which is ignored.
+    /// paths must be relative. `rpp` is a version requirement checked by
+    /// [`PluginManifest::load`]. Unknown keys are rejected, except `dependencies`, which is
+    /// ignored.
     pub fn parse_json(text: &str, path: impl Into<PathBuf>) -> Result<Self> {
         let path = path.into();
-        let fail = |message: String| Error::Manifest {
-            path: path.clone(),
-            message,
-        };
-        let raw: RawJsonManifest = serde_json::from_str(text).map_err(|e| fail(e.to_string()))?;
+        Self::from_raw(text).map_err(|message| Error::Manifest { path, message })
+    }
 
-        if !ID_REGEX.is_match(&raw.name) {
-            return Err(fail(format!(
-                "`name` `{}` must match ^[a-z0-9][a-z0-9_-]*$",
-                raw.name
-            )));
-        }
-        let version = Version::parse(&raw.version).map_err(|e| {
-            fail(format!(
-                "`version` `{}` is not valid semver: {e}",
-                raw.version
-            ))
-        })?;
-        let rpp = raw
-            .rpp
-            .as_deref()
-            .map(|req| {
-                VersionReq::parse(req)
-                    .map_err(|e| fail(format!("`rpp` `{req}` is not a valid version range: {e}")))
-            })
-            .transpose()?;
-
+    fn from_raw(text: &str) -> Check<Self> {
+        let raw: RawJsonManifest = serde_json::from_str(text).map_err(|e| e.to_string())?;
+        validate_id("`name`", &raw.name)?;
+        let version = parse_version(&raw.version)?;
+        let rpp = parse_rpp(raw.rpp.as_deref())?;
         let entry = raw.entry.unwrap_or_else(|| "src/plugin.ts".to_string());
-        validate_relative(&entry).map_err(|m| fail(format!("invalid `entry`: {m}")))?;
-        if entry.ends_with(".lua") {
-            return Err(fail(format!(
-                "`entry` `{entry}` is a Lua script; Lua plugins are no longer supported, \
-                 write the entry as a TypeScript module; see {}",
-                crate::MIGRATION_GUIDE
-            )));
-        }
-        if !is_script_entry(&entry) {
-            return Err(fail(format!(
-                "`entry` `{entry}` must be a .ts, .mts, .js or .mjs file"
-            )));
-        }
+        validate_entry(&entry)?;
         if let Some(config) = &raw.config {
-            validate_relative(config).map_err(|m| fail(format!("invalid `config`: {m}")))?;
+            validate_relative(config).map_err(|m| format!("invalid `config`: {m}"))?;
         }
-
-        let mut components = BTreeMap::new();
-        for (name, module) in raw.components {
-            if !ID_REGEX.is_match(&name) {
-                return Err(fail(format!(
-                    "component name `{name}` must match ^[a-z0-9][a-z0-9_-]*$"
-                )));
-            }
-            validate_relative(&module)
-                .map_err(|m| fail(format!("invalid module for component `{name}`: {m}")))?;
-            components.insert(name, ComponentManifest { module });
-        }
-
-        for (name, pattern) in &raw.discover {
-            if !ID_REGEX.is_match(name) {
-                return Err(fail(format!(
-                    "discover name `{name}` must match ^[a-z0-9][a-z0-9_-]*$"
-                )));
-            }
-            validate_relative(pattern)
-                .map_err(|m| fail(format!("invalid pattern for discover `{name}`: {m}")))?;
-            glob::compile(pattern)
-                .map_err(|m| fail(format!("invalid pattern for discover `{name}`: {m}")))?;
-        }
-
-        validate_overrides(&raw.overrides).map_err(fail)?;
-
+        let components = parse_components(raw.components)?;
+        validate_discover(&raw.discover)?;
+        validate_overrides(&raw.overrides)?;
         Ok(PluginManifest {
             id: raw.name,
             version,

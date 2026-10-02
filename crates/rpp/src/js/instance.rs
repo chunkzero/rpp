@@ -2,16 +2,14 @@
 
 use std::cell::RefCell;
 use std::rc::{Rc, Weak};
-use std::time::Instant;
 
-use rpp_js::{Call, Cancellation, Clock, Engine, LogLevel, Output, Runtime};
+use rpp_js::{Call, Cancellation, Clock, Engine, Output, Runtime};
 use serde_json::{json, Value};
 
+use super::factory::JsPluginFactory;
+use super::host::{JsHost, Phase};
+use super::log;
 use crate::error::{Error, Result};
-use crate::host::log::{self, LogLevel as HostLevel};
-use crate::host::{Phase, RuntimeAccess};
-use crate::js::factory::JsPluginFactory;
-use crate::js::host::JsHost;
 use crate::model::{
     BuildStats, GeneratorHost, PackFile, PluginFactory, PluginInstance, ProcessOutcome,
 };
@@ -35,15 +33,22 @@ pub(super) fn engine() -> std::result::Result<Rc<Engine>, String> {
     })
 }
 
-/// The clock for evaluating the bundle and running `init`, identical in validation
-/// and in every instance so module-level code is deterministic.
-pub(super) fn module_clock(id: &str) -> Clock {
+/// A fixed clock at the epoch whose random seed hashes `parts`.
+fn fixed_clock(parts: &[&str]) -> Clock {
     let mut writer = HashWriter::new();
-    writer.write_str(id);
+    for part in parts {
+        writer.write_str(part);
+    }
     Clock::Fixed {
         timestamp_ms: 0,
         seed: writer.finish(),
     }
+}
+
+/// The clock for evaluating the bundle and running `init`, identical in validation
+/// and in every instance so module-level code is deterministic.
+pub(super) fn module_clock(id: &str) -> Clock {
+    fixed_clock(&[id])
 }
 
 /// Why a runtime operation failed.
@@ -60,7 +65,6 @@ pub(super) struct JsPluginInstance {
     /// The runtime for processors; module state persists between files.
     processor_runtime: Option<Runtime>,
     factory: JsPluginFactory,
-    access: RuntimeAccess,
     cancellation: Cancellation,
     // Runtimes must drop before their engine.
     engine: Rc<Engine>,
@@ -73,11 +77,9 @@ impl JsPluginInstance {
             plugin: id.clone(),
             message,
         })?;
-        let access = factory.access();
         let mut instance = Self {
             processor_runtime: None,
             factory,
-            access,
             cancellation: Cancellation::new(),
             engine,
         };
@@ -100,34 +102,14 @@ impl JsPluginInstance {
         &self.factory.shared().id
     }
 
+    /// The clock for a call: real when the plugin may read both clocks and randomness,
+    /// otherwise fixed and seeded by `parts`.
     fn clock(&self, parts: &[&str]) -> Clock {
-        if self.access.permissions.clocks && self.access.permissions.random {
-            return Clock::Real;
-        }
-        let mut writer = HashWriter::new();
-        for part in parts {
-            writer.write_str(part);
-        }
-        Clock::Fixed {
-            timestamp_ms: 0,
-            seed: writer.finish(),
-        }
-    }
-
-    /// The instant a call starting now runs out of time.
-    fn deadline(&self) -> Instant {
-        Instant::now() + self.factory.shared().limits.time
-    }
-
-    fn emit_logs(&self, output: &Output) {
-        for entry in &output.logs {
-            let level = match entry.level {
-                LogLevel::Debug => HostLevel::Debug,
-                LogLevel::Info => HostLevel::Info,
-                LogLevel::Warn => HostLevel::Warn,
-                LogLevel::Error => HostLevel::Error,
-            };
-            log::emit(self.id(), level, &entry.message);
+        let permissions = &self.factory.shared().access.permissions;
+        if permissions.clocks && permissions.random {
+            Clock::Real
+        } else {
+            fixed_clock(parts)
         }
     }
 
@@ -145,13 +127,8 @@ impl JsPluginInstance {
                 &self.cancellation,
             )
             .map_err(|e| Failure::Load(render(&e)))?;
-        let output = Output {
-            value: Value::Null,
-            bytes: None,
-            logs,
-        };
-        self.emit_logs(&output);
-        let mut host = JsHost::new(&self.access, self.deadline(), None);
+        log::emit(&shared.id, &logs);
+        let mut host = shared.host(Phase::Load, None);
         self.call(
             &mut runtime,
             "init",
@@ -185,7 +162,7 @@ impl JsPluginInstance {
         let output = runtime
             .call(&self.engine, call, host, &self.cancellation)
             .map_err(|e| Failure::Call(render(&e)))?;
-        self.emit_logs(&output);
+        log::emit(self.id(), &output.logs);
         Ok(output)
     }
 
@@ -199,11 +176,9 @@ impl JsPluginInstance {
     ) -> std::result::Result<(), Failure> {
         let clock = self.clock(&[self.id()]);
         let mut runtime = self.load_runtime()?;
-        let mut host = JsHost::new(&self.access, self.deadline(), generator);
-        self.access.phase.set(phase);
-        let result = self.call(&mut runtime, export, args, None, clock, &mut host);
-        self.access.phase.set(Phase::Load);
-        result.map(|_| ())
+        let mut host = self.factory.shared().host(phase, generator);
+        self.call(&mut runtime, export, args, None, clock, &mut host)
+            .map(drop)
     }
 
     fn load_error(&self, message: String) -> Error {
@@ -232,8 +207,7 @@ impl PluginInstance for JsPluginInstance {
         };
 
         let original = std::mem::take(&mut file.contents);
-        let mut host = JsHost::new(&self.access, self.deadline(), None);
-        self.access.phase.set(Phase::Processor);
+        let mut host = self.factory.shared().host(Phase::Processor, None);
         let result = self.call(
             &mut runtime,
             "process",
@@ -242,7 +216,6 @@ impl PluginInstance for JsPluginInstance {
             clock,
             &mut host,
         );
-        self.access.phase.set(Phase::Load);
         if !runtime.is_terminated() {
             self.processor_runtime = Some(runtime);
         }

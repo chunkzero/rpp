@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use crate::host::RuntimeAccess;
+use super::access::RuntimeAccess;
 
 const MAX_CAPTURE: usize = 16 * 1024 * 1024;
 

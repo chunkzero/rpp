@@ -3,17 +3,13 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use rpp_js::{
-    BundlePackage, BundleRequest, Call, Cancellation, Clock, Host, HostReply, Limits, LogLevel,
-};
+use rpp_js::{Bundle, BundlePackage, BundleRequest, Call, Cancellation, Clock, Host, HostReply};
 use serde_json::Value;
 
-use crate::config::Config;
+use super::{instance, log, runtime_limits, SDK_CONFIG};
+use crate::config::{Config, LimitsConfig};
 use crate::error::{Error, Result};
-use crate::host::log::{self, LogLevel as HostLevel};
-use crate::js::{instance, JsPluginLimits};
 
-const CONFIG_SDK: &str = include_str!("sdk/config.ts");
 const ENTRY_MODULE: &str =
     "import config from \"./rpp.config.ts\";\nexport function main() { return config; }\n";
 const LOG_LABEL: &str = "rpp.config.ts";
@@ -42,8 +38,8 @@ pub struct EvaluatedConfig {
 
 /// Bundle `<project_root>/rpp.config.ts` with `#rpp/config` (the embedded
 /// `sdk/config.ts`) and `#plugins/<name>` for each package that has a config module,
-/// evaluate it with a fixed clock and no host functions, and convert its default
-/// export with [`Config::from_ts_json`].
+/// evaluate it with a fixed clock, the default `build.limits` and no host functions, and
+/// convert its default export with [`Config::from_ts_json`].
 ///
 /// # Errors
 ///
@@ -53,7 +49,6 @@ pub struct EvaluatedConfig {
 pub fn evaluate_config(
     project_root: &Path,
     packages: &BTreeMap<String, ConfigPackage>,
-    limits: JsPluginLimits,
 ) -> Result<EvaluatedConfig> {
     let path = project_root.join(CONFIG_FILE);
     let fail = |message: String| Error::Config {
@@ -61,33 +56,9 @@ pub fn evaluate_config(
         message: message.trim_end().to_string(),
     };
 
-    let bundle = rpp_js::bundle(&BundleRequest {
-        root: project_root.to_path_buf(),
-        entry: "rpp:config-entry".into(),
-        virtual_modules: BTreeMap::from([
-            ("rpp:config-entry".to_string(), ENTRY_MODULE.to_string()),
-            ("#rpp/config".to_string(), CONFIG_SDK.to_string()),
-        ]),
-        packages: packages
-            .iter()
-            .filter_map(|(name, package)| {
-                let entry = package.config.clone()?;
-                Some((
-                    format!("#plugins/{name}"),
-                    BundlePackage {
-                        dir: package.dir.clone(),
-                        entry,
-                    },
-                ))
-            })
-            .collect(),
-    })
-    .map_err(|e| fail(e.to_string()))?;
+    let bundle = bundle_config(project_root, packages).map_err(|e| fail(e.to_string()))?;
 
-    let limits = Limits {
-        heap_bytes: limits.memory_limit,
-        time: limits.execution_limit,
-    };
+    let limits = runtime_limits(&LimitsConfig::default());
     let clock = Clock::Fixed {
         timestamp_ms: 0,
         seed: 0,
@@ -97,7 +68,7 @@ pub fn evaluate_config(
     let (mut runtime, logs) = engine
         .load(LOG_LABEL, &bundle, limits, clock, &cancellation)
         .map_err(|e| fail(e.to_string()))?;
-    emit_logs(logs);
+    log::emit(LOG_LABEL, &logs);
     let output = runtime
         .call(
             &engine,
@@ -111,7 +82,7 @@ pub fn evaluate_config(
             &cancellation,
         )
         .map_err(|e| fail(e.to_string()))?;
-    emit_logs(output.logs);
+    log::emit(LOG_LABEL, &output.logs);
     if output.value.is_null() {
         return Err(fail(
             "rpp.config.ts must default-export a config object".into(),
@@ -124,16 +95,26 @@ pub fn evaluate_config(
     })
 }
 
-fn emit_logs(logs: Vec<rpp_js::Log>) {
-    for entry in logs {
-        let level = match entry.level {
-            LogLevel::Debug => HostLevel::Debug,
-            LogLevel::Info => HostLevel::Info,
-            LogLevel::Warn => HostLevel::Warn,
-            LogLevel::Error => HostLevel::Error,
-        };
-        log::emit(LOG_LABEL, level, &entry.message);
-    }
+fn bundle_config(
+    project_root: &Path,
+    packages: &BTreeMap<String, ConfigPackage>,
+) -> rpp_js::Result<Bundle> {
+    rpp_js::bundle(&BundleRequest {
+        root: project_root.to_path_buf(),
+        entry: "rpp:config-entry".into(),
+        virtual_modules: BTreeMap::from([
+            ("rpp:config-entry".to_string(), ENTRY_MODULE.to_string()),
+            ("#rpp/config".to_string(), SDK_CONFIG.to_string()),
+        ]),
+        packages: packages
+            .iter()
+            .filter_map(|(name, package)| {
+                let entry = package.config.clone()?;
+                let dir = package.dir.clone();
+                Some((format!("#plugins/{name}"), BundlePackage { dir, entry }))
+            })
+            .collect(),
+    })
 }
 
 struct NoHost;

@@ -20,17 +20,14 @@ struct BundleCacheEntry {
 }
 
 /// Return the bundle cached for plugin `id` when `request` and every file the previous bundle
-/// read are unchanged; otherwise run `build` and store its result. With no `dir`, always build.
-/// A missing or corrupt entry is a miss, and a failed write is ignored.
+/// read are unchanged; otherwise run `build` and store its result. A missing or corrupt entry
+/// is a miss, and a failed write is ignored.
 pub(crate) fn cached_bundle(
-    dir: Option<&Path>,
+    dir: &Path,
     id: &str,
     request: &BundleRequest,
     build: impl FnOnce() -> Result<Bundle, String>,
 ) -> Result<Bundle, String> {
-    let Some(dir) = dir else {
-        return build();
-    };
     let bundles = dir.join("bundles");
     let path = bundles.join(format!("{}.bin", u64_hex(xxh3(id.as_bytes()))));
     let request_key = request_key(request);
@@ -166,7 +163,7 @@ mod tests {
             }
         }
 
-        fn get(&self, dir: Option<&Path>, request: &BundleRequest) -> Bundle {
+        fn get(&self, dir: &Path, request: &BundleRequest) -> Bundle {
             cached_bundle(dir, "plugin", request, || {
                 self.builds.set(self.builds.get() + 1);
                 Ok(Bundle {
@@ -195,8 +192,8 @@ mod tests {
     #[test]
     fn reuses_entry_when_inputs_unchanged() {
         let f = Fixture::new();
-        f.get(Some(&f.cache), &f.request);
-        let second = f.get(Some(&f.cache), &f.request);
+        f.get(&f.cache, &f.request);
+        let second = f.get(&f.cache, &f.request);
         assert_eq!(f.builds.get(), 1);
         assert_eq!(second.code, "one");
         assert_eq!(second.inputs, vec![f.input.clone()]);
@@ -205,32 +202,32 @@ mod tests {
     #[test]
     fn input_edit_rebuilds() {
         let f = Fixture::new();
-        f.get(Some(&f.cache), &f.request);
+        f.get(&f.cache, &f.request);
         std::fs::write(&f.input, "two").unwrap();
-        assert_eq!(f.get(Some(&f.cache), &f.request).code, "two");
+        assert_eq!(f.get(&f.cache, &f.request).code, "two");
         assert_eq!(f.builds.get(), 2);
     }
 
     #[test]
     fn request_change_rebuilds() {
         let f = Fixture::new();
-        f.get(Some(&f.cache), &f.request);
+        f.get(&f.cache, &f.request);
         let mut changed = f.request.clone();
         changed
             .virtual_modules
             .insert("rpp:discovered".into(), "export default {};".into());
-        f.get(Some(&f.cache), &changed);
+        f.get(&f.cache, &changed);
         assert_eq!(f.builds.get(), 2);
     }
 
     #[test]
     fn corrupt_entry_is_miss() {
         let f = Fixture::new();
-        f.get(Some(&f.cache), &f.request);
+        f.get(&f.cache, &f.request);
         std::fs::write(f.entry_path(), b"garbage").unwrap();
-        f.get(Some(&f.cache), &f.request);
+        f.get(&f.cache, &f.request);
         assert_eq!(f.builds.get(), 2);
-        f.get(Some(&f.cache), &f.request);
+        f.get(&f.cache, &f.request);
         assert_eq!(f.builds.get(), 2);
     }
 
@@ -242,18 +239,9 @@ mod tests {
         std::fs::create_dir_all(&target).unwrap();
         std::fs::create_dir_all(&f.cache).unwrap();
         std::os::unix::fs::symlink(&target, f.cache.join("bundles")).unwrap();
-        f.get(Some(&f.cache), &f.request);
-        f.get(Some(&f.cache), &f.request);
+        f.get(&f.cache, &f.request);
+        f.get(&f.cache, &f.request);
         assert_eq!(f.builds.get(), 2);
         assert_eq!(std::fs::read_dir(&target).unwrap().count(), 0);
-    }
-
-    #[test]
-    fn none_dir_always_builds() {
-        let f = Fixture::new();
-        f.get(None, &f.request);
-        f.get(None, &f.request);
-        assert_eq!(f.builds.get(), 2);
-        assert!(!f.cache.exists());
     }
 }

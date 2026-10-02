@@ -4,8 +4,8 @@
 
 use std::path::Path;
 
-use rpp::host::{PackInfo, RuntimeAccess};
-use rpp::js::{JsPluginFactory, JsPluginLimits};
+use rpp::config::{Config, PluginConfig, PluginPermissions, SecurityMode};
+use rpp::js::{JsPluginFactory, JsPluginSpec};
 use rpp::model::{
     BuildStats, GeneratorHost, PackFile, PluginFactory, PluginInstance, ProcessOutcome,
 };
@@ -29,28 +29,32 @@ fn write_file(root: &Path, rel: &str, contents: &str) {
     std::fs::write(path, contents).unwrap();
 }
 
-fn pack() -> PackInfo {
-    PackInfo {
-        name: "test-pack".into(),
-        description: None,
-        format: Some(34),
+/// A sandboxed plugin entry with `options` given as JSON text.
+fn plugin(options: &str) -> PluginConfig {
+    PluginConfig {
+        package: "ts-test".into(),
+        options: serde_json::from_str(options).unwrap(),
+        security: SecurityMode::Sandboxed,
+        permissions: PluginPermissions::default(),
+        outputs: Default::default(),
     }
 }
 
-fn try_load_with(dir: &Path, options: &str, access: RuntimeAccess) -> rpp::Result<JsPluginFactory> {
-    JsPluginFactory::load(
+fn try_load_with(dir: &Path, plugin: &PluginConfig) -> rpp::Result<JsPluginFactory> {
+    let mut config = Config::new("test-pack");
+    config.pack.pack_format = Some(34);
+    JsPluginFactory::load(JsPluginSpec {
         dir,
-        toml::from_str(options).unwrap(),
-        pack(),
-        JsPluginLimits::default(),
-        access,
-        dir,
-        None,
-    )
+        project_root: dir,
+        config: &config,
+        plugin,
+        #[cfg(feature = "wasm")]
+        components: Default::default(),
+    })
 }
 
 fn try_load(dir: &Path, options: &str) -> rpp::Result<JsPluginFactory> {
-    try_load_with(dir, options, RuntimeAccess::sandboxed(".".into()))
+    try_load_with(dir, &plugin(options))
 }
 
 fn load(dir: &Path, options: &str) -> JsPluginFactory {
@@ -132,7 +136,7 @@ export default definePlugin({
 });
 "##,
     );
-    let factory = load(dir.path(), "");
+    let factory = load(dir.path(), "{}");
     assert_eq!(factory.processors().len(), 2);
     let mut instance = factory.instantiate().unwrap();
     let (file, outcome) = process(instance.as_mut(), "up", "a/b.txt", "hello");
@@ -156,7 +160,7 @@ export default definePlugin({
 });
 "##,
     );
-    let factory = load(dir.path(), "");
+    let factory = load(dir.path(), "{}");
     let mut instance = factory.instantiate().unwrap();
     let (file, outcome) = process(instance.as_mut(), "rename", "docs/a.txt", "x");
     assert_eq!(outcome, ProcessOutcome::Modified);
@@ -181,7 +185,7 @@ export default definePlugin<{ suffix: string }>({
 });
 "##,
     );
-    let factory = load(dir.path(), "suffix = \"!\"");
+    let factory = load(dir.path(), r#"{"suffix":"!"}"#);
     assert_eq!(factory.processors()[0].priority, 3);
     let mut instance = factory.instantiate().unwrap();
     let (file, _) = process(instance.as_mut(), "tag", "a.txt", "x");
@@ -199,7 +203,7 @@ export default definePlugin({
 });
 "##,
     );
-    let factory = load(dir.path(), "");
+    let factory = load(dir.path(), "{}");
     let mut first = factory.instantiate().unwrap();
     assert_eq!(text(&process(first.as_mut(), "count", "a", "").0), "1");
     assert_eq!(text(&process(first.as_mut(), "count", "b", "").0), "2");
@@ -227,7 +231,7 @@ export default definePlugin({
 #[test]
 fn generator_reads_and_emits() {
     let dir = write_plugin(GENERATOR);
-    let factory = load(dir.path(), "");
+    let factory = load(dir.path(), "{}");
     assert!(factory.has_generator());
     let mut host = Recorder {
         outputs: vec![("a.json".into(), b"{}".to_vec()), ("b.txt".into(), vec![])],
@@ -259,7 +263,7 @@ fn generator_reads_and_emits() {
 #[test]
 fn generator_starts_from_fresh_module_state() {
     let dir = write_plugin(GENERATOR);
-    let factory = load(dir.path(), "");
+    let factory = load(dir.path(), "{}");
     let mut instance = factory.instantiate().unwrap();
     for _ in 0..2 {
         let mut host = Recorder::default();
@@ -279,7 +283,7 @@ export default definePlugin({
 });
 "##,
     );
-    let mut instance = load(dir.path(), "").instantiate().unwrap();
+    let mut instance = load(dir.path(), "{}").instantiate().unwrap();
     let error = instance.on_build_start().unwrap_err();
     assert!(matches!(error, Error::Hook { .. }), "{error}");
     assert!(error.to_string().contains("start ts-test"), "{error}");
@@ -303,7 +307,7 @@ export default definePlugin({
 });
 "##,
     );
-    let mut instance = load(dir.path(), "").instantiate().unwrap();
+    let mut instance = load(dir.path(), "{}").instantiate().unwrap();
     let mut file = PackFile::new("a.txt", Vec::new());
     let error = instance.process("boom", &mut file).unwrap_err();
     assert!(matches!(error, Error::Processor { .. }), "{error}");
@@ -335,11 +339,11 @@ export default definePlugin({
 #[test]
 fn helper_edit_changes_cache_key() {
     let dir = helper_plugin("one");
-    let before = load(dir.path(), "");
+    let before = load(dir.path(), "{}");
     let (processor, generator) = (before.processor_key(), before.cache_key());
-    assert_eq!(load(dir.path(), "").cache_key(), generator);
+    assert_eq!(load(dir.path(), "{}").cache_key(), generator);
     write_file(dir.path(), "src/helper.ts", "export const value = \"two\";");
-    let after = load(dir.path(), "");
+    let after = load(dir.path(), "{}");
     assert_ne!(after.processor_key(), processor);
     assert_ne!(after.cache_key(), generator);
 }
@@ -348,8 +352,8 @@ fn helper_edit_changes_cache_key() {
 fn options_change_cache_key() {
     let dir = helper_plugin("one");
     assert_ne!(
-        load(dir.path(), "a = 1").cache_key(),
-        load(dir.path(), "a = 2").cache_key()
+        load(dir.path(), r#"{"a":1}"#).cache_key(),
+        load(dir.path(), r#"{"a":2}"#).cache_key()
     );
 }
 
@@ -378,7 +382,7 @@ export default definePlugin({
 });
 "##,
     );
-    let mut instance = load(dir.path(), "").instantiate().unwrap();
+    let mut instance = load(dir.path(), "{}").instantiate().unwrap();
     let (file, _) = process(instance.as_mut(), "info", "a.toml", "k = [1, 2]\n");
     let value: serde_json::Value = serde_json::from_str(text(&file)).unwrap();
     assert_eq!(value["parsed"], serde_json::json!({ "k": [1, 2] }));
@@ -403,7 +407,7 @@ export default definePlugin({
 });
 "##,
     );
-    let mut instance = load(dir.path(), "").instantiate().unwrap();
+    let mut instance = load(dir.path(), "{}").instantiate().unwrap();
     let error = instance.generate(&mut Recorder::default()).unwrap_err();
     assert!(matches!(error, Error::Generator { .. }), "{error}");
     assert!(
@@ -418,11 +422,11 @@ export default definePlugin({
 fn missing_default_export_fails_to_load() {
     let dir = write_plugin("export const plugin = {};\n");
     assert!(matches!(
-        try_load(dir.path(), ""),
+        try_load(dir.path(), "{}"),
         Err(Error::PluginLoad { .. })
     ));
     let dir = write_plugin("export default 42;\n");
-    let error = try_load(dir.path(), "").err().unwrap();
+    let error = try_load(dir.path(), "{}").err().unwrap();
     assert!(matches!(error, Error::PluginLoad { .. }), "{error}");
 }
 
@@ -436,7 +440,7 @@ export default definePlugin({
 });
 "##,
     );
-    let factory = load(dir.path(), "");
+    let factory = load(dir.path(), "{}");
     let run = |path: &str| {
         let mut instance = factory.instantiate().unwrap();
         text(&process(instance.as_mut(), "rand", path, "").0).to_string()
@@ -460,7 +464,7 @@ export default definePlugin({
 });
 "##,
     );
-    let factory = load(dir.path(), "");
+    let factory = load(dir.path(), "{}");
     let name = factory.processors()[0].name.clone();
     let mut instance = factory.instantiate().unwrap();
     let (file, _) = process(instance.as_mut(), &name, "a.txt", "");
@@ -477,9 +481,10 @@ export default definePlugin({
 });
 "##,
     );
-    let mut access = RuntimeAccess::sandboxed(".".into());
-    access.permissions.clocks = true;
-    let factory = try_load_with(dir.path(), "", access).unwrap();
+    let mut plugin = plugin("{}");
+    plugin.security = SecurityMode::Trusted;
+    plugin.permissions.clocks = true;
+    let factory = try_load_with(dir.path(), &plugin).unwrap();
     let run = || {
         let mut instance = factory.instantiate().unwrap();
         text(&process(instance.as_mut(), "rand", "a.txt", "").0).to_string()
@@ -497,10 +502,10 @@ export default definePlugin({
 });
 "##,
     );
-    let mut access = RuntimeAccess::sandboxed(".".into());
-    access.security = rpp::config::SecurityMode::Trusted;
-    access.permissions.process = vec!["true".into()];
-    let mut instance = try_load_with(dir.path(), "", access)
+    let mut plugin = plugin("{}");
+    plugin.security = SecurityMode::Trusted;
+    plugin.permissions.process = vec!["true".into()];
+    let mut instance = try_load_with(dir.path(), &plugin)
         .unwrap()
         .instantiate()
         .unwrap();

@@ -234,7 +234,7 @@ pub fn local_plugin_dirs(project: &Project) -> Vec<PathBuf> {
         .config
         .plugins
         .iter()
-        .filter_map(|plugin| project.ts.packages.get(plugin.label()))
+        .filter_map(|plugin| project.ts.packages.get(&plugin.package))
         .map(|package| package.dir.clone())
         .collect()
 }

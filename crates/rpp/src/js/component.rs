@@ -9,7 +9,7 @@ use rpp_wasm::{Error as WasmError, Value as WasmValue, ValueType, WasmInstance};
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
 
-use crate::host::RuntimeAccess;
+use super::access::RuntimeAccess;
 
 static NEXT_JOB: AtomicU64 = AtomicU64::new(0);
 
