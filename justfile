@@ -77,7 +77,7 @@ require-wasm:
 # Exercise the component host and its CLI integrations
 verify-wasm: require-wasm
     cargo test --locked -p rpp-wasm --test integration
-    cargo test --locked -p rpp-cli --test examples --test window_host_e2e --test js_component_e2e
+    cargo test --locked -p rpp-cli --test examples --test examples_wasm --test window_host_e2e --test js_component_e2e
 
 # Build release binaries
 build:

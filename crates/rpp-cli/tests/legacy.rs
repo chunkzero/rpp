@@ -4,9 +4,7 @@ mod common;
 
 use std::path::Path;
 
-fn write(root: &Path, rel: &str, contents: &str) {
-    std::fs::write(root.join(rel), contents).unwrap();
-}
+use common::write;
 
 fn build_error(root: &Path) -> String {
     let out = common::command(root)

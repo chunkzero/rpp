@@ -5,19 +5,9 @@ mod common;
 
 use std::path::Path;
 
-use serde_json::{json, Value};
+use serde_json::json;
 
-fn run(root: &Path, args: &[&str]) -> std::process::Output {
-    common::command(root).args(args).output().expect("run rpp")
-}
-
-fn stderr(out: &std::process::Output) -> String {
-    String::from_utf8_lossy(&out.stderr).into_owned()
-}
-
-fn read_json(path: &Path) -> Value {
-    serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
-}
+use common::{read_json, run, stderr};
 
 fn write_tool(dir: &Path, name: &str) {
     std::fs::create_dir_all(dir).unwrap();

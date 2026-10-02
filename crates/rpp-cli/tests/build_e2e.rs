@@ -7,11 +7,7 @@ mod common;
 
 use std::path::Path;
 
-fn write(root: &Path, rel: &str, contents: &str) {
-    let path = root.join(rel);
-    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-    std::fs::write(path, contents).unwrap();
-}
+use common::{build, write};
 
 /// An `rpp.config.ts` whose `defineConfig` object body is `body`.
 fn config_ts(body: &str) -> String {
@@ -25,7 +21,7 @@ fn scaffold(root: &Path) {
     write(
         root,
         "rpp.config.ts",
-        &config_ts(
+        config_ts(
             r#"  pack: { name: "test-pack", description: "fixture", packFormat: 34 },
   build: {
     source: "src",
@@ -84,15 +80,6 @@ export default definePlugin({
     );
 }
 
-fn run_build(root: &Path, extra: &[&str]) -> std::process::Output {
-    let mut args = vec!["build"];
-    args.extend_from_slice(extra);
-    common::command(root)
-        .args(&args)
-        .output()
-        .expect("run rpp build")
-}
-
 #[test]
 fn build_minifies_and_zips_then_caches() {
     let dir = tempfile::tempdir().unwrap();
@@ -100,7 +87,7 @@ fn build_minifies_and_zips_then_caches() {
     scaffold(root);
 
     // First build.
-    let out = run_build(root, &[]);
+    let out = build(root, &[]);
     assert!(
         out.status.success(),
         "first build failed:\n{}",
@@ -140,7 +127,7 @@ fn build_minifies_and_zips_then_caches() {
     );
 
     // Second build: nothing changed -> fully cached (processed 0).
-    let out2 = run_build(root, &[]);
+    let out2 = build(root, &[]);
     assert!(
         out2.status.success(),
         "second build failed:\n{}",
@@ -167,7 +154,7 @@ fn no_squash_removes_stale_release_archive() {
     let root = dir.path();
     scaffold(root);
 
-    assert!(run_build(root, &[]).status.success());
+    assert!(build(root, &[]).status.success());
     let zip = root.join("dist/test-pack.zip");
     assert!(zip.is_file());
 
@@ -176,7 +163,7 @@ fn no_squash_removes_stale_release_archive() {
         r#"{"pack":{"pack_format":34,"description":"updated"}}"#,
     )
     .unwrap();
-    let output = run_build(root, &["--no-squash"]);
+    let output = build(root, &["--no-squash"]);
     assert!(
         output.status.success(),
         "build failed:\n{}",
@@ -191,7 +178,7 @@ fn clean_removes_output_and_cache() {
     let root = dir.path();
     scaffold(root);
 
-    assert!(run_build(root, &[]).status.success());
+    assert!(build(root, &[]).status.success());
     assert!(root.join("dist").is_dir());
     assert!(root.join(".rpp").is_dir());
 
@@ -211,7 +198,7 @@ fn clean_does_not_load_plugins() {
     write(
         root,
         "rpp.config.ts",
-        &config_ts(
+        config_ts(
             r#"  pack: { name: "test" },
   plugins: [plugin("missing")],"#,
         ),
@@ -242,7 +229,7 @@ fn clean_rejects_output_outside_project() {
     write(
         &root,
         "rpp.config.ts",
-        &config_ts(
+        config_ts(
             r#"  pack: { name: "test" },
   build: { output: "../victim" },"#,
         ),

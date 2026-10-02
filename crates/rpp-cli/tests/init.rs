@@ -3,11 +3,7 @@
 
 mod common;
 
-use std::path::Path;
-
-fn run(root: &Path, args: &[&str]) -> std::process::Output {
-    common::command(root).args(args).output().expect("run rpp")
-}
+use common::run;
 
 #[test]
 fn init_scaffolds_a_buildable_ts_project() {

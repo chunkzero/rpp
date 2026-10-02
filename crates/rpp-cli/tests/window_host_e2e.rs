@@ -1,11 +1,14 @@
 //! Window-shaped end-to-end host contract: TypeScript authoring sources call a typed
 //! WASIp2 component and emit binary pack files plus declared external sources.
 
+mod common;
+
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use rpp::engine::BuildResult;
 use rpp_cli::project::Project;
+
+use common::{build_wasm_guest, wasip2_available, write};
 
 const INPUT_BYTES: &[u8] = &[0x89, b'P', b'N', b'G', 0, 0xff, 0x1a, b'\n'];
 
@@ -52,39 +55,15 @@ fn fixture() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/window-host-component")
 }
 
-fn wasip2_available() -> bool {
-    let Ok(output) = Command::new("rustc").args(["--print", "sysroot"]).output() else {
-        return false;
-    };
-    Path::new(String::from_utf8_lossy(&output.stdout).trim())
-        .join("lib/rustlib/wasm32-wasip2/lib")
-        .is_dir()
-}
-
 fn build_component(target_dir: &Path, v2: bool) -> PathBuf {
-    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
-    let mut command = Command::new(cargo);
-    command
-        .args(["build", "--locked", "--target", "wasm32-wasip2"])
-        .env("CARGO_TARGET_DIR", target_dir)
-        .current_dir(fixture());
-    if v2 {
-        command.args(["--features", "v2"]);
-    }
-    let output = command.output().expect("build component fixture");
-    assert!(
-        output.status.success(),
-        "component fixture failed to build:\nstdout:\n{}\nstderr:\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    target_dir.join("wasm32-wasip2/debug/window_host_component.wasm")
-}
-
-fn write(root: &Path, rel: &str, contents: impl AsRef<[u8]>) {
-    let path = root.join(rel);
-    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-    std::fs::write(path, contents).unwrap();
+    let features: &[&str] = if v2 { &["--features", "v2"] } else { &[] };
+    build_wasm_guest(
+        &fixture(),
+        target_dir,
+        "window_host_component.wasm",
+        false,
+        features,
+    )
 }
 
 fn config(hud_shaders: bool) -> String {
