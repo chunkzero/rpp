@@ -171,7 +171,7 @@ jobs:
             enabled: true
             require_checksum: true
           registries:
-            - name: chunkzero
+            - name: chunkzero-github
               type: github_content
               repo_owner: chunkzero
               repo_name: aqua-registry
@@ -179,7 +179,7 @@ jobs:
               path: registry.yaml
           packages:
             - name: chunkzero/rpp@v$RELEASE_VERSION
-              registry: chunkzero
+              registry: chunkzero-github
           EOF
           cp "$GITHUB_WORKSPACE/scripts/aqua-policy.yaml" .
           export AQUA_POLICY_CONFIG="$PWD/aqua-policy.yaml"
