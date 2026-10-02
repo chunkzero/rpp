@@ -5,7 +5,6 @@ use std::path::Path;
 
 use serde_json::Value;
 
-use crate::engine::discovery;
 use crate::util::glob::{self, Glob};
 
 /// Whether `namespace` matches `^[a-z0-9_.-]+$`.
@@ -64,7 +63,7 @@ impl Discovery {
 
     /// Every matching file under `source`, ordered by name then path.
     pub(crate) fn discover(&self, source: &Path) -> Result<Vec<DiscoveredEntry>, String> {
-        let files = discovery::discover(source).map_err(|e| e.to_string())?;
+        let files = crate::source::discover(source).map_err(|e| e.to_string())?;
         let mut entries = Vec::new();
         for pattern in &self.patterns {
             for file in files.iter().filter(|f| pattern.glob.matches(&f.rel)) {

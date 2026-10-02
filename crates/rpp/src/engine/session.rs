@@ -3,8 +3,8 @@
 use crate::cache::{Manifest, ObjectStore};
 use crate::error::Result;
 use crate::model::BuildStats;
+use crate::source::SourceFile;
 
-use super::discovery::SourceFile;
 use super::external::PublicationPlan;
 use super::output::OutputSet;
 use super::result::ChangeReport;

@@ -17,7 +17,6 @@
 
 mod boundary;
 mod cache_replay;
-pub(crate) mod discovery;
 mod external;
 mod file_phase;
 mod generator;
@@ -37,9 +36,9 @@ use crate::cache::{Manifest, ObjectStore};
 use crate::config::Config;
 use crate::error::{Error, Result};
 use crate::model::{PluginFactory, PluginInstance};
+use crate::source::{self, SourceFile};
 use crate::util::glob::GlobSet;
 
-use self::discovery::SourceFile;
 use self::keys::{compile_processors, CompiledProcessor};
 use self::session::BuildSession;
 
@@ -195,7 +194,7 @@ impl Engine {
 
     /// Pack sources under the source directory, excluding plugin authoring inputs.
     fn discover_sources(&self) -> Result<Vec<SourceFile>> {
-        let mut sources = discovery::discover(&self.source)?;
+        let mut sources = source::discover(&self.source)?;
         sources.retain(|source| !self.is_authoring_source(&source.rel));
         Ok(sources)
     }
