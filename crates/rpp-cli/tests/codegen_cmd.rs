@@ -4,9 +4,7 @@ mod common;
 
 use std::path::Path;
 
-fn run(root: &Path, args: &[&str]) -> std::process::Output {
-    common::command(root).args(args).output().expect("run rpp")
-}
+use common::run;
 
 fn project(root: &Path) {
     std::fs::write(

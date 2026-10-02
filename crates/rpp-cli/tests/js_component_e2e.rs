@@ -1,54 +1,38 @@
 //! TypeScript plugins calling a typed WASIp2 component through `components.load`.
 
+mod common;
+
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::OnceLock;
 
 use rpp_cli::project::Project;
 
-fn wasip2_available() -> bool {
-    let Ok(output) = Command::new("rustc").args(["--print", "sysroot"]).output() else {
-        return false;
-    };
-    Path::new(String::from_utf8_lossy(&output.stdout).trim())
-        .join("lib/rustlib/wasm32-wasip2/lib")
-        .is_dir()
-}
+use common::{build_wasm_guest, wasip2_available, write};
 
 /// Build the guest fixture once per test binary and return the component path.
 fn component() -> &'static Path {
     static COMPONENT: OnceLock<PathBuf> = OnceLock::new();
     COMPONENT.get_or_init(|| {
         let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
-        let target = manifest.join("../../target/js-component-fixture");
-        let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
-        let output = Command::new(cargo)
-            .args(["build", "--locked", "--target", "wasm32-wasip2"])
-            .env("CARGO_TARGET_DIR", &target)
-            .current_dir(manifest.join("tests/fixtures/js-component"))
-            .output()
-            .expect("build component fixture");
-        assert!(
-            output.status.success(),
-            "component fixture failed to build:\n{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        target.join("wasm32-wasip2/debug/js_component.wasm")
+        build_wasm_guest(
+            &manifest.join("tests/fixtures/js-component"),
+            &manifest.join("../../target/js-component-fixture"),
+            "js_component.wasm",
+            false,
+            &[],
+        )
     })
 }
 
 /// A project whose only plugin is `plugin_ts`, with the fixture declared as component `c`.
 fn scaffold(root: &Path, plugin_ts: &str) {
-    let write = |rel: &str, contents: &str| {
-        let path = root.join(rel);
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(path, contents).unwrap();
-    };
     write(
+        root,
         "rpp.json",
         r#"{ "dependencies": { "js-component": "path:plugin" } }"#,
     );
     write(
+        root,
         "rpp.config.ts",
         r##"import { defineConfig, plugin } from "#rpp/config";
 
@@ -60,14 +44,15 @@ export default defineConfig({
 "##,
     );
     write(
+        root,
         "plugin/rpp.json",
         r#"{ "name": "js-component", "version": "0.1.0", "entry": "plugin.ts",
   "components": { "c": "c.wasm" } }"#,
     );
-    write("plugin/plugin.ts", plugin_ts);
+    write(root, "plugin/plugin.ts", plugin_ts);
     std::fs::copy(component(), root.join("plugin/c.wasm")).unwrap();
-    write("src/a.txt", "a");
-    write("src/b.txt", "b");
+    write(root, "src/a.txt", "a");
+    write(root, "src/b.txt", "b");
 }
 
 /// Build a generator plugin whose `generate` body is `body`.

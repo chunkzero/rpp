@@ -4,19 +4,7 @@ mod common;
 
 use std::path::Path;
 
-fn write(root: &Path, rel: &str, contents: &str) {
-    let path = root.join(rel);
-    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-    std::fs::write(path, contents).unwrap();
-}
-
-fn run(root: &Path, args: &[&str]) -> std::process::Output {
-    common::command(root).args(args).output().expect("run rpp")
-}
-
-fn stderr(out: &std::process::Output) -> String {
-    String::from_utf8_lossy(&out.stderr).into_owned()
-}
+use common::{run, stderr, write};
 
 /// A project depending on the path plugin `suffix`, configured through its config module.
 fn project(root: &Path, validate: &str, plugin_call: &str) {
@@ -33,7 +21,7 @@ fn project(root: &Path, validate: &str, plugin_call: &str) {
     write(
         root,
         "plugins/suffix/src/config.ts",
-        &r##"import { definePluginConfig } from "#rpp/config";
+        r##"import { definePluginConfig } from "#rpp/config";
 
 export default definePluginConfig<{ text: string }>("suffix", {
   validate: (options) => VALIDATE,
@@ -61,7 +49,7 @@ export default definePlugin<{ text: string }>({
     write(
         root,
         "rpp.config.ts",
-        &r##"import { defineConfig } from "#rpp/config";
+        r##"import { defineConfig } from "#rpp/config";
 import suffix from "#plugins/suffix";
 
 export default defineConfig({

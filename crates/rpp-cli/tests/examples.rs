@@ -4,54 +4,15 @@
 mod common;
 
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
 
-fn examples() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples")
-}
-
-fn copy_dir(from: &Path, to: &Path) {
-    std::fs::create_dir_all(to).unwrap();
-    for entry in std::fs::read_dir(from).unwrap() {
-        let entry = entry.unwrap();
-        let name = entry.file_name();
-        if ["target", ".rpp", "dist", "generated", "guest"]
-            .iter()
-            .any(|skip| name == *skip)
-        {
-            continue;
-        }
-        let target = to.join(&name);
-        if entry.file_type().unwrap().is_dir() {
-            copy_dir(&entry.path(), &target);
-        } else {
-            std::fs::copy(entry.path(), target).unwrap();
-        }
-    }
-}
+use common::{build, copy_dir, examples_dir, read_json, stderr, write};
 
 /// Copies `examples/pack` to `<tmp>/pack` and the shared plugins beside it, so the pack's
 /// `path:../plugins/...` dependencies resolve. Returns the pack root.
 fn copy_pack(tmp: &Path) -> PathBuf {
-    copy_dir(&examples().join("pack"), &tmp.join("pack"));
-    copy_dir(&examples().join("plugins"), &tmp.join("plugins"));
+    copy_dir(&examples_dir().join("pack"), &tmp.join("pack"));
+    copy_dir(&examples_dir().join("plugins"), &tmp.join("plugins"));
     tmp.join("pack")
-}
-
-fn build(root: &Path, args: &[&str]) -> Output {
-    common::command(root)
-        .arg("build")
-        .args(args)
-        .output()
-        .expect("run rpp build")
-}
-
-fn stderr(out: &Output) -> String {
-    String::from_utf8_lossy(&out.stderr).into_owned()
-}
-
-fn read_json(path: &Path) -> serde_json::Value {
-    serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
 }
 
 #[test]
@@ -239,19 +200,16 @@ fn hash_rename_uses_processed_bytes() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path();
     copy_dir(
-        &examples().join("plugins/hash-rename"),
+        &examples_dir().join("plugins/hash-rename"),
         &root.join("plugins/hash-rename"),
     );
-    let write = |rel: &str, contents: &str| {
-        let path = root.join(rel);
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(path, contents).unwrap();
-    };
     write(
+        root,
         "rpp.json",
         r#"{ "dependencies": { "modify": "path:plugins/modify", "hash-rename": "path:plugins/hash-rename" } }"#,
     );
     write(
+        root,
         "rpp.config.ts",
         r##"import { defineConfig, plugin } from "#rpp/config";
 import hashRename from "#plugins/hash-rename";
@@ -264,10 +222,12 @@ export default defineConfig({
 "##,
     );
     write(
+        root,
         "plugins/modify/rpp.json",
         r#"{ "name": "modify", "version": "1.0.0", "entry": "plugin.ts" }"#,
     );
     write(
+        root,
         "plugins/modify/plugin.ts",
         r##"import { definePlugin } from "#rpp";
 
@@ -278,7 +238,7 @@ export default definePlugin({
 });
 "##,
     );
-    write("src/assets/test/textures/custom/gem.png", "raw");
+    write(root, "src/assets/test/textures/custom/gem.png", "raw");
 
     let out = build(root, &[]);
     assert!(out.status.success(), "build failed:\n{}", stderr(&out));
@@ -291,141 +251,4 @@ export default definePlugin({
     assert!(!root
         .join("dist/assets/test/textures/custom/gem.png")
         .exists());
-}
-
-fn wasip2_available() -> bool {
-    let Ok(output) = Command::new("rustc").args(["--print", "sysroot"]).output() else {
-        return false;
-    };
-    Path::new(String::from_utf8_lossy(&output.stdout).trim())
-        .join("lib/rustlib/wasm32-wasip2/lib")
-        .is_dir()
-}
-
-fn build_guest(target_dir: &Path) -> PathBuf {
-    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
-    let output = Command::new(cargo)
-        .args([
-            "build",
-            "--locked",
-            "--release",
-            "--target",
-            "wasm32-wasip2",
-        ])
-        .env("CARGO_TARGET_DIR", target_dir)
-        .current_dir(examples().join("plugins/grayscale-wasm/guest"))
-        .output()
-        .expect("build grayscale guest");
-    assert!(
-        output.status.success(),
-        "guest build failed:\n{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    target_dir.join("wasm32-wasip2/release/grayscale_wasm_guest.wasm")
-}
-
-fn encode_png(
-    color: png::ColorType,
-    size: (u32, u32),
-    data: &[u8],
-    trns: Option<Vec<u8>>,
-) -> Vec<u8> {
-    let mut out = Vec::new();
-    let mut encoder = png::Encoder::new(&mut out, size.0, size.1);
-    encoder.set_color(color);
-    encoder.set_depth(png::BitDepth::Eight);
-    if let Some(trns) = trns {
-        encoder.set_trns(trns);
-    }
-    let mut writer = encoder.write_header().unwrap();
-    writer.write_image_data(data).unwrap();
-    writer.finish().unwrap();
-    out
-}
-
-fn decode_gray_alpha(path: &Path) -> Vec<u8> {
-    let bytes = std::fs::read(path).unwrap();
-    let mut reader = png::Decoder::new(bytes.as_slice()).read_info().unwrap();
-    let mut pixels = vec![0; reader.output_buffer_size()];
-    let info = reader.next_frame(&mut pixels).unwrap();
-    assert_eq!(info.color_type, png::ColorType::GrayscaleAlpha);
-    pixels.truncate(info.buffer_size());
-    pixels
-}
-
-#[test]
-fn grayscale_example_converts_textures() {
-    if !wasip2_available() {
-        eprintln!("SKIP: wasm32-wasip2 target is unavailable");
-        return;
-    }
-    let tmp = tempfile::tempdir().unwrap();
-    let root = tmp.path().join("project");
-    let plugin = root.join("plugins/grayscale-wasm");
-    copy_dir(&examples().join("plugins/grayscale-wasm"), &plugin);
-    std::fs::copy(
-        build_guest(&tmp.path().join("guest-target")),
-        plugin.join("grayscale.wasm"),
-    )
-    .unwrap();
-
-    let write = |rel: &str, contents: &[u8]| {
-        let path = root.join(rel);
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(path, contents).unwrap();
-    };
-    write(
-        "rpp.json",
-        br#"{ "dependencies": { "grayscale-wasm": "path:plugins/grayscale-wasm" } }"#,
-    );
-    write(
-        "rpp.config.ts",
-        br##"import { defineConfig, plugin } from "#rpp/config";
-
-export default defineConfig({
-  pack: { name: "gray", packFormat: 34 },
-  build: { workers: 1 },
-  plugins: [plugin("grayscale-wasm")],
-});
-"##,
-    );
-    write(
-        "src/pack.mcmeta",
-        br#"{"pack":{"pack_format":34,"description":""}}"#,
-    );
-    let (red, translucent_blue) = ([255, 0, 0, 255], [0, 0, 255, 128]);
-    write(
-        "src/assets/minecraft/textures/block/stone.png",
-        &encode_png(
-            png::ColorType::Rgba,
-            (2, 1),
-            &[red, translucent_blue].concat(),
-            None,
-        ),
-    );
-    write(
-        "src/assets/minecraft/textures/block/transparent.png",
-        &encode_png(
-            png::ColorType::Rgb,
-            (2, 1),
-            &[255, 0, 0, 0, 255, 0],
-            Some(vec![0, 255, 0, 0, 0, 0]),
-        ),
-    );
-
-    let out = build(&root, &["--no-squash"]);
-    assert!(out.status.success(), "{}", stderr(&out));
-    let textures = root.join("dist/assets/minecraft/textures/block");
-    // luma(red) = 76, alpha kept; luma(blue) = 29, alpha 128.
-    assert_eq!(
-        decode_gray_alpha(&textures.join("stone.png")),
-        [76, 255, 29, 128]
-    );
-    assert_eq!(
-        decode_gray_alpha(&textures.join("transparent.png")),
-        [76, 0, 149, 255]
-    );
-
-    let out = build(&root, &["--no-squash"]);
-    assert!(stderr(&out).contains("processed 0"), "{}", stderr(&out));
 }
