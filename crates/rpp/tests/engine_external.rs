@@ -8,6 +8,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Arc;
 
+use common::engine::{build, engine};
 use common::mock::{cache_key, MockFactory};
 use common::Project;
 #[cfg(unix)]
@@ -32,18 +33,6 @@ fn external(
                 Ok(())
             }),
     )
-}
-
-fn build(project: &Project, plugins: Vec<Arc<dyn PluginFactory>>) -> rpp::engine::BuildResult {
-    engine(project, plugins).build().unwrap()
-}
-
-fn engine(project: &Project, plugins: Vec<Arc<dyn PluginFactory>>) -> Engine {
-    Engine::builder(project.config())
-        .project_root(project.root())
-        .plugins(plugins)
-        .build_engine()
-        .unwrap()
 }
 
 fn clean(project: &Project) -> rpp::Result<()> {

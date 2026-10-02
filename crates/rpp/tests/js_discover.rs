@@ -2,11 +2,14 @@
 
 #![cfg(feature = "js")]
 
+mod common;
+
 use std::path::Path;
 
-use rpp::config::{Config, PluginConfig, PluginPermissions, SecurityMode};
-use rpp::js::{JsPluginFactory, JsPluginSpec};
-use rpp::model::{GeneratorHost, PackFile, PluginFactory, ProcessOutcome};
+use common::js::{plugin, try_load_in, write_file, Recorder};
+use rpp::config::PluginConfig;
+use rpp::js::JsPluginFactory;
+use rpp::model::{PackFile, PluginFactory, ProcessOutcome};
 use tempfile::TempDir;
 
 const PLUGIN: &str = r##"
@@ -29,22 +32,11 @@ struct Project {
 
 /// Load the plugin at `dir` into a project rooted at `root` whose source is `src`.
 fn load_plugin(root: &Path, dir: &Path) -> rpp::Result<JsPluginFactory> {
-    let mut config = Config::new("test-pack");
-    config.pack.pack_format = Some(34);
-    JsPluginFactory::load(JsPluginSpec {
-        dir,
-        project_root: root,
-        config: &config,
-        plugin: &PluginConfig {
-            package: "shop-ui".into(),
-            options: serde_json::json!({}),
-            security: SecurityMode::Sandboxed,
-            permissions: PluginPermissions::default(),
-            outputs: Default::default(),
-        },
-        #[cfg(feature = "wasm")]
-        components: Default::default(),
-    })
+    let entry = PluginConfig {
+        package: "shop-ui".into(),
+        ..plugin("{}")
+    };
+    try_load_in(root, dir, &entry)
 }
 
 impl Project {
@@ -67,9 +59,7 @@ impl Project {
     }
 
     fn write(&self, rel: &str, contents: &str) {
-        let path = self.dir.path().join(rel);
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(path, contents).unwrap();
+        write_file(self.dir.path(), rel, contents);
     }
 
     fn load(&self) -> rpp::Result<JsPluginFactory> {
@@ -77,32 +67,10 @@ impl Project {
     }
 
     fn found(&self) -> rpp::Result<serde_json::Value> {
-        let mut host = Emitted(None);
+        let mut host = Recorder::default();
         self.load()?.instantiate()?.generate(&mut host)?;
-        Ok(serde_json::from_slice(&host.0.unwrap()).unwrap())
+        Ok(serde_json::from_slice(&host.emitted.pop().unwrap().1).unwrap())
     }
-}
-
-struct Emitted(Option<Vec<u8>>);
-
-impl GeneratorHost for Emitted {
-    fn list_files(&mut self, _: Option<&str>) -> Vec<String> {
-        Vec::new()
-    }
-    fn list_source_files(&mut self, _: Option<&str>) -> Vec<String> {
-        Vec::new()
-    }
-    fn read_file(&mut self, _: &str) -> Option<Vec<u8>> {
-        None
-    }
-    fn read_source(&mut self, _: &str) -> Option<Vec<u8>> {
-        None
-    }
-    fn emit(&mut self, _: &str, contents: Vec<u8>) {
-        self.0 = Some(contents);
-    }
-    fn remove(&mut self, _: &str) {}
-    fn emit_output(&mut self, _: &str, _: &str, _: Vec<u8>) {}
 }
 
 fn window(title: &str) -> String {
