@@ -83,8 +83,9 @@ impl Tally {
 ///
 /// # Errors
 ///
-/// [`Error::UnsafePath`] for a path that is not a normalized relative path, or a limit
-/// error when the files exceed what [`unpack`] accepts.
+/// [`Error::UnsafePath`] for a path that is not portable (relative, `/`-separated, no
+/// empty, `.` or `..` components, and no `\` or `:` that Windows treats as a separator
+/// or drive prefix), or a limit error when the files exceed what [`unpack`] accepts.
 pub fn pack(files: &BTreeMap<String, Vec<u8>>) -> Result<Vec<u8>> {
     pack_with(files, LIMITS)
 }
@@ -93,7 +94,7 @@ fn pack_with(files: &BTreeMap<String, Vec<u8>>, limits: Limits) -> Result<Vec<u8
     let mut tally = Tally::new(limits);
     let mut builder = tar::Builder::new(Vec::new());
     for (path, contents) in files {
-        if !path.split('/').all(|s| !matches!(s, "" | "." | "..")) {
+        if !is_portable(path) {
             return Err(Error::UnsafePath(path.clone()));
         }
         tally.entry()?;
@@ -178,6 +179,12 @@ fn extract(mut entry: tar::Entry<'_, impl Read>, dest: &Path, tally: &mut Tally)
     Ok(())
 }
 
+/// Whether `path` extracts to the same place on every supported platform.
+fn is_portable(path: &str) -> bool {
+    path.split('/')
+        .all(|s| !matches!(s, "" | "." | "..") && !s.contains(['\\', ':']))
+}
+
 /// `path` without `.` components, or `None` if it is absolute or has `..` components.
 fn relative(path: &Path) -> Option<PathBuf> {
     let mut out = PathBuf::new();
@@ -260,8 +267,19 @@ mod tests {
     }
 
     #[test]
-    fn pack_rejects_unnormalized_paths() {
-        for path in ["../escape", "/abs", "a/./b", "a//b", ""] {
+    fn pack_rejects_non_portable_paths() {
+        for path in [
+            "../escape",
+            "/abs",
+            "a/./b",
+            "a//b",
+            "",
+            "..\\escape",
+            "a\\b",
+            "C:\\escape",
+            "C:/escape",
+            "a/C:",
+        ] {
             let result = pack(&files(&[(path, b"")]));
             assert!(matches!(result, Err(Error::UnsafePath(_))), "{path}");
         }

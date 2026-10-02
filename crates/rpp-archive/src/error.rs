@@ -34,8 +34,8 @@ pub enum Error {
     },
 
     /// A path is absolute or escapes the archive root. Packing also rejects empty, `.`
-    /// and `..` segments.
-    #[error("`{0}` is not a relative path inside the archive")]
+    /// and `..` segments, backslashes and `:`.
+    #[error("`{0}` is not a portable relative path inside the archive")]
     UnsafePath(String),
 
     /// An entry is neither a regular file nor a directory, such as a symlink.
