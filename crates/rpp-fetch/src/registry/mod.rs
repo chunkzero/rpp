@@ -6,68 +6,26 @@
 //! search. Versions point at release archives verified by SHA-256.
 
 mod deps;
+mod index;
 mod install;
 mod lock;
 mod resolve;
 
 use std::path::{Path, PathBuf};
 
-use semver::{Version, VersionReq};
+use semver::Version;
 use serde::Deserialize;
 
-use crate::error::{Error, Incompatibility, Result};
+use crate::error::{Error, Result};
 use crate::http::{HttpConfig, RegistryClient};
 
 pub use deps::{parse_dependencies, validate_name, Dependency, DependencySpec};
+pub use index::{IndexEntry, IndexVersion, SearchHit};
 pub use lock::{LockedPackage, PackageLock, PACKAGE_LOCK_VERSION};
-pub use resolve::{resolve, ResolvedPackage, Update};
+pub use resolve::{resolve, select, ResolvedPackage, Update};
 
 /// File name of the manifest shared by projects and plugin packages.
 pub const PACKAGE_MANIFEST: &str = "rpp.json";
-
-/// One plugin's index file, `plugins/<name>.json`.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-pub struct IndexEntry {
-    /// Registry name; equals the `name` in each archive's `rpp.json`.
-    pub name: String,
-    /// Repository URL whose releases host the archives.
-    pub repository: String,
-    /// Short description shown by search.
-    #[serde(default)]
-    pub description: Option<String>,
-    /// Published versions, oldest first.
-    pub versions: Vec<IndexVersion>,
-}
-
-/// One published version of a plugin.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-pub struct IndexVersion {
-    /// The plugin version.
-    pub version: Version,
-    /// Absolute URL of the gzipped tar release archive.
-    pub url: String,
-    /// Lowercase hex SHA-256 of the archive bytes.
-    pub sha256: String,
-    /// rpp versions this plugin version supports.
-    pub rpp: VersionReq,
-    /// Yanked versions are skipped by new resolutions but still install when locked.
-    #[serde(default)]
-    pub yanked: bool,
-}
-
-/// One entry of the registry's `index.json` summary.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-pub struct SearchHit {
-    /// Registry name.
-    pub name: String,
-    /// Short description.
-    #[serde(default)]
-    pub description: Option<String>,
-    /// Repository URL.
-    pub repository: String,
-    /// Newest non-yanked version.
-    pub latest: Version,
-}
 
 /// The `name` and `version` of a plugin package's `rpp.json`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -186,54 +144,6 @@ impl Registry {
     }
 }
 
-/// Choose the newest non-yanked version of `entry` matching `requested` whose
-/// `rpp` range accepts `rpp`.
-///
-/// Compatibility ignores pre-release and build metadata of `rpp`, so rpp
-/// `0.2.0-alpha.1` satisfies a plugin's `>=0.2`. Pre-release plugin versions match
-/// only when `requested` names a pre-release (semver's default).
-///
-/// # Errors
-///
-/// [`Error::NoMatchingVersion`] when nothing non-yanked matches `requested`;
-/// [`Error::Incompatible`] (naming the newest match and its requirement) when
-/// versions match but none supports `rpp`.
-pub fn select<'a>(
-    entry: &'a IndexEntry,
-    requested: &VersionReq,
-    rpp: &Version,
-) -> Result<&'a IndexVersion> {
-    let mut matching: Vec<&IndexVersion> = entry
-        .versions
-        .iter()
-        .filter(|v| !v.yanked && requested.matches(&v.version))
-        .collect();
-    matching.sort_by(|a, b| b.version.cmp(&a.version));
-    let Some(newest) = matching.first() else {
-        return Err(Error::NoMatchingVersion {
-            name: entry.name.clone(),
-            requested: requested.to_string(),
-        });
-    };
-    let release = release_of(rpp);
-    matching
-        .iter()
-        .find(|v| v.rpp.matches(&release))
-        .copied()
-        .ok_or_else(|| {
-            Error::Incompatible(Box::new(Incompatibility {
-                name: entry.name.clone(),
-                version: newest.version.clone(),
-                requires: newest.rpp.clone(),
-                rpp: rpp.clone(),
-                hint: format!(
-                    "request an older version of `{}` or upgrade rpp",
-                    entry.name
-                ),
-            }))
-        })
-}
-
 /// Read `name` and `version` from the `rpp.json` in `dir`, ignoring other fields.
 ///
 /// # Errors
@@ -269,100 +179,9 @@ pub fn read_package_summary(dir: &Path) -> Result<PackageSummary> {
     })
 }
 
-/// `rpp` with pre-release and build metadata removed, for compatibility checks.
-pub(crate) fn release_of(rpp: &Version) -> Version {
-    Version::new(rpp.major, rpp.minor, rpp.patch)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn version(v: &str, rpp: &str, yanked: bool) -> IndexVersion {
-        IndexVersion {
-            version: Version::parse(v).unwrap(),
-            url: format!("https://example.com/{v}.tgz"),
-            sha256: "00".repeat(32),
-            rpp: VersionReq::parse(rpp).unwrap(),
-            yanked,
-        }
-    }
-
-    fn entry(versions: Vec<IndexVersion>) -> IndexEntry {
-        IndexEntry {
-            name: "window".to_string(),
-            repository: "https://example.com/window".to_string(),
-            description: None,
-            versions,
-        }
-    }
-
-    fn req(text: &str) -> VersionReq {
-        VersionReq::parse(text).unwrap()
-    }
-
-    fn rpp(text: &str) -> Version {
-        Version::parse(text).unwrap()
-    }
-
-    #[test]
-    fn selects_highest_compatible() {
-        let e = entry(vec![
-            version("0.1.0", ">=0.1", false),
-            version("0.1.2", ">=0.1", false),
-            version("0.1.3", ">=0.3", false),
-        ]);
-        let chosen = select(&e, &req("^0.1"), &rpp("0.2.0")).unwrap();
-        assert_eq!(chosen.version, rpp("0.1.2"));
-    }
-
-    #[test]
-    fn skips_yanked() {
-        let e = entry(vec![
-            version("0.1.0", ">=0.1", false),
-            version("0.1.1", ">=0.1", true),
-        ]);
-        assert_eq!(
-            select(&e, &req("^0.1"), &rpp("0.2.0")).unwrap().version,
-            rpp("0.1.0")
-        );
-        let only_yanked = entry(vec![version("0.1.1", ">=0.1", true)]);
-        assert!(matches!(
-            select(&only_yanked, &req("^0.1"), &rpp("0.2.0")),
-            Err(Error::NoMatchingVersion { .. })
-        ));
-    }
-
-    #[test]
-    fn incompatible_names_newest_match() {
-        let e = entry(vec![
-            version("0.1.0", ">=0.5", false),
-            version("0.1.1", ">=0.6", false),
-        ]);
-        match select(&e, &req("^0.1"), &rpp("0.2.0")) {
-            Err(Error::Incompatible(info)) => {
-                assert_eq!(info.version, rpp("0.1.1"));
-                assert_eq!(info.requires, req(">=0.6"));
-            }
-            other => panic!("unexpected {other:?}"),
-        }
-    }
-
-    #[test]
-    fn prerelease_needs_explicit_range() {
-        let e = entry(vec![version("0.2.0-beta.1", ">=0.1", false)]);
-        assert!(matches!(
-            select(&e, &req("^0.2"), &rpp("0.2.0")),
-            Err(Error::NoMatchingVersion { .. })
-        ));
-        assert!(select(&e, &req(">=0.2.0-beta.1"), &rpp("0.2.0")).is_ok());
-    }
-
-    #[test]
-    fn prerelease_rpp_is_compatible() {
-        let e = entry(vec![version("0.1.0", ">=0.2", false)]);
-        assert!(select(&e, &req("^0.1"), &rpp("0.2.0-alpha.1")).is_ok());
-    }
 
     #[test]
     fn reads_package_summary() {
@@ -379,7 +198,7 @@ mod tests {
         .unwrap();
         let summary = read_package_summary(dir.path()).unwrap();
         assert_eq!(summary.name, "window");
-        assert_eq!(summary.version, rpp("0.1.4"));
+        assert_eq!(summary.version, Version::new(0, 1, 4));
 
         std::fs::write(&manifest, r#"{"name": "Window", "version": "0.1.4"}"#).unwrap();
         assert!(matches!(
