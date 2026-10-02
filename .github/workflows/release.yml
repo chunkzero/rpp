@@ -5,6 +5,8 @@ on:
     paths:
       - .github/workflows/release.yml
       - scripts/package.sh
+      - scripts/package.py
+      - scripts/verify_package.py
       - scripts/release.py
       - scripts/test_release.py
       - scripts/install.sh
@@ -54,34 +56,55 @@ jobs:
   package:
     needs: plan
     if: needs.plan.outputs.build == 'true'
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            platform: linux-x64
+          - runner: ubuntu-24.04-arm
+            platform: linux-arm64
+          - runner: macos-15
+            platform: darwin-arm64
+          - runner: macos-15-intel
+            platform: darwin-x64
+          - runner: windows-2025
+            platform: windows-x64
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
     env:
       RPP_RELEASE_VERSION: ${{ needs.plan.outputs.version }}
     outputs:
       version: ${{ needs.plan.outputs.version }}
-      artifact-id: ${{ steps.upload.outputs.artifact-id }}
     steps:
       - name: Free disk space
+        if: runner.os == 'Linux'
         run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
       - uses: actions/checkout@v6
-      - uses: jdx/mise-action@v3
+      - uses: actions/setup-python@v6
         with:
-          version: 2026.9.1
+          python-version: "3.13"
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.96.0
       - uses: Swatinem/rust-cache@v2
       - name: Rerun the V8 build script
         # rust-cache keeps the v8 build-script fingerprint but deletes the archive it downloaded.
         run: rm -rf target/release/.fingerprint/v8-* target/release/build/v8-*
-      - run: mise exec -- cargo build --release --locked -p rpp-cli
-      - run: mise exec -- scripts/package.sh --output dist
+      - run: cargo build --release --locked -p rpp-cli
+      - run: python scripts/package.py --output dist
+      - name: Verify installed binary, bundled compiler, and Window consumer
+        run: python scripts/verify_package.py "dist/rpp-$RPP_RELEASE_VERSION-${{ matrix.platform }}.tar.gz" "$RPP_RELEASE_VERSION"
       - uses: actions/upload-artifact@v4
         id: upload
         with:
-          name: rpp-linux-x64
+          name: rpp-${{ matrix.platform }}
           path: |
             dist/*.tar.gz
             dist/*.sha256
-            scripts/install.sh
           if-no-files-found: error
           # Cleanup deletes it once used; retention only bounds runs that never reach cleanup.
           retention-days: 1
@@ -101,6 +124,7 @@ jobs:
           sparse-checkout-cone-mode: false
           sparse-checkout: |
             /scripts/fixtures
+            /scripts/install.sh
       - uses: actions/download-artifact@v4
         with:
           name: rpp-linux-x64
@@ -111,8 +135,8 @@ jobs:
         run: |
           set -eu
           export RPP_INSTALL_DIR="$RUNNER_TEMP/prefix"
-          archive="artifact/dist/rpp-$RPP_VERSION-linux-x64.tar.gz"
-          sh artifact/scripts/install.sh "$RPP_VERSION" "$archive"
+          archive="artifact/rpp-$RPP_VERSION-linux-x64.tar.gz"
+          sh scripts/install.sh "$RPP_VERSION" "$archive"
           export PATH="$RPP_INSTALL_DIR/bin:$PATH"
           if command -v tsc cargo rustc node; then exit 1; fi
           test "$(rpp --version)" = "rpp $RPP_VERSION"
@@ -123,10 +147,10 @@ jobs:
           RPP_VERSION: ${{ needs.package.outputs.version }}
         run: |
           set -eu
-          cp -r artifact/dist corrupted
+          cp -r artifact corrupted
           archive="corrupted/rpp-$RPP_VERSION-linux-x64.tar.gz"
           printf '%064d  %s\n' 0 "$(basename "$archive")" > "$archive.sha256"
-          if RPP_INSTALL_DIR="$RUNNER_TEMP/rejected" sh artifact/scripts/install.sh "$RPP_VERSION" "$archive"; then
+          if RPP_INSTALL_DIR="$RUNNER_TEMP/rejected" sh scripts/install.sh "$RPP_VERSION" "$archive"; then
             echo "install.sh accepted a corrupted checksum" >&2
             exit 1
           fi
@@ -134,7 +158,7 @@ jobs:
 
   publish:
     if: github.event_name == 'schedule' || github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish)
-    needs: [package, verify]
+    needs: [plan, package, verify]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     environment: release
@@ -144,14 +168,15 @@ jobs:
       - uses: actions/checkout@v6
       - uses: actions/download-artifact@v4
         with:
-          name: rpp-linux-x64
-          path: artifact
+          pattern: rpp-*
+          merge-multiple: true
+          path: artifact/dist
       - name: Publish verified draft assets
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_VERSION: ${{ needs.package.outputs.version }}
         run: |
-          cp artifact/scripts/install.sh artifact/dist/
+          cp scripts/install.sh artifact/dist/
           (cd artifact/dist && sha256sum install.sh > install.sh.sha256)
           python3 scripts/release.py publish --directory artifact/dist
       - uses: aquaproj/aqua-installer@v4.0.5
@@ -190,11 +215,10 @@ jobs:
           cd "$GITHUB_WORKSPACE/scripts/fixtures/check-plugin"
           aqua -c "$RUNNER_TEMP/aqua-consumer/aqua.yaml" exec -- rpp check
 
-  # The artifact only hands the archive between jobs; keeping it counts against Actions storage.
+  # Release archives only need to survive the handoff between these jobs.
   cleanup:
     if: >-
-      always() && needs.package.outputs.artifact-id != '' &&
-      github.actor != 'dependabot[bot]' &&
+      always() && github.actor != 'dependabot[bot]' &&
       (github.event_name != 'pull_request' ||
       github.event.pull_request.head.repo.full_name == github.repository)
     needs: [package, verify, publish]
@@ -203,8 +227,12 @@ jobs:
     permissions:
       actions: write
     steps:
-      - name: Delete the release artifact
+      - name: Delete release artifacts from this run
         env:
           GH_TOKEN: ${{ github.token }}
-          ARTIFACT_ID: ${{ needs.package.outputs.artifact-id }}
-        run: gh api --method DELETE "repos/$GITHUB_REPOSITORY/actions/artifacts/$ARTIFACT_ID"
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/artifacts" --paginate \
+            --jq '.artifacts[] | select(.name | startswith("rpp-")) | .id' |
+            while read -r id; do
+              gh api --method DELETE "repos/$GITHUB_REPOSITORY/actions/artifacts/$id"
+            done

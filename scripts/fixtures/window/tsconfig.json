@@ -1,0 +1,5 @@
+{
+  "extends": "./.rpp/tsconfig.json",
+  "include": ["**/*.ts", "**/*.mts", ".rpp/sdk/*.d.ts", ".rpp/generated/*.d.ts"],
+  "exclude": ["dist", ".rpp/cache"]
+}

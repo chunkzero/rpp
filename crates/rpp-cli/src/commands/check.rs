@@ -25,7 +25,7 @@ fn bundled_compiler() -> Option<PathBuf> {
         .parent()?
         .join("toolchain/typescript")
         .join(TYPESCRIPT_VERSION)
-        .join("tsc");
+        .join(format!("tsc{}", std::env::consts::EXE_SUFFIX));
     path.is_file().then_some(path)
 }
 

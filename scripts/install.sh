@@ -5,10 +5,13 @@ version=${1:?Usage: install.sh VERSION [ARCHIVE]}
 case "$version" in
   *[!0-9A-Za-z.-]* | .* | *..* | "") echo "Invalid version" >&2; exit 1 ;;
 esac
-if [ "$(uname -s)" != Linux ] || [ "$(uname -m)" != x86_64 ]; then
-  echo "rpp release archives support Linux x64." >&2
-  exit 1
-fi
+case "$(uname -s):$(uname -m)" in
+  Linux:x86_64) platform=linux-x64 ;;
+  Linux:aarch64 | Linux:arm64) platform=linux-arm64 ;;
+  Darwin:x86_64) platform=darwin-x64 ;;
+  Darwin:arm64) platform=darwin-arm64 ;;
+  *) echo "Unsupported rpp platform; use mise on Windows." >&2; exit 1 ;;
+esac
 
 prefix=${RPP_INSTALL_DIR:-"$HOME/.local"}
 case "$prefix" in
@@ -25,7 +28,7 @@ if [ -e "$prefix/bin/rpp" ] && [ ! -L "$prefix/bin/rpp" ]; then
   exit 1
 fi
 
-name="rpp-$version-linux-x64"
+name="rpp-$version-$platform"
 temporary=$(mktemp -d)
 installed=
 cleanup() {
@@ -75,7 +78,7 @@ if [ "${#expected}" -ne 64 ]; then
   echo "rpp checksum file is invalid." >&2
   exit 1
 fi
-actual=$(sha256sum "$name.tar.gz") || { echo "Could not compute the rpp checksum." >&2; exit 1; }
+actual=$(if command -v sha256sum >/dev/null 2>&1; then sha256sum "$name.tar.gz"; else shasum -a 256 "$name.tar.gz"; fi) || { echo "Could not compute the rpp checksum." >&2; exit 1; }
 actual=${actual%% *}
 if [ "$expected" != "$actual" ]; then
   echo "rpp checksum does not match." >&2
