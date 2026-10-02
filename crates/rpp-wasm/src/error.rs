@@ -16,6 +16,9 @@ pub enum Error {
     /// The epoch ticker thread could not be started.
     #[error("failed to start WASM epoch ticker: {0}")]
     EpochTicker(#[source] std::io::Error),
+    /// The current directory could not be resolved for a relative cache path.
+    #[error("failed to resolve the current directory for the WASM compilation cache: {0}")]
+    CurrentDir(#[source] std::io::Error),
     /// Reading the component file failed.
     #[error("failed to read component file {path}: {source}")]
     Io {
@@ -34,9 +37,6 @@ pub enum Error {
         #[source]
         source: wasmtime::Error,
     },
-    /// Instantiating the component failed.
-    #[error("failed to instantiate component: {0}")]
-    Instantiate(#[source] wasmtime::Error),
     /// The component imports a capability that was not granted.
     #[error("component requires denied capability `{0}`")]
     DeniedCapability(String),

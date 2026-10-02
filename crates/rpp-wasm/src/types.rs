@@ -4,9 +4,9 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 /// Default per-call epoch deadline.
-pub const DEFAULT_DEADLINE: Duration = Duration::from_secs(60);
+const DEFAULT_DEADLINE: Duration = Duration::from_secs(60);
 /// Default linear-memory cap (512 MiB).
-pub const DEFAULT_MEMORY_LIMIT: usize = 512 * 1024 * 1024;
+const DEFAULT_MEMORY_LIMIT: usize = 512 * 1024 * 1024;
 
 /// Resource limits applied to every component instance.
 #[derive(Debug, Clone, Copy)]

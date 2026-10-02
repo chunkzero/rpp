@@ -7,6 +7,7 @@ use wasmtime::Store;
 
 use crate::engine::ticks_for;
 use crate::store::StoreData;
+use crate::value::{from_wasmtime, to_wasmtime};
 use crate::{Error, Result, Value};
 
 /// A live component instance.
@@ -75,111 +76,6 @@ impl WasmInstance {
             .map_err(|error| map_timeout(error, deadline))?;
         results.into_iter().map(from_wasmtime).collect()
     }
-}
-
-fn to_wasmtime(value: Value) -> Val {
-    match value {
-        Value::Bool(value) => Val::Bool(value),
-        Value::S8(value) => Val::S8(value),
-        Value::U8(value) => Val::U8(value),
-        Value::S16(value) => Val::S16(value),
-        Value::U16(value) => Val::U16(value),
-        Value::S32(value) => Val::S32(value),
-        Value::U32(value) => Val::U32(value),
-        Value::S64(value) => Val::S64(value),
-        Value::U64(value) => Val::U64(value),
-        Value::Float32(value) => Val::Float32(value),
-        Value::Float64(value) => Val::Float64(value),
-        Value::Char(value) => Val::Char(value),
-        Value::String(value) => Val::String(value),
-        Value::List(values) => Val::List(values.into_iter().map(to_wasmtime).collect()),
-        Value::Record(fields) => Val::Record(
-            fields
-                .into_iter()
-                .map(|(name, value)| (name, to_wasmtime(value)))
-                .collect(),
-        ),
-        Value::Tuple(values) => Val::Tuple(values.into_iter().map(to_wasmtime).collect()),
-        Value::Variant(case, value) => {
-            Val::Variant(case, value.map(|value| Box::new(to_wasmtime(*value))))
-        }
-        Value::Enum(case) => Val::Enum(case),
-        Value::Option(value) => Val::Option(value.map(|value| Box::new(to_wasmtime(*value)))),
-        Value::Result(result) => Val::Result(match result {
-            Ok(value) => Ok(value.map(|value| Box::new(to_wasmtime(*value)))),
-            Err(value) => Err(value.map(|value| Box::new(to_wasmtime(*value)))),
-        }),
-        Value::Flags(flags) => Val::Flags(flags),
-    }
-}
-
-fn from_wasmtime(value: Val) -> Result<Value> {
-    Ok(match value {
-        Val::Bool(value) => Value::Bool(value),
-        Val::S8(value) => Value::S8(value),
-        Val::U8(value) => Value::U8(value),
-        Val::S16(value) => Value::S16(value),
-        Val::U16(value) => Value::U16(value),
-        Val::S32(value) => Value::S32(value),
-        Val::U32(value) => Value::U32(value),
-        Val::S64(value) => Value::S64(value),
-        Val::U64(value) => Value::U64(value),
-        Val::Float32(value) => Value::Float32(value),
-        Val::Float64(value) => Value::Float64(value),
-        Val::Char(value) => Value::Char(value),
-        Val::String(value) => Value::String(value),
-        Val::List(values) => Value::List(
-            values
-                .into_iter()
-                .map(from_wasmtime)
-                .collect::<Result<_>>()?,
-        ),
-        Val::Record(fields) => Value::Record(
-            fields
-                .into_iter()
-                .map(|(name, value)| Ok((name, from_wasmtime(value)?)))
-                .collect::<Result<_>>()?,
-        ),
-        Val::Tuple(values) => Value::Tuple(
-            values
-                .into_iter()
-                .map(from_wasmtime)
-                .collect::<Result<_>>()?,
-        ),
-        Val::Variant(case, value) => Value::Variant(
-            case,
-            value
-                .map(|value| from_wasmtime(*value).map(Box::new))
-                .transpose()?,
-        ),
-        Val::Enum(case) => Value::Enum(case),
-        Val::Option(value) => Value::Option(
-            value
-                .map(|value| from_wasmtime(*value).map(Box::new))
-                .transpose()?,
-        ),
-        Val::Result(result) => Value::Result(match result {
-            Ok(value) => Ok(value
-                .map(|value| from_wasmtime(*value).map(Box::new))
-                .transpose()?),
-            Err(value) => Err(value
-                .map(|value| from_wasmtime(*value).map(Box::new))
-                .transpose()?),
-        }),
-        Val::Flags(flags) => Value::Flags(flags),
-        Val::Resource(_)
-        | Val::Future(_)
-        | Val::Stream(_)
-        | Val::ErrorContext(_)
-        | Val::Map(_)
-        | Val::FixedLengthList(_) => {
-            return Err(Error::Value(
-                "resource, future, stream, error-context, map, and fixed-length list values \
-                 are unsupported"
-                    .into(),
-            ))
-        }
-    })
 }
 
 pub(crate) fn map_timeout(error: wasmtime::Error, deadline: Duration) -> Error {
