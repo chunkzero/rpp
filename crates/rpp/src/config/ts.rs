@@ -76,7 +76,7 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-    use crate::config::{PngSetting, SecurityMode};
+    use crate::config::{PngSetting, SecurityMode, SquashEngine};
 
     fn parse(value: Value) -> Result<Config> {
         Config::from_ts_json(&value, "rpp.config.ts")
@@ -95,7 +95,7 @@ mod tests {
                 "workers": 2,
                 "limits": { "memoryLimitMb": 64, "executionDeadlineSeconds": 5 },
                 "wasm": { "memoryLimitMb": 128 },
-                "squash": { "png": "max", "packsquashBinary": "ps" }
+                "squash": { "engine": "packsquash", "png": "max", "packsquashBinary": "ps" }
             },
             "dev": { "port": 9000, "open": true },
             "plugins": [
@@ -114,6 +114,7 @@ mod tests {
         assert_eq!(config.build.limits.memory_limit_mb, 64);
         assert_eq!(config.build.limits.execution_deadline_seconds, 5);
         assert_eq!(config.build.wasm.memory_limit_mb, 128);
+        assert_eq!(config.build.squash.engine, SquashEngine::Packsquash);
         assert_eq!(config.build.squash.png, PngSetting::Max);
         assert_eq!(config.build.squash.packsquash_binary, "ps");
         assert_eq!(config.dev.port, 9000);
@@ -187,6 +188,10 @@ mod tests {
             (
                 json!({ "pack": pack, "plugins": [{ "plugin": "a", "security": "root" }] }),
                 "plugins[0].security: unknown variant `root`",
+            ),
+            (
+                json!({ "pack": pack, "build": { "squash": { "engine": "zip" } } }),
+                "build.squash.engine: unknown variant `zip`, expected `builtin` or `packsquash`",
             ),
         ];
         for (value, expected) in cases {

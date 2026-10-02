@@ -76,7 +76,7 @@ fn build(plugin_ts: &str) -> anyhow::Result<tempfile::TempDir> {
     let dir = tempfile::tempdir()?;
     scaffold(dir.path(), plugin_ts);
     let project = Project::discover(dir.path())?;
-    project.build_engine()?.build()?;
+    project.build_engine(&mut None)?.build()?;
     Ok(dir)
 }
 

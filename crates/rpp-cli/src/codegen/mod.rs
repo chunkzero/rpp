@@ -13,8 +13,7 @@ use rpp::manifest::PluginManifest;
 use rpp_fetch::registry::PACKAGE_MANIFEST;
 
 use self::tsconfig::{tsconfig, ROOT_TSCONFIG};
-use crate::commands::codegen::is_plugin_manifest;
-use crate::project::{resolve_ts_packages, CONFIG_FILE};
+use crate::project::{is_plugin_manifest, resolve_ts_packages, CONFIG_FILE};
 
 /// Write the SDK and tsconfig files under `root`, and `tsconfig.json` if absent.
 /// Returns whether any file changed.

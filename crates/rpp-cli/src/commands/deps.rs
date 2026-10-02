@@ -12,7 +12,8 @@ use semver::{Version, VersionReq};
 
 use crate::ordered_json::{Json, Object};
 use crate::project::{
-    guide_legacy_package, legacy_config_error, CONFIG_FILE, LEGACY_CONFIG_FILE, LOCK_FILE,
+    guide_legacy_package, legacy_config_error, nearest, rpp_version, CONFIG_FILE,
+    LEGACY_CONFIG_FILE, LOCK_FILE,
 };
 use crate::{atomic, ui};
 
@@ -26,15 +27,14 @@ impl Manifest {
     /// Find the nearest ancestor of `dir` holding a project file. A missing `rpp.json`
     /// is an empty manifest when `create` is set (rooted at `dir`), else an error.
     fn discover(dir: &Path, create: bool) -> Result<Self> {
-        let start = std::path::absolute(dir).context("reading current directory")?;
-        let found = start.ancestors().find(|d| {
+        let found = nearest(dir, |d| {
             [PACKAGE_MANIFEST, CONFIG_FILE, LEGACY_CONFIG_FILE]
                 .iter()
                 .any(|name| d.join(name).is_file())
-        });
+        })?;
         let root = match found {
-            Some(root) => root.to_path_buf(),
-            None if create => start,
+            Some(root) => root,
+            None if create => std::path::absolute(dir).context("reading the current directory")?,
             None => bail!(
                 "no `{PACKAGE_MANIFEST}` found in `{}` or any parent directory",
                 dir.display()
@@ -89,10 +89,6 @@ impl Manifest {
         lock.save(&self.lock_path())
             .with_context(|| format!("writing {}", self.lock_path().display()))
     }
-}
-
-pub(crate) fn rpp_version() -> Result<Version> {
-    Version::parse(env!("CARGO_PKG_VERSION")).context("parsing the rpp version")
 }
 
 /// Resolve the manifest's dependencies against `lock` in place.

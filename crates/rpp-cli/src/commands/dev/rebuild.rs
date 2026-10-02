@@ -65,46 +65,50 @@ impl DevSession {
             return Ok(());
         };
         let reloaded = if config {
-            let reloaded =
-                Project::discover(&self.project.root).context("reloading the project config")?;
-            // The served directory, watched source tree, and listening address
-            // are fixed for the session; everything else reloads in place.
-            let fixed_changed = self.project.source_dir() != reloaded.source_dir()
-                || self.project.output_dir() != reloaded.output_dir()
-                || self.project.config.dev.host != reloaded.config.dev.host
-                || self.project.config.dev.port != reloaded.config.dev.port;
-            if fixed_changed {
-                anyhow::bail!(
-                    "`build.source`, `build.output`, or `[dev]` changed; restart `rpp dev` to apply"
-                );
-            }
-            // Watch replacement plugins before loading so repairing a broken
-            // plugin triggers another attempt. Failure keeps the reload pending.
-            self.watcher
-                .set_plugin_dirs(local_plugin_dirs(&reloaded))
-                .context("updating watched plugin directories")?;
-            self.watcher
-                .set_config_files(reloaded.config_files())
-                .context("updating watched config files")?;
-            if self.project.config.build.wasm.memory_limit_mb
-                != reloaded.config.build.wasm.memory_limit_mb
-                || self.project.config.build.wasm.execution_deadline_seconds
-                    != reloaded.config.build.wasm.execution_deadline_seconds
-            {
-                self.wasm_engine = None;
-            }
-            Some(reloaded)
+            Some(self.reload_project()?)
         } else {
             None
         };
         let project = reloaded.as_ref().unwrap_or(&self.project);
-        let (engine, wasm) = project.build_engine_with_wasm(self.wasm_engine.take())?;
+        // The session's engine always has `self.project`'s limits; a failed build keeps it.
+        let mut wasm = if project.wasm_limits() == self.project.wasm_limits() {
+            self.wasm_engine.clone()
+        } else {
+            None
+        };
+        let engine = project.build_engine(&mut wasm)?;
         if let Some(project) = reloaded {
             self.project = project;
         }
         self.wasm_engine = wasm;
         self.runtime = Runtime::Ready(Box::new(engine));
         Ok(())
+    }
+
+    /// Load the project config again and retarget the watcher at its files.
+    fn reload_project(&mut self) -> Result<Project> {
+        let reloaded =
+            Project::discover(&self.project.root).context("reloading the project config")?;
+        // The served directory, watched source tree, and listening address
+        // are fixed for the session; everything else reloads in place.
+        let fixed_changed = self.project.source_dir() != reloaded.source_dir()
+            || self.project.output_dir() != reloaded.output_dir()
+            || self.project.config.dev.host != reloaded.config.dev.host
+            || self.project.config.dev.port != reloaded.config.dev.port;
+        if fixed_changed {
+            anyhow::bail!(
+                "`build.source`, `build.output`, or `[dev]` changed; restart `rpp dev` to apply"
+            );
+        }
+        // Watch replacement plugins before loading so repairing a broken
+        // plugin triggers another attempt. Failure keeps the reload pending.
+        self.watcher
+            .set_plugin_dirs(local_plugin_dirs(&reloaded))
+            .context("updating watched plugin directories")?;
+        self.watcher
+            .set_config_files(reloaded.config_files())
+            .context("updating watched config files")?;
+        Ok(reloaded)
     }
 
     /// Whether a changed source path is a plugin authoring input, which the engine only

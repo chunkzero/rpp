@@ -16,7 +16,7 @@ const INPUT_BYTES: &[u8] = &[0x89, b'P', b'N', b'G', 0, 0xff, 0x1a, b'\n'];
 fn build(root: &Path) -> anyhow::Result<BuildResult> {
     let mut project = Project::discover(root)?;
     project.config.build.workers = 1;
-    Ok(project.build_engine()?.build()?)
+    Ok(project.build_engine(&mut None)?.build()?)
 }
 
 fn clean(root: &Path) {

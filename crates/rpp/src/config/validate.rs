@@ -28,12 +28,6 @@ impl Config {
                 "`pack.name` must be a file-name-safe value without path separators".into(),
             ));
         }
-        let engine = &self.build.squash.engine;
-        if !matches!(engine.as_str(), "builtin" | "packsquash") {
-            return Err(fail(format!(
-                "`build.squash.engine` must be \"builtin\" or \"packsquash\", got `{engine}`"
-            )));
-        }
         for plugin in &self.plugins {
             plugin.validate(path)?;
         }

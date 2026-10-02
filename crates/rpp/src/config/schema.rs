@@ -109,8 +109,8 @@ impl Default for BuildConfig {
 pub struct SquashConfig {
     /// Whether squashing runs at all.
     pub enabled: bool,
-    /// Optimization engine: `"builtin"` or `"packsquash"`.
-    pub engine: String,
+    /// Optimization engine.
+    pub engine: SquashEngine,
     /// Minify `.json`/`.mcmeta` in the output.
     pub json: bool,
     /// PNG optimization level: `false`, `"fast"`, or `"max"`.
@@ -129,7 +129,7 @@ impl Default for SquashConfig {
     fn default() -> Self {
         Self {
             enabled: true,
-            engine: "builtin".into(),
+            engine: SquashEngine::default(),
             json: true,
             png: PngSetting::default(),
             zip: true,
@@ -140,6 +140,17 @@ impl Default for SquashConfig {
             packsquash_options: None,
         }
     }
+}
+
+/// Release optimization engine: `"builtin"` | `"packsquash"`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SquashEngine {
+    /// The built-in optimizer from `rpp-squash`.
+    #[default]
+    Builtin,
+    /// The external PackSquash binary.
+    Packsquash,
 }
 
 /// PNG optimization setting: `false` | `"fast"` | `"max"`.
