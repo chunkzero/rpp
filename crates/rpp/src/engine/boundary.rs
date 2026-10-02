@@ -1,9 +1,11 @@
 //! Filesystem boundaries shared by build and clean.
 
 use std::path::{Component, Path, PathBuf};
+use std::sync::Arc;
 
 use crate::config::Config;
 use crate::error::{Error, Result};
+use crate::model::PluginFactory;
 
 /// Lexically join `path` onto `base`, rejecting symlinks in components below `base`.
 pub(super) fn checked_path(base: &Path, path: &Path) -> Result<PathBuf> {
@@ -35,15 +37,61 @@ pub(super) fn checked_path(base: &Path, path: &Path) -> Result<PathBuf> {
     Ok(resolved)
 }
 
-pub(super) fn validate_project(config: &Config, project: &Path) -> Result<()> {
+/// Check that `build.source` and `build.output` are separate, normalized project-relative
+/// directories outside `.rpp`.
+pub(super) fn validate_layout(config: &Config, project: &Path) -> Result<()> {
+    let invalid = |message: String| Error::Config {
+        path: project.join("rpp.config.ts"),
+        message,
+    };
+    let (source, output) = (&config.build.source, &config.build.output);
+    for (label, path) in [("source", source), ("output", output)] {
+        if path.as_os_str().is_empty()
+            || path.is_absolute()
+            || path
+                .components()
+                .any(|component| !matches!(component, Component::Normal(_)))
+        {
+            return Err(invalid(format!(
+                "`build.{label}` must be a normalized project-relative path"
+            )));
+        }
+        if path.starts_with(".rpp") {
+            return Err(invalid(format!(
+                "`build.{label}` must not be inside `.rpp`"
+            )));
+        }
+    }
+    if source == output || source.starts_with(output) || output.starts_with(source) {
+        return Err(invalid(
+            "`build.source` and `build.output` must be separate directories".into(),
+        ));
+    }
+    Ok(())
+}
+
+/// Check every write destination against the filesystem: pack output, bookkeeping files, and
+/// the external roots declared in the config or by `factories`.
+///
+/// Runs before each mutation phase, since the filesystem may change between them.
+pub(super) fn validate_destinations(
+    config: &Config,
+    project: &Path,
+    factories: &[Arc<dyn PluginFactory>],
+) -> Result<()> {
     checked_path(project, &config.build.output)?;
     checked_path(project, Path::new(".rpp/cache/objects"))?;
     checked_path(project, Path::new(".rpp/cache/manifest.bin"))?;
     checked_path(project, Path::new(".rpp/external-outputs.bin"))?;
-    for plugin in &config.plugins {
-        for root in plugin.outputs.values() {
-            external_root(config, project, root)?;
-        }
+    let configured = config
+        .plugins
+        .iter()
+        .flat_map(|plugin| plugin.outputs.values().cloned());
+    let declared = factories
+        .iter()
+        .flat_map(|factory| factory.output_roots().into_values());
+    for root in configured.chain(declared) {
+        external_root(config, project, &root)?;
     }
     Ok(())
 }

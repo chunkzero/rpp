@@ -7,8 +7,6 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use serde::{Deserialize, Serialize};
-
 use crate::error::Result;
 
 /// A file flowing through the pipeline.
@@ -119,19 +117,6 @@ pub trait PluginInstance {
     fn on_build_start(&mut self) -> Result<()>;
     /// Lifecycle hook fired after the build completes.
     fn on_build_finish(&mut self, stats: &BuildStats) -> Result<()>;
-}
-
-/// The kind of read a generator performed, used to record its dependency set.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum ReadKind {
-    /// A `list_files(glob)` query.
-    List,
-    /// A `list_source_files(glob)` query.
-    SourceList,
-    /// A `read_file(path)` of a processed output.
-    File,
-    /// A `read_source(path)` of a raw source file.
-    Source,
 }
 
 /// What generators may do; implemented by the build engine.

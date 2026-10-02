@@ -1,117 +1,17 @@
 //! Durable ownership and synchronization for generated non-pack artifacts.
 
+mod ownership;
+
 use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use serde::{Deserialize, Serialize};
-
-use crate::cache::{GeneratorMutation, Manifest, ObjectStore};
+use crate::cache::{Manifest, ObjectStore};
 use crate::config::Config;
 use crate::error::{Error, Result};
 
+use self::ownership::{OwnedOutput, OwnershipManifest};
 use super::result::ExternalChangeReport;
-
-const VERSION: u32 = 1;
-const MANIFEST_PATH: &str = ".rpp/external-outputs.bin";
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct OwnedOutput {
-    plugin: String,
-    root: String,
-    path: String,
-    object: u64,
-}
-
-#[derive(Debug, Default, Serialize, Deserialize)]
-struct OwnershipManifest {
-    version: u32,
-    outputs: Vec<OwnedOutput>,
-}
-
-impl OwnershipManifest {
-    fn load(project_root: &Path) -> Result<Self> {
-        let path = project_root.join(MANIFEST_PATH);
-        let bytes = match std::fs::read(&path) {
-            Ok(bytes) => bytes,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                return Ok(Self::default())
-            }
-            Err(error) => return Err(Error::io(path, error)),
-        };
-        // A corrupt or outdated manifest must not brick `build` or `clean`.
-        // Treat it as empty: previously generated files are then left in
-        // place rather than removed.
-        let config = bincode::config::standard();
-        match bincode::serde::decode_from_slice::<Self, _>(&bytes, config) {
-            Ok((manifest, _)) if manifest.version == VERSION => Ok(manifest),
-            _ => {
-                #[cfg(feature = "tracing")]
-                tracing::warn!(
-                    "ignoring unreadable external-output ownership manifest {}",
-                    path.display()
-                );
-                Ok(Self::default())
-            }
-        }
-    }
-
-    fn from_build(config: &Config, project_root: &Path, manifest: &Manifest) -> Result<Self> {
-        let mut claimed = BTreeMap::<PathBuf, String>::new();
-        let mut outputs = Vec::new();
-        for (plugin, generator) in &manifest.generators {
-            for mutation in &generator.mutations {
-                let GeneratorMutation::EmitExternal { root, path, object } = mutation else {
-                    continue;
-                };
-                let absolute = external_path(config, project_root, root, path)?;
-                if let Some(previous) = claimed.insert(absolute.clone(), plugin.clone()) {
-                    return Err(Error::Build(format!(
-                        "plugins `{previous}` and `{plugin}` both emit external output `{}`",
-                        absolute.display()
-                    )));
-                }
-                outputs.push(OwnedOutput {
-                    plugin: plugin.clone(),
-                    root: root.clone(),
-                    path: path.clone(),
-                    object: *object,
-                });
-            }
-        }
-        outputs.sort_by(|a, b| (&a.root, &a.path, &a.plugin).cmp(&(&b.root, &b.path, &b.plugin)));
-        Ok(Self {
-            version: VERSION,
-            outputs,
-        })
-    }
-
-    fn save(&self, project_root: &Path) -> Result<()> {
-        let path = project_root.join(MANIFEST_PATH);
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| Error::io(parent, e))?;
-        }
-        let bytes = bincode::serde::encode_to_vec(self, bincode::config::standard())
-            .map_err(|e| Error::Build(e.to_string()))?;
-        crate::util::atomic::write(&path, &bytes).map_err(|e| Error::io(&path, e))
-    }
-
-    fn by_path(
-        &self,
-        config: &Config,
-        project_root: &Path,
-    ) -> Result<BTreeMap<PathBuf, &OwnedOutput>> {
-        self.outputs
-            .iter()
-            .map(|output| {
-                Ok((
-                    external_path(config, project_root, &output.root, &output.path)?,
-                    output,
-                ))
-            })
-            .collect()
-    }
-}
 
 /// Staged writes and durable recovery ownership for one external publication.
 pub(super) struct PublicationPlan {
@@ -130,6 +30,8 @@ struct StagedWrite {
 }
 
 impl PublicationPlan {
+    /// Validate every destination of `next_build`'s external outputs and stage the changed
+    /// ones in sibling temporary files.
     pub(super) fn prepare(
         config: &Config,
         project_root: &Path,
@@ -140,18 +42,8 @@ impl PublicationPlan {
         let next = OwnershipManifest::from_build(config, project_root, next_build)?;
         let previous_by_path = previous.by_path(config, project_root)?;
         let next_by_path = next.by_path(config, project_root)?;
-        for path in next_by_path.keys() {
-            if path
-                .ancestors()
-                .skip(1)
-                .any(|parent| next_by_path.contains_key(parent))
-            {
-                return Err(Error::Build(format!(
-                    "external output `{}` conflicts with another output's parent directory",
-                    path.display()
-                )));
-            }
-        }
+        reject_nested_outputs(&next_by_path)?;
+
         let stale = previous_by_path
             .keys()
             .filter(|path| !next_by_path.contains_key(*path))
@@ -163,47 +55,14 @@ impl PublicationPlan {
                 .iter()
                 .map(|(path, output)| (path.clone(), *output)),
         );
-        let recovery = OwnershipManifest {
-            version: VERSION,
-            outputs: recovery_by_path.into_values().cloned().collect(),
-        };
+        let recovery = OwnershipManifest::new(recovery_by_path.into_values().cloned().collect());
+
         let mut writes = Vec::new();
         for (path, output) in next_by_path {
-            let needs_write = match std::fs::read(&path) {
-                Ok(existing) => {
-                    let same = crate::util::hash::xxh3(&existing) == output.object;
-                    if !same && !previous_by_path.contains_key(&path) {
-                        return Err(Error::Build(format!(
-                            "refusing to overwrite unowned file {}",
-                            path.display()
-                        )));
-                    }
-                    !same
-                }
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => true,
-                Err(error) => return Err(Error::io(&path, error)),
-            };
-            if !needs_write {
-                continue;
+            let owned = previous_by_path.contains_key(&path);
+            if needs_write(&path, output.object, owned)? {
+                writes.push(StagedWrite::stage(path, output.clone(), !owned, store)?);
             }
-            let bytes = store.get(output.object).ok_or_else(|| {
-                Error::Build(format!("missing cache object {:#x}", output.object))
-            })?;
-            let parent = path.parent().expect("external paths are absolute");
-            std::fs::create_dir_all(parent).map_err(|e| Error::io(parent, e))?;
-            let mut staged =
-                tempfile::NamedTempFile::new_in(parent).map_err(|e| Error::io(parent, e))?;
-            staged.write_all(&bytes).map_err(|e| Error::io(&path, e))?;
-            staged
-                .as_file()
-                .sync_all()
-                .map_err(|e| Error::io(&path, e))?;
-            writes.push(StagedWrite {
-                claim: !previous_by_path.contains_key(&path),
-                path,
-                file: staged,
-                output: output.clone(),
-            });
         }
         Ok(Self {
             next,
@@ -238,10 +97,7 @@ impl PublicationPlan {
                         return Err(Error::io(&path, e.error));
                     }
                     // The file is not ours: stop recovery cleanup from deleting it.
-                    self.recovery.outputs.retain(|o| {
-                        (&o.root, &o.path, &o.plugin)
-                            != (&output.root, &output.path, &output.plugin)
-                    });
+                    self.recovery.outputs.retain(|o| !o.same_output(&output));
                     self.recovery.save(project_root)?;
                     return Err(Error::Build(format!(
                         "refusing to overwrite unowned file {}",
@@ -255,6 +111,61 @@ impl PublicationPlan {
         }
         self.next.save(project_root)?;
         Ok(changes)
+    }
+}
+
+impl StagedWrite {
+    fn stage(path: PathBuf, output: OwnedOutput, claim: bool, store: &ObjectStore) -> Result<Self> {
+        let bytes = store
+            .get(output.object)
+            .ok_or_else(|| Error::Build(format!("missing cache object {:#x}", output.object)))?;
+        let parent = path.parent().expect("external paths are absolute");
+        std::fs::create_dir_all(parent).map_err(|e| Error::io(parent, e))?;
+        let mut file = tempfile::NamedTempFile::new_in(parent).map_err(|e| Error::io(parent, e))?;
+        file.write_all(&bytes).map_err(|e| Error::io(&path, e))?;
+        file.as_file().sync_all().map_err(|e| Error::io(&path, e))?;
+        Ok(Self {
+            path,
+            file,
+            output,
+            claim,
+        })
+    }
+}
+
+/// An output may not sit inside a directory that another output writes as a file.
+fn reject_nested_outputs(outputs: &BTreeMap<PathBuf, &OwnedOutput>) -> Result<()> {
+    for path in outputs.keys() {
+        if path
+            .ancestors()
+            .skip(1)
+            .any(|parent| outputs.contains_key(parent))
+        {
+            return Err(Error::Build(format!(
+                "external output `{}` conflicts with another output's parent directory",
+                path.display()
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Whether `path` must be written to hold `object`. An existing unowned file is adopted only
+/// when its bytes already match.
+fn needs_write(path: &Path, object: u64, owned: bool) -> Result<bool> {
+    match std::fs::read(path) {
+        Ok(existing) => {
+            let same = crate::util::hash::xxh3(&existing) == object;
+            if !same && !owned {
+                return Err(Error::Build(format!(
+                    "refusing to overwrite unowned file {}",
+                    path.display()
+                )));
+            }
+            Ok(!same)
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(true),
+        Err(error) => Err(Error::io(path, error)),
     }
 }
 
@@ -279,16 +190,11 @@ pub(super) fn validate_previous(config: &Config, project_root: &Path) -> Result<
     Ok(())
 }
 
-fn external_path(config: &Config, project_root: &Path, root: &str, path: &str) -> Result<PathBuf> {
-    crate::util::path::validate_relative(path).map_err(Error::Build)?;
-    let root = super::boundary::external_root(config, project_root, Path::new(root))?;
-    super::boundary::checked_path(&root, Path::new(path))
-}
-
 #[cfg(test)]
 mod tests {
+    use super::ownership::{MANIFEST_PATH, VERSION};
     use super::*;
-    use crate::cache::GeneratorEntry;
+    use crate::cache::{GeneratorEntry, GeneratorMutation};
 
     fn fixture() -> (tempfile::TempDir, Config, ObjectStore) {
         let project = tempfile::tempdir().unwrap();

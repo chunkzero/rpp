@@ -1,0 +1,64 @@
+//! State shared by the phases of one build.
+
+use crate::cache::{Manifest, ObjectStore};
+use crate::error::Result;
+use crate::model::BuildStats;
+
+use super::discovery::SourceFile;
+use super::external::PublicationPlan;
+use super::output::OutputSet;
+use super::result::ChangeReport;
+use super::{boundary, output_sync, Engine};
+
+/// One build: the previous manifest it replays from and the output and manifest it produces.
+///
+/// The file phase (`process_files`) runs before generators (`run_generators`); `finish`
+/// publishes the result.
+pub(super) struct BuildSession<'a> {
+    pub(super) engine: &'a Engine,
+    pub(super) store: ObjectStore,
+    /// The previous manifest, if its global key still matches.
+    pub(super) prev: Option<&'a Manifest>,
+    pub(super) manifest: Manifest,
+    pub(super) output: OutputSet,
+    /// Relative paths of every pack source, visible to generators.
+    pub(super) source_files: Vec<String>,
+    pub(super) stats: BuildStats,
+}
+
+impl<'a> BuildSession<'a> {
+    pub(super) fn new(
+        engine: &'a Engine,
+        store: ObjectStore,
+        prev: Option<&'a Manifest>,
+        manifest: Manifest,
+        sources: &[SourceFile],
+    ) -> Self {
+        Self {
+            engine,
+            store,
+            prev,
+            manifest,
+            output: OutputSet::default(),
+            source_files: sources.iter().map(|source| source.rel.clone()).collect(),
+            stats: BuildStats::default(),
+        }
+    }
+
+    /// Publish external outputs and the pack output, then persist the manifest and drop
+    /// unreferenced CAS objects.
+    pub(super) fn finish(self) -> Result<ChangeReport> {
+        let engine = self.engine;
+        let (config, root) = (&engine.config, engine.project_root.as_path());
+        boundary::validate_destinations(config, root, &engine.factories)?;
+        let external = PublicationPlan::prepare(config, root, &self.manifest, &self.store)?;
+        external.record_recovery(root)?;
+        let mut changes =
+            output_sync::sync_output(config, &engine.output, &self.output, &self.store)?;
+        changes.external = external.publish(root)?;
+
+        self.manifest.save(&engine.manifest_path())?;
+        self.store.gc(&self.manifest.live_objects())?;
+        Ok(changes)
+    }
+}
