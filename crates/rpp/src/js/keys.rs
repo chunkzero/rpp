@@ -11,7 +11,7 @@ use crate::manifest::PluginManifest;
 use crate::util::hash::HashWriter;
 
 /// The key of cached processor results: the rpp version, every bundled file outside `source`,
-/// the manifest, component binaries, canonical options and host access.
+/// the manifest, component binaries, `options` (already [`canonical_options`]) and host access.
 pub(super) fn processor_key(
     root: &Path,
     manifest: &PluginManifest,
@@ -45,7 +45,7 @@ pub(super) fn processor_key(
         writer.write(&bytes);
     }
     writer.write_str("options");
-    writer.write(canonical_json(options).as_bytes());
+    writer.write(options.to_string().as_bytes());
     writer.write_str("host-access");
     let access_key =
         serde_json::to_vec(&(access.security, &access.permissions, &access.outputs))
@@ -64,25 +64,21 @@ pub(super) fn cache_key(processor_key: u64, bundle: &Bundle) -> u64 {
     writer.finish()
 }
 
-/// `value` as JSON with object keys sorted, independent of map ordering.
-fn canonical_json(value: &Value) -> String {
+/// `value` with object keys sorted recursively, so hashing and plugins see the same order.
+pub(super) fn canonical_options(value: &Value) -> Value {
     match value {
         Value::Object(map) => {
             let mut entries: Vec<_> = map.iter().collect();
             entries.sort_by_key(|(key, _)| *key);
-            let parts: Vec<String> = entries
-                .into_iter()
-                .map(|(key, item)| {
-                    format!("{}:{}", Value::from(key.as_str()), canonical_json(item))
-                })
-                .collect();
-            format!("{{{}}}", parts.join(","))
+            Value::Object(
+                entries
+                    .into_iter()
+                    .map(|(key, item)| (key.clone(), canonical_options(item)))
+                    .collect(),
+            )
         }
-        Value::Array(items) => {
-            let parts: Vec<String> = items.iter().map(canonical_json).collect();
-            format!("[{}]", parts.join(","))
-        }
-        other => other.to_string(),
+        Value::Array(items) => Value::Array(items.iter().map(canonical_options).collect()),
+        other => other.clone(),
     }
 }
 
@@ -93,12 +89,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn canonical_json_sorts_keys() {
+    fn canonical_options_sorts_keys() {
         let mut first = serde_json::Map::new();
         first.insert("b".into(), json!([{ "y": 1, "x": 2 }]));
         first.insert("a".into(), json!("s"));
         assert_eq!(
-            canonical_json(&Value::Object(first)),
+            canonical_options(&Value::Object(first)).to_string(),
             r#"{"a":"s","b":[{"x":2,"y":1}]}"#
         );
     }

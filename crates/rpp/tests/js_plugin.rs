@@ -193,6 +193,28 @@ export default definePlugin<{ suffix: string }>({
 }
 
 #[test]
+fn options_reach_plugins_in_canonical_key_order() {
+    let dir = write_plugin(
+        r##"
+import { definePlugin } from "#rpp";
+export default definePlugin({
+  processors: {
+    dump: { files: "**/*", run(ctx, file) { file.text = JSON.stringify(ctx.options); } },
+  },
+});
+"##,
+    );
+    let first = load(dir.path(), r#"{"z":1,"a":{"y":1,"x":2}}"#);
+    let second = load(dir.path(), r#"{"a":{"x":2,"y":1},"z":1}"#);
+    assert_eq!(first.processor_key(), second.processor_key());
+    for factory in [first, second] {
+        let mut instance = factory.instantiate().unwrap();
+        let (file, _) = process(instance.as_mut(), "dump", "a.txt", "");
+        assert_eq!(text(&file), r#"{"a":{"x":2,"y":1},"z":1}"#);
+    }
+}
+
+#[test]
 fn module_state_persists_across_files_on_one_instance() {
     let dir = write_plugin(
         r##"

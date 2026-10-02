@@ -138,19 +138,20 @@ impl JsPluginFactory {
         let access = RuntimeAccess::new(spec);
         let description = describe(&id, &bundle, limits, &access).map_err(&load_error)?;
         let processors = processor_defs(description.processors).map_err(&load_error)?;
+        let options = keys::canonical_options(&plugin.options);
         let processor_key = keys::processor_key(
             &root,
             &manifest,
             &manifest_source,
             &bundle,
             source.as_deref(),
-            &plugin.options,
+            &options,
             &access,
         )?;
 
         Ok(Self {
             shared: Arc::new(Shared {
-                init: init_args(&id, &config.pack, &plugin.options),
+                init: init_args(&id, &config.pack, &options),
                 cache_key: keys::cache_key(processor_key, &bundle),
                 id,
                 bundle,
