@@ -77,6 +77,7 @@ jobs:
         shell: bash
     env:
       RPP_RELEASE_VERSION: ${{ needs.plan.outputs.version }}
+      RUST_BACKTRACE: "1"
     outputs:
       version: ${{ needs.plan.outputs.version }}
     steps:
@@ -91,6 +92,8 @@ jobs:
         with:
           toolchain: 1.96.0
       - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
       - name: Rerun the V8 build script
         # rust-cache keeps the v8 build-script fingerprint but deletes the archive it downloaded.
         run: rm -rf target/release/.fingerprint/v8-* target/release/build/v8-*

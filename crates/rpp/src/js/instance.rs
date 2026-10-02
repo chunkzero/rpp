@@ -1,7 +1,7 @@
 //! [`JsPluginInstance`]: a live, per-worker TypeScript plugin.
 
 use std::cell::RefCell;
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 use std::time::Instant;
 
 use rpp_js::{Call, Cancellation, Clock, Engine, LogLevel, Output, Runtime};
@@ -18,18 +18,19 @@ use crate::model::{
 use crate::util::hash::HashWriter;
 
 thread_local! {
-    static ENGINE: RefCell<Option<Rc<Engine>>> = const { RefCell::new(None) };
+    // The last owner stops the watchdog before thread-local teardown.
+    static ENGINE: RefCell<Weak<Engine>> = const { RefCell::new(Weak::new()) };
 }
 
 /// The current thread's engine, created on first use.
 pub(super) fn engine() -> std::result::Result<Rc<Engine>, String> {
     ENGINE.with(|slot| {
         let mut slot = slot.borrow_mut();
-        if let Some(engine) = slot.as_ref() {
-            return Ok(Rc::clone(engine));
+        if let Some(engine) = slot.upgrade() {
+            return Ok(engine);
         }
         let engine = Rc::new(Engine::new().map_err(|e| e.to_string())?);
-        *slot = Some(Rc::clone(&engine));
+        *slot = Rc::downgrade(&engine);
         Ok(engine)
     })
 }
@@ -56,12 +57,13 @@ fn render(error: &rpp_js::Error) -> String {
 }
 
 pub(super) struct JsPluginInstance {
-    factory: JsPluginFactory,
-    engine: Rc<Engine>,
-    access: RuntimeAccess,
-    cancellation: Cancellation,
     /// The runtime for processors; module state persists between files.
     processor_runtime: Option<Runtime>,
+    factory: JsPluginFactory,
+    access: RuntimeAccess,
+    cancellation: Cancellation,
+    // Runtimes must drop before their engine.
+    engine: Rc<Engine>,
 }
 
 impl JsPluginInstance {
@@ -73,11 +75,11 @@ impl JsPluginInstance {
         })?;
         let access = factory.access();
         let mut instance = Self {
+            processor_runtime: None,
             factory,
-            engine,
             access,
             cancellation: Cancellation::new(),
-            processor_runtime: None,
+            engine,
         };
         if instance.factory.processors().is_empty() {
             return Ok(instance);
