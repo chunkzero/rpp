@@ -3,7 +3,9 @@
 //! A plugin whose `rpp.json` `entry` ends in `.ts`, `.mts`, `.js` or `.mjs` is bundled with
 //! three virtual modules:
 //!
-//! - `#rpp`: the SDK ([`SDK_FILES`]), `sdk/index.ts` followed by `sdk/components.ts`.
+//! - `#rpp`: the SDK, `sdk/index.ts` followed by `sdk/components.ts`. [`SDK_FILES`] also
+//!   carries `sdk/bridge.d.ts`, the `__rpp` type declaration the sources reference; bundles
+//!   never include it.
 //! - `rpp:runtime`: `sdk/runtime.ts`, the dispatcher below.
 //! - `rpp:entry`: `import plugin from "./<entry>"; import { register } from "rpp:runtime";
 //!   register(plugin); export * from "rpp:runtime";`
@@ -90,10 +92,16 @@ const SDK_INDEX: &str = concat!(
 );
 /// `sdk/config.ts`, the config SDK imported as `#rpp/config`.
 const SDK_CONFIG: &str = include_str!("sdk/config.ts");
+/// `sdk/bridge.d.ts`, the `__rpp` declaration the SDK sources reference. Not a bundled module.
+const SDK_BRIDGE: &str = include_str!("sdk/bridge.d.ts");
 
 /// The embedded SDK, as `(relative path, contents)`. `rpp codegen` writes these
 /// under `.rpp/sdk/`.
-pub const SDK_FILES: &[(&str, &str)] = &[("index.ts", SDK_INDEX), ("config.ts", SDK_CONFIG)];
+pub const SDK_FILES: &[(&str, &str)] = &[
+    ("index.ts", SDK_INDEX),
+    ("config.ts", SDK_CONFIG),
+    ("bridge.d.ts", SDK_BRIDGE),
+];
 
 /// The runtime limits `build.limits` sets for each plugin runtime and call.
 fn runtime_limits(limits: &LimitsConfig) -> rpp_js::Limits {

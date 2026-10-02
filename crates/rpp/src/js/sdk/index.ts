@@ -1,13 +1,6 @@
+/// <reference path="./bridge.d.ts" />
 // The rpp plugin SDK, imported as `#rpp`. Embedded in rpp and written to
 // `.rpp/sdk/index.ts` by `rpp codegen`, so it always matches the running rpp.
-
-declare const __rpp: {
-  call(
-    name: string,
-    value: unknown,
-    bytes?: Uint8Array,
-  ): { value: any; bytes: Uint8Array | undefined };
-};
 
 const encoder = new TextEncoder();
 

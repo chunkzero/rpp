@@ -1,3 +1,4 @@
+/// <reference path="./bridge.d.ts" />
 // WASM components for plugins: `components.load` and the wire codec for component values.
 // rpp appends this file to `index.ts` to form `#rpp`, so it shares that module's scope.
 

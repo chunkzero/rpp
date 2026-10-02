@@ -1,3 +1,4 @@
+/// <reference path="./bridge.d.ts" />
 // The dispatcher bundled with every plugin as `rpp:runtime`. Its exports are the functions rpp calls.
 
 import type {
@@ -11,14 +12,6 @@ import type {
   Plugin,
   Processor,
 } from "#rpp";
-
-declare const __rpp: {
-  call(
-    name: string,
-    value: unknown,
-    bytes?: Uint8Array,
-  ): { value: any; bytes: Uint8Array | undefined };
-};
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
