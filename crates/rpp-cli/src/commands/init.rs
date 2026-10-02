@@ -4,23 +4,28 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
+use clap::Args;
 use rpp_fetch::registry::PACKAGE_MANIFEST;
 
 use crate::project::{legacy_config_error, CONFIG_FILE, LEGACY_CONFIG_FILE};
 use crate::ui;
 
 /// Arguments for `rpp init`.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Args)]
 pub struct InitArgs {
-    /// Target directory (defaults to cwd).
+    /// Target directory (defaults to the current directory).
     pub dir: Option<PathBuf>,
     /// Pack name (skips the prompt).
+    #[arg(long)]
     pub name: Option<String>,
     /// Pack description (skips the prompt).
+    #[arg(long)]
     pub description: Option<String>,
     /// Pack format (skips the prompt).
+    #[arg(long)]
     pub pack_format: Option<u32>,
-    /// Force non-interactive mode even on a tty.
+    /// Accept defaults without prompting.
+    #[arg(short, long)]
     pub yes: bool,
 }
 
