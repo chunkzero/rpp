@@ -10,6 +10,8 @@ authors.workspace = true
 repository.workspace = true
 
 [dependencies]
+rpp-archive.workspace = true
+
 ureq = { version = "2.10", features = ["json"] }
 serde.workspace = true
 serde_json.workspace = true
@@ -17,10 +19,7 @@ semver.workspace = true
 sha2.workspace = true
 toml.workspace = true
 thiserror.workspace = true
-flate2 = "1"
-tar = "0.4"
 dirs.workspace = true
-
 tempfile.workspace = true
 
 [lints]

@@ -173,8 +173,8 @@ impl Registry {
     ///
     /// # Errors
     ///
-    /// Returns [`Error::HashMismatch`], [`Error::PackageMismatch`], an unsafe-archive
-    /// error, or a network/I/O error. Nothing is left in the cache on failure.
+    /// Returns [`Error::HashMismatch`], [`Error::PackageMismatch`], [`Error::Archive`],
+    /// or a network/I/O error. Nothing is left in the cache on failure.
     pub fn install(
         &self,
         name: &str,

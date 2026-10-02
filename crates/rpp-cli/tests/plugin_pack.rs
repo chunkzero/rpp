@@ -145,10 +145,7 @@ fn pack_writes_deterministic_archive_and_sha() {
     assert_eq!(first["rpp"], ">=0.1");
     assert_eq!(first["description"], "A packed plugin");
     assert_eq!(first["file"], "packed-1.2.3.rpp.tgz");
-    assert!(first["path"]
-        .as_str()
-        .unwrap()
-        .ends_with("out-a/packed-1.2.3.rpp.tgz"));
+    assert!(first.get("path").is_none());
 
     let mut archive = tar::Archive::new(GzDecoder::new(bytes.as_slice()));
     let mut names = Vec::new();

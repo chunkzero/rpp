@@ -41,9 +41,17 @@ pub enum Error {
         reason: String,
     },
 
-    /// A tarball entry attempted to escape the extraction root (path traversal).
-    #[error("refusing to extract tar entry `{0}`: path escapes archive root")]
-    UnsafeTarEntry(String),
+    /// A downloaded archive could not be unpacked.
+    #[error("cannot unpack `{name}` {version}: {source}")]
+    Archive {
+        /// Package name.
+        name: String,
+        /// Package version.
+        version: semver::Version,
+        /// Why unpacking failed.
+        #[source]
+        source: rpp_archive::Error,
+    },
 
     /// A package directory is missing its `rpp.json` manifest.
     #[error("`{0}` does not contain an rpp.json")]

@@ -26,6 +26,7 @@ directory and a distributable `.zip`.
 ```
 crates/
   rpp/          # core library: config, plugin model, TypeScript plugin runtime, build engine, cache
+  rpp-archive/  # plugin archive format (.rpp.tgz): deterministic packing, safe unpacking
   rpp-fetch/    # plugin resolution: registry client, path deps, cache, lockfile, search
   rpp-squash/   # pack optimization: json minify, png optimize, zip, packsquash-extern
   rpp-wasm/     # wasmtime WASIp2 component host + WIT definitions
@@ -37,9 +38,9 @@ examples/
 docs/           # SPEC.md (this file), plugin authoring guides
 ```
 
-Dependency direction: `rpp-fetch`, `rpp-squash`, `rpp-wasm`, `rpp-js` are **standalone** (they do
-NOT depend on `rpp`). `rpp` optionally depends on `rpp-wasm` (feature `wasm`) via an
-adapter module. `rpp-cli` depends on all of them.
+Dependency direction: `rpp-archive`, `rpp-fetch`, `rpp-squash`, `rpp-wasm`, `rpp-js` are
+**standalone** (they do NOT depend on `rpp`); `rpp-fetch` uses `rpp-archive` to unpack
+installs. `rpp` optionally depends on `rpp-wasm` (feature `wasm`) via an adapter module. `rpp-cli` depends on all of them.
 
 Code style: follow `AGENTS.md` (thiserror in libraries, anyhow in CLI, tracing for
 logs, builder patterns, rustfmt). Every crate must pass `cargo test`,
@@ -386,9 +387,9 @@ Standalone, blocking (`ureq`), no async. Plugins come from the registry or from 
 directories; GitHub sources (`github:`), the GitHub codeload fetcher and `rpp.lock` versions 1
 and 2 were removed (a `github:` dependency or an old lockfile is rejected with a pointer to
 [`docs/MIGRATING.md`](MIGRATING.md)). Its public API is `Error`, `Incompatibility`, `Result`,
-`HttpConfig`, `DEFAULT_REGISTRY_BASE`, `USER_AGENT`, the `registry` module and the `MAX_*`
-download and archive limits. Tests must not hit the network; the HTTP layer takes a base URL so
-tests run against a local mock.
+`HttpConfig`, `DEFAULT_REGISTRY_BASE`, `USER_AGENT` and the `registry` module. Requests send no
+credentials. Tests must not hit the network; the HTTP layer takes a base URL so tests run
+against a local mock.
 
 ### Registry dependencies (`rpp.json`)
 
@@ -415,8 +416,9 @@ Projects declare the plugins they use in `rpp.json` and configure them in `rpp.c
   `repository` and `latest` version for search.
 - Resolution picks the newest non-yanked version matching the range whose `rpp` range
   accepts the running rpp version, ignoring rpp's pre-release suffix.
-- Archives are gzipped tars with entries at the root, including `rpp.json`. They are
-  verified against `sha256`, extracted under `<cache>/registry/<name>/<version>-<hash>/`
+- Archives are plugin archives (§9) of at most 128 MiB, including `rpp.json`. They are
+  verified against `sha256`, unpacked by `rpp-archive` into a temporary sibling directory
+  that is renamed to `<cache>/registry/<name>/<version>-<hash>/`
   (`<cache>` is `RPP_CACHE_DIR` or `~/.cache/rpp`), and their manifest must declare the
   requested name and version.
 - `rpp.lock` version 3 pins each registry dependency's `name`, `requested` spec,
@@ -560,9 +562,19 @@ sha256}` on stdout. `rpp.json` must set `rpp`. The archive holds the manifest wi
   list the original files (`../src/plugin.ts`, `../node_modules/dep/index.js`), and a
   loaded file's `//# sourceMappingURL=` map is chained, so installed plugins report stacks
   at their original sources. Config modules must support isolated declarations and their
-  public types must not reference dependency types. Archives are deterministic (sorted
-  entries, mtime 0, owner 0, mode 0644) and are checked by unpacking and bundling them
-  as an installing rpp does.
+  public types must not reference dependency types. Each archive is checked by unpacking
+  it and bundling its entries as an installing rpp does.
+
+### Plugin archive format (`crates/rpp-archive`)
+
+A plugin archive (`.rpp.tgz`) is a gzipped tar of regular files at the archive root.
+`rpp_archive::pack` writes entries sorted by path with mtime 0, owner 0 and mode 0644, so
+equal files give byte-identical archives, and rejects paths that are not normalized
+`/`-separated relative paths. `rpp_archive::unpack`, used by installs (§6) and by
+`rpp plugin pack`'s check, extracts only regular files and directories beneath its
+destination and rejects absolute or `..` paths, symlinks, hard links and other special
+entries. Both enforce the same limits: at most 20,000 entries, 64 MiB per file and
+512 MiB in total.
 
 Prompts and command status use cliclack on stderr. Redirected stderr and `TERM=dumb`
 receive plain status lines; command results such as search hits stay on stdout. Prompts
