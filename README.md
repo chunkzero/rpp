@@ -41,7 +41,7 @@ cargo install --locked --git https://github.com/chunkzero/rpp rpp-cli
 ## Nightly releases
 
 Daily builds and manual `Release binaries` dispatches on `main` publish immutable
-`v0.1.0-nightly.<UTC date>.<12-character commit>` prereleases. Choose `mode=nightly`
+`v0.1.0-nightly.<UTC date>.g<12-character commit>` prereleases. Choose `mode=nightly`
 and `publish=true`; `publish=false` only packages and verifies. Version tags matching
 the workspace version and `mode=release` use the same stable/beta packaging. Manual
 publishing supports `main` and version tags, never PR refs.

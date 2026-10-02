@@ -8,7 +8,7 @@ class ReleasePlanTest(unittest.TestCase):
 
     def test_schedule_skips_only_successful_matching_nightly(self):
         release = {
-            "tag_name": "v0.1.0-nightly.20261001.aaaaaaaaaaaa",
+            "tag_name": "v0.1.0-nightly.20261001.gaaaaaaaaaaaa",
             "draft": False,
             "published_at": "2026-10-01",
             "body": f"Source commit: {self.sha}",
@@ -23,7 +23,7 @@ class ReleasePlanTest(unittest.TestCase):
                 [release],
                 "20261002",
             ),
-            ("0.1.0-nightly.20261002.aaaaaaaaaaaa", False),
+            ("0.1.0-nightly.20261002.gaaaaaaaaaaaa", False),
         )
         release["draft"] = True
         self.assertTrue(
@@ -73,8 +73,8 @@ class ReleasePlanTest(unittest.TestCase):
             for tag, draft in [
                 ("v0.1.0", False),
                 ("v0.1.0-beta.1", False),
-                ("v0.1.0-nightly.20261001.aaaaaaaaaaaa", False),
-                ("v0.1.0-nightly.20261002.aaaaaaaaaaaa", True),
+                ("v0.1.0-nightly.20261001.gaaaaaaaaaaaa", False),
+                ("v0.1.0-nightly.20261002.gaaaaaaaaaaaa", True),
             ]
         ]
         self.assertEqual(len(published_nightlies(items)), 1)

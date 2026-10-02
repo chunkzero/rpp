@@ -12,7 +12,7 @@ import subprocess
 import tempfile
 import tomllib
 
-NIGHTLY = re.compile(r"v\d+\.\d+\.\d+-nightly\.\d{8}\.[0-9a-f]{12}")
+NIGHTLY = re.compile(r"v\d+\.\d+\.\d+-nightly\.\d{8}\.g[0-9a-f]{12}")
 
 
 def gh(*args):
@@ -47,7 +47,7 @@ def plan(base, sha, event, mode, ref, items, date):
     nightly = event == "schedule" or (
         event == "workflow_dispatch" and mode == "nightly"
     )
-    version = f"{base.split('-')[0]}-nightly.{date}.{sha[:12]}" if nightly else base
+    version = f"{base.split('-')[0]}-nightly.{date}.g{sha[:12]}" if nightly else base
     if event == "push" and ref != f"refs/tags/v{base}":
         raise ValueError("release tag must match the project version")
     previous = published_nightlies(items)
