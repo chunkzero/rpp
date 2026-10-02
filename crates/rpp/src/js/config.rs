@@ -13,6 +13,7 @@ use crate::error::{Error, Result};
 const ENTRY_MODULE: &str =
     "import config from \"./rpp.config.ts\";\nexport function main() { return config; }\n";
 const LOG_LABEL: &str = "rpp.config.ts";
+const EVALUATION_DEADLINE_SECONDS: u64 = 30;
 
 /// The project config file name.
 pub const CONFIG_FILE: &str = "rpp.config.ts";
@@ -38,7 +39,8 @@ pub struct EvaluatedConfig {
 
 /// Bundle `<project_root>/rpp.config.ts` with `#rpp/config` (the embedded
 /// `sdk/config.ts`) and `#plugins/<name>` for each package that has a config module,
-/// evaluate it with a fixed clock, the default `build.limits` and no host functions, and
+/// evaluate it with a fixed clock, the default `build.limits` (with a 30-second deadline) and no
+/// host functions, and
 /// convert its default export with [`Config::from_ts_json`].
 ///
 /// # Errors
@@ -58,7 +60,7 @@ pub fn evaluate_config(
 
     let bundle = bundle_config(project_root, packages).map_err(|e| fail(e.to_string()))?;
 
-    let limits = runtime_limits(&LimitsConfig::default());
+    let limits = runtime_limits(&config_limits());
     let clock = Clock::Fixed {
         timestamp_ms: 0,
         seed: 0,
@@ -93,6 +95,14 @@ pub fn evaluate_config(
         config: Config::from_ts_json(&output.value, &path)?,
         inputs: bundle.inputs,
     })
+}
+
+/// The default `build.limits` with the shorter config evaluation deadline.
+fn config_limits() -> LimitsConfig {
+    LimitsConfig {
+        execution_deadline_seconds: EVALUATION_DEADLINE_SECONDS,
+        ..LimitsConfig::default()
+    }
 }
 
 fn bundle_config(

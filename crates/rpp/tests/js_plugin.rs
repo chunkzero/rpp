@@ -419,6 +419,19 @@ export default definePlugin({
 }
 
 #[test]
+fn load_rejects_permissions_on_sandboxed_plugin() {
+    let dir = write_plugin("export default {};\n");
+    let mut entry = plugin("{}");
+    entry.permissions.process = vec!["git".into()];
+    let error = try_load_with(dir.path(), &entry).err().unwrap();
+    assert!(matches!(error, Error::Config { .. }), "{error}");
+    assert!(
+        error.to_string().contains("uses `security: \"sandboxed\"`"),
+        "{error}"
+    );
+}
+
+#[test]
 fn missing_default_export_fails_to_load() {
     let dir = write_plugin("export const plugin = {};\n");
     assert!(matches!(

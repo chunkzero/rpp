@@ -13,6 +13,7 @@ repository.workspace = true
 thiserror.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+serde_path_to_error.workspace = true
 tempfile.workspace = true
 twox-hash = { version = "2.1.2", default-features = false, features = ["std", "xxhash3_64"] }
 parking_lot = "0.12.5"
@@ -46,7 +47,7 @@ windows-sys = { version = "0.59", optional = true, features = [
 [features]
 default = []
 tracing = ["dep:tracing"]
-wasm = ["dep:rpp-wasm"]
+wasm = ["js", "dep:rpp-wasm"]
 js = [
   "dep:rpp-js",
   "dep:toml",

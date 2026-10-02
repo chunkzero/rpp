@@ -2,7 +2,6 @@
 
 use std::path::PathBuf;
 
-use serde::Deserialize;
 use serde_json::Value;
 
 use super::Config;
@@ -16,8 +15,10 @@ pub(super) fn from_json(value: &Value, path: PathBuf) -> Result<Config> {
         message,
     };
     reject_nulls(value, "config").map_err(&fail)?;
+    reject_wrong_shapes(value).map_err(&fail)?;
     reject_legacy_keys(value).map_err(&fail)?;
-    let config = Config::deserialize(value).map_err(|e| fail(e.to_string()))?;
+    let config: Config =
+        serde_path_to_error::deserialize(value).map_err(|e| fail(e.to_string()))?;
     config.validate(&path)?;
     Ok(config)
 }
@@ -38,6 +39,23 @@ fn reject_nulls(value: &Value, at: &str) -> std::result::Result<(), String> {
             .iter()
             .try_for_each(|(key, item)| reject_nulls(item, &format!("{at}.{key}"))),
         _ => Ok(()),
+    }
+}
+
+/// Serde derives also read arrays as positional structs, so objects are required explicitly.
+fn reject_wrong_shapes(value: &Value) -> std::result::Result<(), String> {
+    let root = value.as_object().ok_or("the config must be an object")?;
+    if root.get("build").is_some_and(|build| !build.is_object()) {
+        return Err("`build` must be an object".into());
+    }
+    let plugins = match root.get("plugins") {
+        None => return Ok(()),
+        Some(Value::Array(plugins)) => plugins,
+        Some(_) => return Err("`plugins` must be an array".into()),
+    };
+    match plugins.iter().position(|plugin| !plugin.is_object()) {
+        Some(index) => Err(format!("`plugins[{index}]` must be an object")),
+        None => Ok(()),
     }
 }
 
@@ -139,6 +157,55 @@ mod tests {
         }));
         assert!(message.contains("native"), "{message}");
         assert!(message.ends_with(crate::MIGRATION_GUIDE), "{message}");
+    }
+
+    #[test]
+    fn rejects_positional_arrays() {
+        let pack = json!({ "name": "demo" });
+        let cases = [
+            (json!([{ "name": "demo" }]), "the config must be an object"),
+            (
+                json!({ "pack": pack, "build": [] }),
+                "`build` must be an object",
+            ),
+            (
+                json!({ "pack": pack, "plugins": {} }),
+                "`plugins` must be an array",
+            ),
+            (
+                json!({ "pack": pack, "plugins": [{ "plugin": "a" }, ["a"]] }),
+                "`plugins[1]` must be an object",
+            ),
+        ];
+        for (value, expected) in cases {
+            assert_eq!(
+                message(value),
+                format!("invalid config rpp.config.ts: {expected}")
+            );
+        }
+    }
+
+    #[test]
+    fn reports_full_paths() {
+        let pack = json!({ "name": "demo" });
+        let cases = [
+            (
+                json!({ "pack": pack, "build": { "limits": { "memoryLimitMb": "big" } } }),
+                "build.limits.memoryLimitMb: invalid type: string \"big\", expected u32",
+            ),
+            (
+                json!({ "pack": pack, "plugins": [{ "plugin": "a" }, { "options": {} }] }),
+                "plugins[1]: missing field `plugin`",
+            ),
+            (
+                json!({ "pack": pack, "plugins": [{ "plugin": "a", "security": "root" }] }),
+                "plugins[0].security: unknown variant `root`",
+            ),
+        ];
+        for (value, expected) in cases {
+            let message = message(value);
+            assert!(message.contains(expected), "{message}");
+        }
     }
 
     #[test]

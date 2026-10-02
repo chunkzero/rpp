@@ -11,6 +11,7 @@ use serde_json::{json, Value};
 
 use super::access::RuntimeAccess;
 use super::bundle::{bundle_plugin, PluginBundle};
+use super::config::CONFIG_FILE;
 use super::discover::Discovery;
 use super::host::{JsHost, Phase};
 use super::instance::{self, JsPluginInstance};
@@ -100,7 +101,8 @@ impl JsPluginFactory {
     ///
     /// # Errors
     ///
-    /// [`crate::Error::PluginLoad`] for bundling or evaluation failures (with
+    /// [`crate::Error::Config`] when `spec.plugin` is invalid, such as a sandboxed plugin
+    /// granted permissions. [`crate::Error::PluginLoad`] for bundling or evaluation failures (with
     /// source-mapped stacks), a missing default export, or invalid processor
     /// declarations; I/O and manifest errors otherwise.
     pub fn load(spec: JsPluginSpec<'_>) -> Result<Self> {
@@ -111,6 +113,7 @@ impl JsPluginFactory {
             plugin,
             ..
         } = spec;
+        plugin.validate(&project_root.join(CONFIG_FILE))?;
         let (manifest, manifest_source) = PluginManifest::load_with_source(dir)?;
         let id = manifest.id.clone();
         let load_error = |message: String| Error::PluginLoad {
