@@ -15,6 +15,7 @@ path = "src/main.rs"
 
 [dependencies]
 rpp = { workspace = true, features = ["js", "wasm", "tracing"] }
+rpp-archive.workspace = true
 rpp-fetch.workspace = true
 rpp-js.workspace = true
 rpp-squash.workspace = true
@@ -50,10 +51,10 @@ tower-http = { version = "0.6", features = ["fs"] }
 notify-debouncer-full = "0.3"
 open = "5"
 tempfile.workspace = true
-flate2 = "1"
-tar = "0.4"
 
 [dev-dependencies]
+flate2.workspace = true
+tar.workspace = true
 png = "0.17"
 zip = "8.6"
 wit-component = { workspace = true, features = ["dummy-module"] }

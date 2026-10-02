@@ -1,11 +1,8 @@
 //! Offline tests for registry dependency resolution against a mock registry.
 
-use std::collections::HashMap;
-use std::io::Write;
+use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 
-use flate2::write::GzEncoder;
-use flate2::Compression;
 use sha2::{Digest, Sha256};
 
 use rpp_fetch::registry::{
@@ -28,21 +25,16 @@ fn json(value: &serde_json::Value) -> Canned {
     }
 }
 
-/// A gzipped tar with `rpp.json` for `name` `version` plus `files`, at the archive root.
+/// A plugin archive with `rpp.json` for `name` `version` plus `files`.
 fn archive(name: &str, version: &str, files: &[(&str, &[u8])]) -> Vec<u8> {
     let manifest = format!(r#"{{"name": "{name}", "version": "{version}"}}"#);
-    let mut builder = tar::Builder::new(Vec::new());
-    let all = std::iter::once(("rpp.json", manifest.as_bytes())).chain(files.iter().copied());
-    for (path, contents) in all {
-        let mut header = tar::Header::new_gnu();
-        header.set_size(contents.len() as u64);
-        header.set_mode(0o644);
-        header.set_cksum();
-        builder.append_data(&mut header, path, contents).unwrap();
-    }
-    let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
-    encoder.write_all(&builder.into_inner().unwrap()).unwrap();
-    encoder.finish().unwrap()
+    let mut all = BTreeMap::from([("rpp.json".to_string(), manifest.into_bytes())]);
+    all.extend(
+        files
+            .iter()
+            .map(|(path, contents)| (path.to_string(), contents.to_vec())),
+    );
+    rpp_archive::pack(&all).unwrap()
 }
 
 fn sha256(bytes: &[u8]) -> String {

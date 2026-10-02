@@ -1,6 +1,7 @@
 [workspace]
 members = [
   "crates/rpp",
+  "crates/rpp-archive",
   "crates/rpp-cli",
   "crates/rpp-fetch",
   "crates/rpp-js",
@@ -20,6 +21,7 @@ description = "Tools and libraries for processing Minecraft resource packs"
 
 [workspace.dependencies]
 rpp = { path = "crates/rpp" }
+rpp-archive = { path = "crates/rpp-archive" }
 rpp-fetch = { path = "crates/rpp-fetch" }
 rpp-js = { path = "crates/rpp-js" }
 rpp-squash = { path = "crates/rpp-squash" }
@@ -27,6 +29,7 @@ rpp-wasm = { path = "crates/rpp-wasm" }
 
 anyhow = "1.0"
 dirs = "5"
+flate2 = "1"
 globset = "0.4"
 oxipng = { version = "10", default-features = false, features = ["parallel"] }
 png = "0.17"
@@ -37,6 +40,7 @@ serde_path_to_error = "0.1"
 semver = { version = "1.0", features = ["serde"] }
 sha2 = "0.10"
 sha1 = "0.10"
+tar = "0.4"
 tempfile = "3.13"
 thiserror = "2"
 toml = "0.9"

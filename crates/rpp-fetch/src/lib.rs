@@ -7,10 +7,8 @@
 //!   `path:` directories, pinned in an `rpp.lock` version 3.
 
 mod error;
-mod extract;
 mod http;
 pub mod registry;
 
 pub use error::{Error, Incompatibility, Result};
-pub use extract::{MAX_ENTRIES, MAX_FILE_BYTES, MAX_TOTAL_BYTES};
 pub use http::{HttpConfig, DEFAULT_REGISTRY_BASE, USER_AGENT};

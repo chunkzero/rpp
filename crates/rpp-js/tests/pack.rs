@@ -1,4 +1,3 @@
-use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 
@@ -19,19 +18,17 @@ fn package(root: &Path, name: &str, manifest: &str, files: &[(&str, &str)]) {
     }
 }
 
-fn request(root: &Path, entries: &[(&str, &str)]) -> PackRequest {
+fn request(root: &Path, plugin: &str, config: Option<&str>) -> PackRequest {
     PackRequest {
         root: root.to_path_buf(),
-        entries: entries
-            .iter()
-            .map(|(k, v)| (k.to_string(), v.to_string()))
-            .collect(),
+        plugin: plugin.to_string(),
+        config: config.map(str::to_string),
         self_specifier: None,
     }
 }
 
-fn packed(root: &Path, entries: &[(&str, &str)]) -> PackOutput {
-    pack(&request(root, entries)).unwrap()
+fn packed(root: &Path, plugin: &str, config: Option<&str>) -> PackOutput {
+    pack(&request(root, plugin, config)).unwrap()
 }
 
 #[test]
@@ -50,7 +47,7 @@ fn pack_inlines_node_modules_dependency() {
         "import { dep } from 'dep';\nexport const run = (): string => dep();\n",
     );
 
-    let output = packed(root, &[("plugin", "src/plugin.ts")]);
+    let output = packed(root, "src/plugin.ts", None);
 
     let code = &output.files["dist/plugin.js"];
     assert!(code.contains("from-dep-marker"), "{code}");
@@ -89,7 +86,7 @@ fn pack_resolves_main_field_only_package() {
         "import { legacy } from 'legacy';\nexport const out: string = legacy;\n",
     );
 
-    let output = packed(root, &[("plugin", "plugin.ts")]);
+    let output = packed(root, "plugin.ts", None);
 
     assert!(output.files["dist/plugin.js"].contains("legacy-marker"));
 }
@@ -111,7 +108,7 @@ fn pack_allows_hoisted_node_modules() {
         "import { hoisted } from 'hoisted';\nexport const out: string = hoisted;\n",
     );
 
-    let output = packed(&root, &[("plugin", "plugin.ts")]);
+    let output = packed(&root, "plugin.ts", None);
 
     assert!(output.files["dist/plugin.js"].contains("hoisted-marker"));
     let map: serde_json::Value = serde_json::from_str(&output.files["dist/plugin.js.map"]).unwrap();
@@ -135,7 +132,7 @@ fn pack_keeps_rpp_external() {
         "import { log } from '#rpp';\nimport { read } from '#rpp/fs';\nexport const run = (): void => { log(read()); };\n",
     );
 
-    let output = packed(root, &[("plugin", "plugin.ts")]);
+    let output = packed(root, "plugin.ts", None);
 
     let code = &output.files["dist/plugin.js"];
     assert!(code.contains("from \"#rpp\""), "{code}");
@@ -162,10 +159,7 @@ fn pack_shares_chunk_between_plugin_and_config() {
         "import { shared } from './shared';\nexport const name: string = shared();\n",
     );
 
-    let output = packed(
-        root,
-        &[("plugin", "src/plugin.ts"), ("config", "src/config.ts")],
-    );
+    let output = packed(root, "src/plugin.ts", Some("src/config.ts"));
 
     let chunks: Vec<_> = output
         .files
@@ -174,9 +168,11 @@ fn pack_shares_chunk_between_plugin_and_config() {
         .collect();
     assert_eq!(chunks.len(), 1, "{:?}", output.files.keys());
     assert!(chunks[0].1.contains("shared-marker"));
-    assert!(output.files["dist/plugin.js"].contains("./chunk-"));
+    assert_eq!(output.plugin, "dist/plugin.js");
+    assert_eq!(output.config.as_deref(), Some("dist/config.js"));
+    assert!(output.files[&output.plugin].contains("./chunk-"));
     assert!(output.files["dist/config.js"].contains("./chunk-"));
-    assert!(!output.files["dist/plugin.js"].contains("shared-marker"));
+    assert!(!output.files[&output.plugin].contains("shared-marker"));
 }
 
 #[test]
@@ -201,10 +197,7 @@ fn pack_emits_isolated_declarations() {
     );
     write(root, "src/plugin.ts", "export const run = () => 1;\n");
 
-    let mut req = request(
-        root,
-        &[("plugin", "src/plugin.ts"), ("config", "src/config.ts")],
-    );
+    let mut req = request(root, "src/plugin.ts", Some("src/config.ts"));
     req.self_specifier = Some("#plugins/self".to_string());
     let output = pack(&req).unwrap();
 
@@ -234,10 +227,7 @@ fn pack_reports_isolated_declaration_errors() {
         "const compute = (): number => 1;\nexport const size = compute() + 1;\n",
     );
 
-    let result = pack(&request(
-        root,
-        &[("plugin", "src/plugin.ts"), ("config", "src/config.ts")],
-    ));
+    let result = pack(&request(root, "src/plugin.ts", Some("src/config.ts")));
 
     match result {
         Err(Error::Bundle(message)) => assert!(message.contains("src/config.ts"), "{message}"),
@@ -248,13 +238,8 @@ fn pack_reports_isolated_declaration_errors() {
 #[test]
 fn pack_requires_a_plugin_entry() {
     let dir = TempDir::new().unwrap();
-    let entries: BTreeMap<String, String> = BTreeMap::new();
-    let result = pack(&PackRequest {
-        root: dir.path().to_path_buf(),
-        entries,
-        self_specifier: None,
-    });
-    assert!(matches!(result, Err(Error::Bundle(_))));
+    let result = pack(&request(dir.path(), "", None));
+    assert!(matches!(result, Err(Error::Invalid(_))));
 }
 
 #[test]
@@ -274,10 +259,7 @@ fn pack_declares_type_only_dependencies_transitively() {
     );
     write(root, "src/nested/size.ts", "export type Size = number;\n");
 
-    let output = packed(
-        root,
-        &[("plugin", "src/plugin.ts"), ("config", "src/config.ts")],
-    );
+    let output = packed(root, "src/plugin.ts", Some("src/config.ts"));
 
     let keys: Vec<_> = output.declarations.keys().map(String::as_str).collect();
     assert_eq!(
@@ -301,10 +283,7 @@ fn pack_stub_reexports_default_declared_by_specifier() {
         "const config: () => number = () => 1;\nexport { config as default };\n",
     );
 
-    let output = packed(
-        root,
-        &[("plugin", "src/plugin.ts"), ("config", "src/config.mts")],
-    );
+    let output = packed(root, "src/plugin.ts", Some("src/config.mts"));
 
     assert!(output.declarations.contains_key("types/src/config.d.mts"));
     let stub = &output.files["dist/config.d.ts"];

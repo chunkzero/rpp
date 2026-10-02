@@ -11,19 +11,24 @@ use oxc::parser::Parser;
 use oxc::span::SourceType;
 use rolldown::InputItem;
 
-use crate::bundle::{build, Built, Settings};
+use crate::bundle::{build, Built, Chunk, Settings};
 use crate::error::{Error, Result};
 use crate::BundleRequest;
 
 const NODE_MODULES: &str = "node_modules";
+
+const PLUGIN: &str = "plugin";
+const CONFIG: &str = "config";
 
 /// What to pack.
 #[derive(Debug, Clone, Default)]
 pub struct PackRequest {
     /// The plugin directory.
     pub root: PathBuf,
-    /// Entry modules relative to `root`, keyed `plugin` (required) or `config`.
-    pub entries: BTreeMap<String, String>,
+    /// The plugin entry module, relative to `root`.
+    pub plugin: String,
+    /// The config entry module, relative to `root`.
+    pub config: Option<String>,
     /// The specifier other plugins use to import this plugin's config (e.g.
     /// `#plugins/window`); it resolves to the `config` entry.
     pub self_specifier: Option<String>,
@@ -32,6 +37,10 @@ pub struct PackRequest {
 /// The files of a packed plugin, as text keyed by archive path.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PackOutput {
+    /// The archive path of the bundled plugin entry, `dist/plugin.js`.
+    pub plugin: String,
+    /// The archive path of the bundled config entry, `dist/config.js`.
+    pub config: Option<String>,
     /// `dist/*.js` chunks, their `.js.map` files and `dist/config.d.ts`.
     pub files: BTreeMap<String, String>,
     /// `types/**.d.ts`, one per TypeScript file of the config's import graph outside
@@ -47,24 +56,48 @@ pub struct PackOutput {
 ///
 /// # Errors
 ///
-/// [`Error::Bundle`] for bundling failures, an unknown or missing entry, or a config
-/// module that does not support isolated declarations.
+/// [`Error::Invalid`] for an empty plugin entry; [`Error::Bundle`] for bundling
+/// failures or a config module that does not support isolated declarations.
 pub fn pack(request: &PackRequest) -> Result<PackOutput> {
-    if !request.entries.contains_key("plugin") {
-        return Err(Error::Bundle("pack requires a `plugin` entry".to_string()));
-    }
-    if let Some(name) = request
-        .entries
-        .keys()
-        .find(|k| !matches!(k.as_str(), "plugin" | "config"))
-    {
-        return Err(Error::Bundle(format!("unknown pack entry `{name}`")));
+    if request.plugin.is_empty() {
+        return Err(Error::Invalid("pack requires a plugin entry".to_string()));
     }
     let bundle_request = BundleRequest {
         root: request.root.clone(),
         ..Default::default()
     };
-    let config = request.entries.get("config");
+    let mut settings = settings(request);
+    let inputs = request
+        .config
+        .iter()
+        .map(|config| input(CONFIG, config))
+        .chain([input(PLUGIN, &request.plugin)])
+        .collect();
+    let built = build(&bundle_request, &settings, inputs)?;
+    let mut files = chunk_files(built.chunks)?;
+
+    let mut declarations = BTreeMap::new();
+    if let Some(config) = request.config.as_deref().filter(|c| is_typescript(c)) {
+        settings.split = false;
+        let Built { inputs, .. } = build(&bundle_request, &settings, vec![input(CONFIG, config)])?;
+        let declared = declare(&request.root, &inputs)?;
+        if let Some(stub) = config_stub(config, &declared) {
+            files.insert("dist/config.d.ts".to_string(), stub);
+        }
+        declarations = declared
+            .into_iter()
+            .map(|(path, declaration)| (path, declaration.text))
+            .collect();
+    }
+    Ok(PackOutput {
+        plugin: entry_path(PLUGIN),
+        config: request.config.as_ref().map(|_| entry_path(CONFIG)),
+        files,
+        declarations,
+    })
+}
+
+fn settings(request: &PackRequest) -> Settings {
     let mut settings = Settings {
         externals: vec!["#rpp".to_string(), "#rpp/".to_string()],
         allow_node_modules: true,
@@ -72,21 +105,28 @@ pub fn pack(request: &PackRequest) -> Result<PackOutput> {
         split: true,
         ..Default::default()
     };
-    if let (Some(specifier), Some(config)) = (&request.self_specifier, config) {
+    if let (Some(specifier), Some(config)) = (&request.self_specifier, &request.config) {
         settings.aliases.insert(specifier.clone(), config.clone());
     }
-    let inputs = request
-        .entries
-        .iter()
-        .map(|(name, entry)| InputItem {
-            name: Some(name.clone()),
-            import: entry.clone(),
-        })
-        .collect();
-    let built = build(&bundle_request, &settings, inputs)?;
+    settings
+}
 
+fn input(name: &str, entry: &str) -> InputItem {
+    InputItem {
+        name: Some(name.to_string()),
+        import: entry.to_string(),
+    }
+}
+
+/// Where the split build emits the entry chunk `name`.
+fn entry_path(name: &str) -> String {
+    format!("dist/{name}.js")
+}
+
+/// `dist/` files for each chunk: its code, linked to a `.js.map` beside it.
+fn chunk_files(chunks: Vec<Chunk>) -> Result<BTreeMap<String, String>> {
     let mut files = BTreeMap::new();
-    for chunk in built.chunks {
+    for chunk in chunks {
         let map_name = format!("{}.map", chunk.file_name);
         let mut code = chunk.code;
         if !code.ends_with('\n') {
@@ -99,28 +139,7 @@ pub fn pack(request: &PackRequest) -> Result<PackOutput> {
             relative_to_dist(&chunk.source_map)?,
         );
     }
-
-    let mut declarations = BTreeMap::new();
-    if let Some(config) = config.filter(|c| is_typescript(c)) {
-        settings.split = false;
-        let inputs = vec![InputItem {
-            name: Some("config".to_string()),
-            import: config.clone(),
-        }];
-        let Built { inputs, .. } = build(&bundle_request, &settings, inputs)?;
-        let declared = declare(&request.root, &inputs)?;
-        if let Some(stub) = config_stub(config, &declared) {
-            files.insert("dist/config.d.ts".to_string(), stub);
-        }
-        declarations = declared
-            .into_iter()
-            .map(|(path, declaration)| (path, declaration.text))
-            .collect();
-    }
-    Ok(PackOutput {
-        files,
-        declarations,
-    })
+    Ok(files)
 }
 
 fn is_typescript(path: &str) -> bool {

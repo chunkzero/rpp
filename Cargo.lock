@@ -4218,6 +4218,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "rpp-archive"
+version = "0.1.0-alpha.0"
+dependencies = [
+ "flate2",
+ "tar",
+ "tempfile",
+ "thiserror 2.0.20",
+]
+
+[[package]]
 name = "rpp-cli"
 version = "0.1.0-alpha.0"
 dependencies = [
@@ -4230,6 +4240,7 @@ dependencies = [
  "open",
  "png",
  "rpp",
+ "rpp-archive",
  "rpp-fetch",
  "rpp-js",
  "rpp-squash",
@@ -4256,12 +4267,11 @@ name = "rpp-fetch"
 version = "0.1.0-alpha.0"
 dependencies = [
  "dirs",
- "flate2",
+ "rpp-archive",
  "semver",
  "serde",
  "serde_json",
  "sha2 0.10.9",
- "tar",
  "tempfile",
  "thiserror 2.0.20",
  "toml 0.9.12+spec-1.1.0",
