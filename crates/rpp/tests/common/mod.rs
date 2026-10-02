@@ -2,6 +2,9 @@
 
 #![allow(dead_code)]
 
+pub mod engine;
+#[cfg(feature = "js")]
+pub mod js;
 pub mod mock;
 
 use std::path::{Path, PathBuf};

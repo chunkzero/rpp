@@ -2,17 +2,14 @@
 
 #![cfg(feature = "js")]
 
+mod common;
+
 use std::collections::BTreeMap;
 use std::path::Path;
 
+use common::js::write_file;
 use rpp::js::{evaluate_config, ConfigPackage};
 use rpp::Error;
-
-fn write_file(root: &Path, rel: &str, contents: &str) {
-    let path = root.join(rel);
-    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-    std::fs::write(path, contents).unwrap();
-}
 
 fn config_error(result: rpp::Result<rpp::js::EvaluatedConfig>) -> String {
     match result.unwrap_err() {
