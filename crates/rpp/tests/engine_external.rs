@@ -46,6 +46,10 @@ fn engine(project: &Project, plugins: Vec<Arc<dyn PluginFactory>>) -> Engine {
         .unwrap()
 }
 
+fn clean(project: &Project) -> rpp::Result<()> {
+    rpp::engine::clean_project_artifacts(&project.config(), project.root())
+}
+
 fn gen_kt() -> Arc<Generate> {
     Arc::new(|host| {
         let version = host.read_source("v.txt").unwrap_or_default();
@@ -91,7 +95,7 @@ fn external_outputs_have_durable_stale_ownership_and_clean_support() {
     assert!(project.root().join("generated/Manual.kt").exists());
     assert_eq!(second.changes.external.removed.len(), 1);
 
-    engine(&project, vec![keep_v2()]).clean().unwrap();
+    clean(&project).unwrap();
     assert!(!project.root().join("generated/Keep.kt").exists());
     assert!(project.root().join("generated/Manual.kt").exists());
 }
@@ -171,7 +175,7 @@ fn external_output_adopts_identical_unowned_file() {
     std::fs::write(project.root().join("generated/Gen.kt"), "v1").unwrap();
     let plugin = gen_kt();
     build(&project, vec![codegen(&plugin)]);
-    engine(&project, vec![codegen(&plugin)]).clean().unwrap();
+    clean(&project).unwrap();
     assert!(!project.root().join("generated/Gen.kt").exists());
 }
 
@@ -258,7 +262,7 @@ fn destination_boundaries_allow_sibling_external_outputs_and_clean() {
     let generated = parent.path().join("sibling/nested/generated.txt");
     assert_eq!(std::fs::read_to_string(&generated).unwrap(), "generated");
     std::fs::write(parent.path().join("sibling/keep.txt"), "keep").unwrap();
-    engine.clean().unwrap();
+    rpp::engine::clean_project_artifacts(&Project::new().config(), &project).unwrap();
     assert!(!generated.exists());
     assert_eq!(
         std::fs::read_to_string(parent.path().join("sibling/keep.txt")).unwrap(),
@@ -280,7 +284,7 @@ fn destination_boundaries_reject_retargeted_owned_external_parent() {
     std::fs::remove_dir_all(project.root().join("generated/nested")).unwrap();
     std::os::unix::fs::symlink(outside.path(), project.root().join("generated/nested")).unwrap();
     assert!(engine.build().is_err());
-    assert!(engine.clean().is_err());
+    assert!(clean(&project).is_err());
     assert_eq!(
         std::fs::read_to_string(outside.path().join("keep.txt")).unwrap(),
         "keep"

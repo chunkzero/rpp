@@ -311,7 +311,7 @@ fn clean_removes_output_and_cache() {
     engine.build().unwrap();
     assert!(project.out_exists("a.txt"));
 
-    engine.clean().unwrap();
+    rpp::engine::clean_project_artifacts(&project.config(), project.root()).unwrap();
     assert!(!project.root().join("dist").exists());
     assert!(!project.root().join(".rpp").exists());
 }

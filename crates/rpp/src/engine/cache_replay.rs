@@ -1,15 +1,99 @@
-//! CAS materialization helpers for cache hits.
+//! Replay of cached file and generator results into the build output.
 
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use crate::cache::{FileEntry, GeneratorMutation, ObjectStore};
+use crate::cache::{FileEntry, GeneratorEntry, GeneratorMutation, ObjectStore};
 use crate::error::{Error, Result};
 use crate::util::glob::GlobSet;
 use crate::util::hash::xxh3;
 use crate::util::path::validate_relative;
 
-use super::generator::{apply_mutation, claim_output, ClaimError, OutputContent, OutputSet, Owner};
+use super::output::OutputContent;
+use super::session::BuildSession;
+
+impl BuildSession<'_> {
+    /// Link a clean file's cached outputs and record its entry in the new manifest.
+    ///
+    /// Returns `Ok(false)`, changing nothing, when any referenced object is missing.
+    pub(super) fn replay_file(&mut self, rel: &str, entry: &FileEntry) -> Result<bool> {
+        let output_dir = &self.engine.output;
+        let mut contents = Vec::with_capacity(entry.outputs.len());
+        for out in &entry.outputs {
+            match cached_content(&self.store, output_dir, &out.path, out.object) {
+                Some(content) => contents.push(content),
+                None => return Ok(false),
+            }
+        }
+        for (out, content) in entry.outputs.iter().zip(contents) {
+            self.output.insert_source(rel, &out.path, content)?;
+        }
+        self.stats.cached += 1;
+        self.stats.dropped += usize::from(entry.outputs.is_empty());
+        self.manifest.files.insert(rel.to_string(), entry.clone());
+        Ok(true)
+    }
+
+    /// Apply a generator's cached mutations in order and record its entry in the new manifest.
+    ///
+    /// Returns `Ok(false)`, changing nothing, when any referenced object is missing.
+    pub(super) fn replay_generator(
+        &mut self,
+        plugin: &str,
+        overrides: &GlobSet,
+        entry: &GeneratorEntry,
+    ) -> Result<bool> {
+        let Some(emits) = self.cached_emits(&entry.mutations) else {
+            return Ok(false);
+        };
+        for mutation in &entry.mutations {
+            let (path, content) = match mutation {
+                GeneratorMutation::Emit(out) => {
+                    let content = emits
+                        .get(&out.path)
+                        .cloned()
+                        .unwrap_or(OutputContent::Object(out.object));
+                    (&out.path, Some(content))
+                }
+                GeneratorMutation::Remove(path) => (path, None),
+                GeneratorMutation::EmitExternal { .. } => continue,
+            };
+            validate_relative(path).map_err(Error::Build)?;
+            self.output
+                .apply_generator(plugin, overrides, path, content)
+                .map_err(|message| Error::Generator {
+                    plugin: plugin.to_string(),
+                    message,
+                })?;
+        }
+        self.manifest
+            .generators
+            .insert(plugin.to_string(), entry.clone());
+        Ok(true)
+    }
+
+    /// Resolve the contents of every pack emit, or `None` when any object is missing.
+    fn cached_emits(
+        &self,
+        mutations: &[GeneratorMutation],
+    ) -> Option<BTreeMap<String, OutputContent>> {
+        let mut emits = BTreeMap::new();
+        for mutation in mutations {
+            match mutation {
+                GeneratorMutation::Emit(out) => {
+                    let content =
+                        cached_content(&self.store, &self.engine.output, &out.path, out.object)?;
+                    emits.insert(out.path.clone(), content);
+                }
+                GeneratorMutation::EmitExternal { object, .. } if !self.store.contains(*object) => {
+                    return None
+                }
+                _ => {}
+            }
+        }
+        Some(emits)
+    }
+}
 
 /// Resolve a cached object for `rel`: `Linked` when the output directory
 /// already holds its bytes (one read of the destination, none of the CAS),
@@ -32,101 +116,4 @@ fn cached_content(
     } else {
         None
     }
-}
-
-/// Materialize file-processor cache outputs into the in-memory output set.
-///
-/// Returns `Ok(true)` when every referenced object exists and was linked into
-/// `output`; `Ok(false)` when any object is missing.
-pub(crate) fn materialize_file_entry(
-    store: &ObjectStore,
-    output_dir: &Path,
-    entry: &FileEntry,
-    output: &mut OutputSet,
-    source_rel: &str,
-) -> Result<bool> {
-    let mut contents = Vec::with_capacity(entry.outputs.len());
-    for out in &entry.outputs {
-        match cached_content(store, output_dir, &out.path, out.object) {
-            Some(content) => contents.push(content),
-            None => return Ok(false),
-        }
-    }
-    for (out, content) in entry.outputs.iter().zip(contents) {
-        claim_source_output(&mut output.owners, &out.path, source_rel)?;
-        output.files.insert(out.path.clone(), content);
-    }
-    Ok(true)
-}
-
-/// Materialize generator cache mutations into the in-memory output set.
-///
-/// Returns `Ok(true)` when every referenced object exists; `Ok(false)` when any
-/// object is missing.
-pub(crate) fn materialize_generator_mutations(
-    store: &ObjectStore,
-    output_dir: &Path,
-    mutations: &[GeneratorMutation],
-    output: &mut OutputSet,
-    plugin: &str,
-    overrides: &GlobSet,
-) -> Result<bool> {
-    let mut emits = BTreeMap::new();
-    for mutation in mutations {
-        match mutation {
-            GeneratorMutation::Emit(out) => {
-                match cached_content(store, output_dir, &out.path, out.object) {
-                    Some(content) => {
-                        emits.insert(out.path.clone(), content);
-                    }
-                    None => return Ok(false),
-                }
-            }
-            GeneratorMutation::EmitExternal { object, .. } if !store.contains(*object) => {
-                return Ok(false)
-            }
-            _ => {}
-        }
-    }
-
-    for mutation in mutations {
-        let (path, content) = match mutation {
-            GeneratorMutation::Emit(out) => {
-                let content = emits
-                    .get(&out.path)
-                    .cloned()
-                    .unwrap_or(OutputContent::Object(out.object));
-                (&out.path, Some(content))
-            }
-            GeneratorMutation::Remove(path) => (path, None),
-            GeneratorMutation::EmitExternal { .. } => continue,
-        };
-        validate_relative(path).map_err(Error::Build)?;
-        apply_mutation(output, plugin, overrides, path, content).map_err(|message| {
-            Error::Generator {
-                plugin: plugin.to_string(),
-                message,
-            }
-        })?;
-    }
-    Ok(true)
-}
-
-/// Claim `output` for the processor chain of `source`.
-pub(crate) fn claim_source_output(
-    owners: &mut BTreeMap<String, Owner>,
-    output: &str,
-    source: &str,
-) -> Result<()> {
-    claim_output(owners, output, Owner::Source(source.to_string())).map_err(|error| match error {
-        ClaimError::InvalidPath(message) => Error::Build(message),
-        ClaimError::Taken { previous } => {
-            let Owner::Source(previous) = previous else {
-                unreachable!("only sources claim outputs during the file phase")
-            };
-            Error::Build(format!(
-                "source files `{previous}` and `{source}` both produce `{output}`"
-            ))
-        }
-    })
 }

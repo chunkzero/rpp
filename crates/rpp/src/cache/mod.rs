@@ -4,6 +4,7 @@ pub(crate) mod manifest;
 pub(crate) mod store;
 
 pub(crate) use manifest::{
-    FileEntry, Fingerprint, GeneratorEntry, GeneratorMutation, Manifest, OutputRef, ReadRecord,
+    FileEntry, Fingerprint, GeneratorEntry, GeneratorMutation, Manifest, OutputRef, ReadKind,
+    ReadRecord,
 };
 pub(crate) use store::ObjectStore;

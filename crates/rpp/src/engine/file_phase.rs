@@ -1,135 +1,105 @@
-//! Per-file discovery, cache lookup, and worker processing.
+//! Per-file cache lookup and worker processing.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use crate::cache::{FileEntry, Fingerprint, Manifest, ObjectStore, OutputRef};
+use crate::cache::{FileEntry, Fingerprint, ObjectStore, OutputRef};
 use crate::error::{Error, Result};
+use crate::model::PackFile;
 
-use super::cache_replay::materialize_file_entry;
 use super::discovery::SourceFile;
-use super::keys::{chain_for, chain_key, CompiledProcessor};
+use super::keys::{chain_for, chain_key};
+use super::output::OutputContent;
+use super::session::BuildSession;
 use super::worker::{Job, JobOutcome, WorkerPool};
-use super::Engine;
 
-pub(crate) struct FilePhaseStats {
-    pub(crate) processed: usize,
-    pub(crate) cached: usize,
-    pub(crate) dropped: usize,
-}
+/// Dirty files submitted to the pool, keyed by source path: their chain key and fingerprint.
+type Pending = BTreeMap<String, (u64, Fingerprint)>;
 
-pub(crate) struct FilePhaseCtx<'a> {
-    pub(crate) engine: &'a Engine,
-    pub(crate) compiled: &'a [CompiledProcessor],
-    pub(crate) sources: Vec<SourceFile>,
-    pub(crate) store: &'a ObjectStore,
-    pub(crate) prev: Option<&'a Manifest>,
-    pub(crate) new_manifest: &'a mut Manifest,
-    pub(crate) output: &'a mut super::generator::OutputSet,
-    pub(crate) factories: &'a Arc<Vec<Arc<dyn crate::model::PluginFactory>>>,
-}
+impl BuildSession<'_> {
+    /// Serve each source from the cache or run its processor chain on the worker pool.
+    pub(super) fn process_files(&mut self, sources: Vec<SourceFile>) -> Result<()> {
+        let engine = self.engine;
+        // At most one job per worker is outstanding. Receive and publish before
+        // reading another source, including bytes read during cache validation.
+        let limit = engine.worker_count();
+        let mut pool_slot = engine.pool.lock();
+        let mut pool = pool_slot.take();
+        let mut pending = Pending::new();
+        let mut completed = BTreeMap::new();
 
-pub(crate) fn process_files(ctx: FilePhaseCtx<'_>) -> Result<FilePhaseStats> {
-    let FilePhaseCtx {
-        engine,
-        compiled,
-        sources,
-        store,
-        prev,
-        new_manifest,
-        output,
-        factories,
-    } = ctx;
-    let mut processed = 0usize;
-    let mut cached = 0usize;
-    let mut dropped = 0usize;
-    // At most one job per worker is outstanding. Receive and publish before
-    // reading another source, including bytes read during cache validation.
-    let limit = engine.worker_count();
-    let mut pool_slot = engine.pool.lock();
-    let mut pool = pool_slot.take();
-    let mut pending = BTreeMap::new();
-    let mut completed = BTreeMap::new();
-
-    for src in sources {
-        let chain = chain_for(compiled, &src.rel);
-        let ck = chain_key(&chain);
-        let chain_cacheable = chain.iter().all(|step| step.cacheable);
-
-        let candidate = prev
-            .and_then(|m| m.files.get(&src.rel))
-            .filter(|entry| chain_cacheable && entry.chain_key == ck);
-        let mut read = None;
-        let clean = match candidate {
-            Some(entry) => {
-                let (fp, contents) = src.fingerprint()?;
-                let same = fp.xxh3 == entry.fingerprint.xxh3;
-                read = Some((fp, contents));
-                same
-            }
-            None => false,
-        };
-
-        if clean {
-            let entry = candidate.expect("clean implies prev entry").clone();
-            if materialize_file_entry(store, &engine.output, &entry, output, &src.rel)? {
-                if entry.outputs.is_empty() {
-                    dropped += 1;
-                }
-                cached += 1;
-                new_manifest.files.insert(src.rel.clone(), entry);
+        for src in sources {
+            let chain = chain_for(&engine.compiled, &src.rel);
+            let key = chain_key(&chain);
+            let cacheable = chain.iter().all(|step| step.cacheable);
+            let Some((fingerprint, contents)) = self.replay_or_read(&src, key, cacheable)? else {
                 continue;
+            };
+            let pool =
+                pool.get_or_insert_with(|| WorkerPool::new(limit, Arc::clone(&engine.factories)));
+            pending.insert(src.rel.clone(), (key, fingerprint));
+            pool.submit(Job {
+                file: PackFile::new(src.rel.clone(), contents),
+                rel: src.rel,
+                chain: Arc::new(chain),
+            })?;
+            if pending.len() == limit {
+                collect_result(pool, &self.store, &mut pending, &mut completed)?;
             }
         }
 
-        let pool = pool.get_or_insert_with(|| WorkerPool::new(limit, Arc::clone(factories)));
-        let (fp, contents) = match read {
-            Some(read) => read,
-            None => src.fingerprint()?,
-        };
-        pending.insert(src.rel.clone(), (ck, fp));
-        pool.submit(Job {
-            rel: src.rel.clone(),
-            file: crate::model::PackFile::new(src.rel, contents),
-            chain: Arc::new(chain),
-        })?;
-        if pending.len() == limit {
-            collect_result(pool, store, &mut pending, &mut completed)?;
+        if let Some(pool) = pool.as_ref() {
+            while !pending.is_empty() {
+                collect_result(pool, &self.store, &mut pending, &mut completed)?;
+            }
         }
+        self.record_processed(completed)?;
+        *pool_slot = pool;
+        Ok(())
     }
 
-    if let Some(pool) = pool.as_ref() {
-        while !pending.is_empty() {
-            collect_result(pool, store, &mut pending, &mut completed)?;
+    /// Serve `src` from the previous build when its chain and contents are unchanged.
+    ///
+    /// Returns the fingerprinted contents when the file must be processed instead.
+    fn replay_or_read(
+        &mut self,
+        src: &SourceFile,
+        chain_key: u64,
+        cacheable: bool,
+    ) -> Result<Option<(Fingerprint, Vec<u8>)>> {
+        let candidate = self
+            .prev
+            .and_then(|manifest| manifest.files.get(&src.rel))
+            .filter(|entry| cacheable && entry.chain_key == chain_key);
+        let (fingerprint, contents) = src.fingerprint()?;
+        if let Some(entry) = candidate {
+            if fingerprint.xxh3 == entry.fingerprint.xxh3 && self.replay_file(&src.rel, entry)? {
+                return Ok(None);
+            }
         }
+        Ok(Some((fingerprint, contents)))
     }
-    // Cache hits have claimed their paths first; dirty results claim in source
-    // order, independent of worker completion order.
-    for (rel, entry) in completed {
-        for out in &entry.outputs {
-            super::cache_replay::claim_source_output(&mut output.owners, &out.path, &rel)?;
-            output.files.insert(
-                out.path.clone(),
-                super::generator::OutputContent::Object(out.object),
-            );
-        }
-        processed += 1;
-        dropped += usize::from(entry.outputs.is_empty());
-        new_manifest.files.insert(rel, entry);
-    }
-    *pool_slot = pool;
 
-    Ok(FilePhaseStats {
-        processed,
-        cached,
-        dropped,
-    })
+    /// Add processed results to the output. Cache hits have claimed their paths first; dirty
+    /// results claim in source order, independent of worker completion order.
+    fn record_processed(&mut self, completed: BTreeMap<String, FileEntry>) -> Result<()> {
+        for (rel, entry) in completed {
+            for out in &entry.outputs {
+                self.output
+                    .insert_source(&rel, &out.path, OutputContent::Object(out.object))?;
+            }
+            self.stats.processed += 1;
+            self.stats.dropped += usize::from(entry.outputs.is_empty());
+            self.manifest.files.insert(rel, entry);
+        }
+        Ok(())
+    }
 }
 
 fn collect_result(
     pool: &WorkerPool,
     store: &ObjectStore,
-    pending: &mut BTreeMap<String, (u64, Fingerprint)>,
+    pending: &mut Pending,
     completed: &mut BTreeMap<String, FileEntry>,
 ) -> Result<()> {
     let outcome = pool
@@ -165,6 +135,8 @@ fn collect_result(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cache::Manifest;
+    use crate::engine::Engine;
 
     #[test]
     fn submission_read_error_discards_pending_results() {
@@ -181,19 +153,8 @@ mod tests {
             .build_engine()
             .unwrap();
         let store = ObjectStore::open(dir.path().join(".rpp/cache/objects")).unwrap();
-        let mut manifest = Manifest::empty(0);
-        let mut output = super::super::generator::OutputSet::default();
-        let result = process_files(FilePhaseCtx {
-            engine: &engine,
-            compiled: &engine.compiled,
-            sources,
-            store: &store,
-            prev: None,
-            new_manifest: &mut manifest,
-            output: &mut output,
-            factories: &engine.factories,
-        });
-        assert!(result.is_err());
+        let mut session = BuildSession::new(&engine, store, None, Manifest::empty(0), &sources);
+        assert!(session.process_files(sources).is_err());
         assert!(engine.pool.lock().is_none());
 
         std::fs::write(source.join("a.txt"), "new").unwrap();

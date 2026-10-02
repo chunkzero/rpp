@@ -3,13 +3,12 @@
 //! Persisted as bincode at `.rpp/cache/manifest.bin`. A corrupt or
 //! version-mismatched manifest is treated as empty (triggering a full rebuild).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
-use crate::model::ReadKind;
 
 /// Current on-disk manifest format version. Bumping forces a full rebuild.
 pub(crate) const MANIFEST_VERSION: u32 = 3;
@@ -43,6 +42,19 @@ pub(crate) struct FileEntry {
     pub(crate) chain_key: u64,
     /// Output files (empty means the file was dropped).
     pub(crate) outputs: Vec<OutputRef>,
+}
+
+/// The kind of read a generator performed, used to record its dependency set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) enum ReadKind {
+    /// A `list_files(glob)` query.
+    List,
+    /// A `list_source_files(glob)` query.
+    SourceList,
+    /// A `read_file(path)` of a processed output.
+    File,
+    /// A `read_source(path)` of a raw source file.
+    Source,
 }
 
 /// A single recorded generator dependency.
@@ -131,5 +143,23 @@ impl Manifest {
         let bytes =
             bincode::serde::encode_to_vec(self, config).map_err(|e| Error::Build(e.to_string()))?;
         crate::util::atomic::write(path, &bytes).map_err(|e| Error::io(path, e))
+    }
+
+    /// Every CAS object referenced by file outputs or generator emits.
+    pub(crate) fn live_objects(&self) -> HashSet<u64> {
+        let files = self
+            .files
+            .values()
+            .flat_map(|entry| entry.outputs.iter().map(|out| out.object));
+        let generators = self
+            .generators
+            .values()
+            .flat_map(|entry| &entry.mutations)
+            .filter_map(|mutation| match mutation {
+                GeneratorMutation::Emit(out) => Some(out.object),
+                GeneratorMutation::EmitExternal { object, .. } => Some(*object),
+                GeneratorMutation::Remove(_) => None,
+            });
+        files.chain(generators).collect()
     }
 }
