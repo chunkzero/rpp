@@ -7,7 +7,7 @@ mod common;
 
 use std::path::Path;
 
-use common::{build, write};
+use common::{build, stderr, write};
 
 /// An `rpp.config.ts` whose `defineConfig` object body is `body`.
 fn config_ts(body: &str) -> String {
@@ -15,6 +15,21 @@ fn config_ts(body: &str) -> String {
         "import {{ defineConfig, plugin }} from \"#rpp/config\";\n\nexport default defineConfig({{\n{body}\n}});\n"
     )
 }
+
+/// A plugin that minifies `pack.mcmeta` and every `data.json`.
+const MINIFY_PLUGIN: &str = r##"import { definePlugin } from "#rpp";
+
+export default definePlugin({
+  processors: {
+    minify: {
+      files: ["pack.mcmeta", "**/data.json"],
+      run(_ctx, file) {
+        file.text = JSON.stringify(JSON.parse(file.text));
+      },
+    },
+  },
+});
+"##;
 
 /// Write a minimal but complete project into `root`.
 fn scaffold(root: &Path) {
@@ -61,22 +76,32 @@ fn scaffold(root: &Path) {
         "plugins/minify/rpp.json",
         r#"{ "name": "minify", "version": "0.1.0", "entry": "src/plugin.ts" }"#,
     );
-    write(
-        root,
-        "plugins/minify/src/plugin.ts",
-        r##"import { definePlugin } from "#rpp";
+    write(root, "plugins/minify/src/plugin.ts", MINIFY_PLUGIN);
+}
 
-export default definePlugin({
-  processors: {
-    minify: {
-      files: ["pack.mcmeta", "**/data.json"],
-      run(_ctx, file) {
-        file.text = JSON.stringify(JSON.parse(file.text));
-      },
-    },
-  },
-});
-"##,
+fn read_zip_entry(zip_bytes: &[u8], name: &str) -> String {
+    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(zip_bytes)).unwrap();
+    let mut contents = String::new();
+    std::io::Read::read_to_string(&mut archive.by_name(name).unwrap(), &mut contents).unwrap();
+    contents
+}
+
+/// A second build with nothing changed is fully cached and keeps the release archive.
+fn assert_second_build_fully_cached(root: &Path) {
+    let out = build(root, &[]);
+    assert!(
+        out.status.success(),
+        "second build failed:\n{}",
+        stderr(&out)
+    );
+    let report = stderr(&out);
+    assert!(
+        report.contains("processed 0"),
+        "second build should be fully cached: {report}"
+    );
+    assert!(
+        report.contains("0 removed"),
+        "release archive should be preserved by output sync: {report}"
     );
 }
 
@@ -91,10 +116,10 @@ fn build_minifies_and_zips_then_caches() {
     assert!(
         out.status.success(),
         "first build failed:\n{}",
-        String::from_utf8_lossy(&out.stderr)
+        stderr(&out)
     );
     assert!(out.stdout.is_empty(), "build status belongs on stderr");
-    let report1 = String::from_utf8_lossy(&out.stderr);
+    let report1 = stderr(&out);
     assert!(!report1.contains('\x1b'), "redirected output must be plain");
 
     // Output JSON is minified (no newlines / indentation from the source).
@@ -111,14 +136,10 @@ fn build_minifies_and_zips_then_caches() {
     let zip = root.join("dist/test-pack.zip");
     assert!(zip.is_file(), "zip produced at {}", zip.display());
     let archive_bytes = std::fs::read(&zip).unwrap();
-    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(&archive_bytes)).unwrap();
-    let mut archived_release = String::new();
-    std::io::Read::read_to_string(
-        &mut archive.by_name("assets/minecraft/release.json").unwrap(),
-        &mut archived_release,
-    )
-    .unwrap();
-    assert_eq!(archived_release, r#"{"release_only":true}"#);
+    assert_eq!(
+        read_zip_entry(&archive_bytes, "assets/minecraft/release.json"),
+        r#"{"release_only":true}"#
+    );
 
     // First build processed at least one file.
     assert!(
@@ -126,22 +147,7 @@ fn build_minifies_and_zips_then_caches() {
         "expected build stats: {report1}"
     );
 
-    // Second build: nothing changed -> fully cached (processed 0).
-    let out2 = build(root, &[]);
-    assert!(
-        out2.status.success(),
-        "second build failed:\n{}",
-        String::from_utf8_lossy(&out2.stderr)
-    );
-    let report2 = String::from_utf8_lossy(&out2.stderr);
-    assert!(
-        report2.contains("processed 0"),
-        "second build should be fully cached: {report2}"
-    );
-    assert!(
-        report2.contains("0 removed"),
-        "release archive should be preserved by output sync: {report2}"
-    );
+    assert_second_build_fully_cached(root);
 
     assert_eq!(std::fs::read_to_string(&produced).unwrap(), body);
     assert_eq!(std::fs::read_to_string(&release_json).unwrap(), loose);

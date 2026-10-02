@@ -310,6 +310,39 @@ export default defineConfig({ pack: { name: "test" } });
         assert_eq!(packs.metadata(), recovered["pack"]);
     }
 
+    /// Runs `steps` against a state holding `base` limits and the "old" engine, then checks the
+    /// slots each build saw and the final `(limits, engine)`.
+    fn assert_wasm_case(
+        base: Limits,
+        name: &str,
+        steps: Vec<(Limits, bool)>,
+        expected_seen: Vec<Option<&'static str>>,
+        expected_state: (Limits, &'static str),
+    ) {
+        let mut state = WasmState {
+            limits: base,
+            engine: Some("old"),
+        };
+        let mut seen = Vec::new();
+        for (limits, fails) in steps {
+            let _ = state.build_with(limits, |slot| {
+                seen.push(*slot);
+                slot.get_or_insert("fresh");
+                if fails {
+                    Err(())
+                } else {
+                    Ok(())
+                }
+            });
+        }
+        assert_eq!(seen, expected_seen, "{name}: slot passed to build");
+        assert_eq!(
+            (state.limits, state.engine),
+            (expected_state.0, Some(expected_state.1)),
+            "{name}"
+        );
+    }
+
     #[test]
     fn wasm_state_reuses_engine_only_for_unchanged_limits_and_commits_on_success() {
         let base = Limits::default();
@@ -355,28 +388,7 @@ export default defineConfig({ pack: { name: "test" } });
             ),
         ];
         for (name, steps, expected_seen, limits, engine) in cases {
-            let mut state = WasmState {
-                limits: base,
-                engine: Some("old"),
-            };
-            let mut seen = Vec::new();
-            for (limits, fails) in steps {
-                let _ = state.build_with(limits, |slot| {
-                    seen.push(*slot);
-                    slot.get_or_insert("fresh");
-                    if fails {
-                        Err(())
-                    } else {
-                        Ok(())
-                    }
-                });
-            }
-            assert_eq!(seen, expected_seen, "{name}: slot passed to build");
-            assert_eq!(
-                (state.limits, state.engine),
-                (limits, Some(engine)),
-                "{name}"
-            );
+            assert_wasm_case(base, name, steps, expected_seen, (limits, engine));
         }
     }
 }

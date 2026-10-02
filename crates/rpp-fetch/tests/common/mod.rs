@@ -98,7 +98,14 @@ impl Drop for MockServer {
 
 fn handle_conn(mut stream: TcpStream, routes: &Mutex<HashMap<String, Canned>>, hits: &AtomicUsize) {
     stream.set_nonblocking(false).ok();
-    // Read the request head (until CRLFCRLF). We only need the request line.
+    let target = read_request_target(&mut stream);
+    hits.fetch_add(1, Ordering::SeqCst);
+    let response = find_route(&routes.lock().unwrap(), &target);
+    write_response(&mut stream, &response);
+}
+
+/// Reads the request head (until CRLFCRLF) and returns the request-line target.
+fn read_request_target(stream: &mut TcpStream) -> String {
     let mut buf = Vec::new();
     let mut tmp = [0u8; 1024];
     loop {
@@ -118,12 +125,12 @@ fn handle_conn(mut stream: TcpStream, routes: &Mutex<HashMap<String, Canned>>, h
     let request_line = head.lines().next().unwrap_or("");
     let mut parts = request_line.split_whitespace();
     let _method = parts.next().unwrap_or("");
-    let target = parts.next().unwrap_or("/");
+    parts.next().unwrap_or("/").to_string()
+}
 
-    hits.fetch_add(1, Ordering::SeqCst);
-
-    // Match exact path; for the search route, match by prefix (ignore query).
-    let routes = routes.lock().unwrap();
+/// Matches the exact target, then the path without its query; the search route also matches
+/// by prefix. Unmatched targets get a 404.
+fn find_route(routes: &HashMap<String, Canned>, target: &str) -> Canned {
     let path_only = target.split('?').next().unwrap_or(target);
     let canned = routes
         .get(target)
@@ -136,15 +143,17 @@ fn handle_conn(mut stream: TcpStream, routes: &Mutex<HashMap<String, Canned>>, h
                 .map(|(_, v)| v)
         });
 
-    let response = match canned {
+    match canned {
         Some(c) => c.clone(),
         None => Canned {
             status: 404,
             content_type: "text/plain",
             body: b"not found".to_vec(),
         },
-    };
+    }
+}
 
+fn write_response(stream: &mut TcpStream, response: &Canned) {
     let status_text = match response.status {
         200 => "OK",
         404 => "Not Found",

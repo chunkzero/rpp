@@ -85,41 +85,8 @@ export default defineConfig({{
     )
 }
 
-fn scaffold(root: &Path, component: &Path) {
-    write(root, "rpp.config.ts", config(true));
-    write(
-        root,
-        "rpp.json",
-        r#"{ "dependencies": { "window-host": "path:plugin" } }"#,
-    );
-    write(
-        root,
-        "src/pack.mcmeta",
-        r#"{"pack":{"pack_format":84,"description":"fixture"}}"#,
-    );
-    write(
-        root,
-        "src/window/ui.json",
-        r#"{ "windows": [{ "name": "fixture" }] }"#,
-    );
-    write(root, "src/window/input.bin", INPUT_BYTES);
-
-    write(
-        root,
-        "plugin/rpp.json",
-        r#"{
-  "name": "window-host",
-  "version": "0.1.0",
-  "entry": "src/plugin.ts",
-  "overrides": ["window/**"],
-  "components": { "compiler": "compiler.wasm" }
-}"#,
-    );
-    std::fs::copy(component, root.join("plugin/compiler.wasm")).unwrap();
-    write(
-        root,
-        "plugin/src/plugin.ts",
-        r##"import { components, definePlugin } from "#rpp";
+/// A plugin that compiles `window/**` sources through the `compiler` component.
+const COMPILE_PLUGIN: &str = r##"import { components, definePlugin } from "#rpp";
 
 interface Options {
   namespace: string;
@@ -159,8 +126,100 @@ export default definePlugin<Options>({
     for (const warning of result.warnings) console.warn(warning);
   },
 });
-"##,
+"##;
+
+fn scaffold(root: &Path, component: &Path) {
+    write(root, "rpp.config.ts", config(true));
+    write(
+        root,
+        "rpp.json",
+        r#"{ "dependencies": { "window-host": "path:plugin" } }"#,
     );
+    write(
+        root,
+        "src/pack.mcmeta",
+        r#"{"pack":{"pack_format":84,"description":"fixture"}}"#,
+    );
+    write(
+        root,
+        "src/window/ui.json",
+        r#"{ "windows": [{ "name": "fixture" }] }"#,
+    );
+    write(root, "src/window/input.bin", INPUT_BYTES);
+
+    write(
+        root,
+        "plugin/rpp.json",
+        r#"{
+  "name": "window-host",
+  "version": "0.1.0",
+  "entry": "src/plugin.ts",
+  "overrides": ["window/**"],
+  "components": { "compiler": "compiler.wasm" }
+}"#,
+    );
+    std::fs::copy(component, root.join("plugin/compiler.wasm")).unwrap();
+    write(root, "plugin/src/plugin.ts", COMPILE_PLUGIN);
+}
+
+/// Two cold builds must be byte-identical, and a warm build a no-op.
+fn assert_cold_builds_deterministic_and_warm_build_is_noop(root: &Path) {
+    let first = build(root).unwrap();
+    assert_eq!(first.generated, 1);
+    let first_dist = snapshot(&root.join("dist"));
+    let first_external = snapshot(&root.join("server"));
+    clean(root);
+    let second = build(root).unwrap();
+    assert_eq!(second.generated, 1);
+    assert_eq!(snapshot(&root.join("dist")), first_dist);
+    assert_eq!(snapshot(&root.join("server")), first_external);
+    let warm = build(root).unwrap();
+    assert_eq!(warm.generated, 0);
+    assert!(no_changes(&warm), "warm build rewrote outputs");
+}
+
+fn assert_generated_bin(root: &Path, version: u8) {
+    let mut expected = vec![b'R', b'P', b'P', version, 0, 0xff];
+    expected.extend(INPUT_BYTES);
+    assert_eq!(
+        std::fs::read(root.join("dist/assets/window/generated.bin")).unwrap(),
+        expected
+    );
+}
+
+fn assert_v1_outputs(root: &Path) {
+    assert_generated_bin(root, b'1');
+    assert!(!root.join("dist/window/ui.json").exists());
+    assert!(!root.join("dist/window/input.bin").exists());
+    assert_eq!(
+        std::fs::read(root.join("server/generated/WindowPack.kt")).unwrap(),
+        b"// generated schema v4 revision 1\nobject WindowPack\n"
+    );
+}
+
+fn assert_v2_outputs_replace_v1_and_keep_handwritten(
+    root: &Path,
+    changed: &BuildResult,
+    handwritten: &Path,
+) {
+    assert_generated_bin(root, b'2');
+    assert!(!root.join("server/generated/WindowPack.kt").exists());
+    assert_eq!(
+        std::fs::read(handwritten).unwrap(),
+        b"object HandWritten\n",
+        "stale cleanup must preserve files RPP does not own"
+    );
+    let renamed = root.join("server/generated/RenamedWindowPack.kt");
+    assert_eq!(
+        std::fs::read(&renamed).unwrap(),
+        b"// generated schema v4 revision 2\nobject RenamedWindowPack\n"
+    );
+    assert!(changed.changes.external.written.contains(&renamed));
+    assert!(changed
+        .changes
+        .external
+        .removed
+        .contains(&root.join("server/generated/WindowPack.kt")));
 }
 
 #[test]
@@ -177,31 +236,8 @@ fn window_shaped_component_build_replays_and_invalidates() {
 
     let v1 = build_component(&component_target, false);
     scaffold(&root, &v1);
-    // Two cold builds must be byte-identical, and a warm build a no-op.
-    let first = build(&root).unwrap();
-    assert_eq!(first.generated, 1);
-    let first_dist = snapshot(&root.join("dist"));
-    let first_external = snapshot(&root.join("server"));
-    clean(&root);
-    let second = build(&root).unwrap();
-    assert_eq!(second.generated, 1);
-    assert_eq!(snapshot(&root.join("dist")), first_dist);
-    assert_eq!(snapshot(&root.join("server")), first_external);
-    let warm = build(&root).unwrap();
-    assert_eq!(warm.generated, 0);
-    assert!(no_changes(&warm), "warm build rewrote outputs");
-    let mut expected_v1 = vec![b'R', b'P', b'P', b'1', 0, 0xff];
-    expected_v1.extend(INPUT_BYTES);
-    assert_eq!(
-        std::fs::read(root.join("dist/assets/window/generated.bin")).unwrap(),
-        expected_v1
-    );
-    assert!(!root.join("dist/window/ui.json").exists());
-    assert!(!root.join("dist/window/input.bin").exists());
-    assert_eq!(
-        std::fs::read(root.join("server/generated/WindowPack.kt")).unwrap(),
-        b"// generated schema v4 revision 1\nobject WindowPack\n"
-    );
+    assert_cold_builds_deterministic_and_warm_build_is_noop(&root);
+    assert_v1_outputs(&root);
     let handwritten = root.join("server/generated/HandWritten.kt");
     std::fs::write(&handwritten, b"object HandWritten\n").unwrap();
 
@@ -216,29 +252,7 @@ fn window_shaped_component_build_replays_and_invalidates() {
     std::fs::copy(v2, root.join("plugin/compiler.wasm")).unwrap();
     let changed = build(&root).unwrap();
     assert_eq!(changed.generated, 1);
-    let mut expected_v2 = vec![b'R', b'P', b'P', b'2', 0, 0xff];
-    expected_v2.extend(INPUT_BYTES);
-    assert_eq!(
-        std::fs::read(root.join("dist/assets/window/generated.bin")).unwrap(),
-        expected_v2
-    );
-    assert!(!root.join("server/generated/WindowPack.kt").exists());
-    assert_eq!(
-        std::fs::read(&handwritten).unwrap(),
-        b"object HandWritten\n",
-        "stale cleanup must preserve files RPP does not own"
-    );
-    let renamed = root.join("server/generated/RenamedWindowPack.kt");
-    assert_eq!(
-        std::fs::read(&renamed).unwrap(),
-        b"// generated schema v4 revision 2\nobject RenamedWindowPack\n"
-    );
-    assert!(changed.changes.external.written.contains(&renamed));
-    assert!(changed
-        .changes
-        .external
-        .removed
-        .contains(&root.join("server/generated/WindowPack.kt")));
+    assert_v2_outputs_replace_v1_and_keep_handwritten(&root, &changed, &handwritten);
 
     let v2_warm = build(&root).unwrap();
     assert_eq!(v2_warm.generated, 0);
@@ -272,25 +286,8 @@ fn window_component_diagnostic_keeps_stable_plugin_context() {
     );
 }
 
-#[test]
-fn component_options_round_trip_without_losing_positions_or_branches() {
-    if !wasip2_available() {
-        eprintln!("SKIP: wasm32-wasip2 target is unavailable");
-        return;
-    }
-    let temporary = tempfile::tempdir().unwrap();
-    let root = temporary.path().join("project");
-    std::fs::create_dir_all(&root).unwrap();
-    let target = std::env::var_os("CARGO_TARGET_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| temporary.path().join("component-target"))
-        .join("option-guest");
-    let component = build_component(&target, false);
-    scaffold(&root, &component);
-    write(
-        &root,
-        "plugin/src/plugin.ts",
-        r##"import { components, definePlugin } from "#rpp";
+/// A plugin that round-trips option-shaped values through the component twice.
+const ROUND_TRIP_PLUGIN: &str = r##"import { components, definePlugin } from "#rpp";
 
 const check = (condition: boolean, message: string): void => {
   if (!condition) throw new Error(message);
@@ -325,8 +322,24 @@ export default definePlugin({
     ctx.emit("round-trip.txt", "passed");
   },
 });
-"##,
-    );
+"##;
+
+#[test]
+fn component_options_round_trip_without_losing_positions_or_branches() {
+    if !wasip2_available() {
+        eprintln!("SKIP: wasm32-wasip2 target is unavailable");
+        return;
+    }
+    let temporary = tempfile::tempdir().unwrap();
+    let root = temporary.path().join("project");
+    std::fs::create_dir_all(&root).unwrap();
+    let target = std::env::var_os("CARGO_TARGET_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| temporary.path().join("component-target"))
+        .join("option-guest");
+    let component = build_component(&target, false);
+    scaffold(&root, &component);
+    write(&root, "plugin/src/plugin.ts", ROUND_TRIP_PLUGIN);
     assert_eq!(build(&root).unwrap().generated, 1);
     assert_eq!(
         std::fs::read(root.join("dist/round-trip.txt")).unwrap(),
