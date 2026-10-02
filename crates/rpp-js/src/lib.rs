@@ -28,3 +28,6 @@ pub use engine::{Engine, Runtime};
 pub use error::{Error, Result};
 pub use model::{Call, Cancellation, Clock, Host, HostReply, Limits, Log, LogLevel, Output};
 pub use pack::{pack, PackOutput, PackRequest};
+
+/// Ambient TypeScript declarations for the globals the runtime provides.
+pub const GLOBALS_DTS: &str = include_str!("globals.d.ts");
