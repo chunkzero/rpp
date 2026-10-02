@@ -1,12 +1,14 @@
 //! Cache key computation: global key, processor chains, and chain keys (spec §7).
 
+use std::path::Path;
 use std::sync::Arc;
 
-use crate::config::Config;
+use serde::Serialize;
+
+use crate::config::{BuildConfig, Config, LimitsConfig, PackConfig};
 use crate::model::PluginFactory;
-use crate::util::canonical;
 use crate::util::glob::GlobSet;
-use crate::util::hash::HashWriter;
+use crate::util::hash::{xxh3, HashWriter};
 
 /// One step in a file's processor chain.
 #[derive(Debug, Clone)]
@@ -110,7 +112,43 @@ pub(crate) fn global_key(config: &Config) -> u64 {
     let mut writer = HashWriter::new();
     writer.write_str("rpp.global.v3");
     writer.write_str(env!("CARGO_PKG_VERSION"));
-    writer.write_u64(canonical::config_digest(config));
+    writer.write_u64(config_digest(config));
 
     writer.finish()
+}
+
+/// Build-relevant `[build]` fields for the global cache key. Outputs are
+/// content-addressed, so the output path and squash settings are excluded.
+#[derive(Serialize)]
+struct BuildKeySection<'a> {
+    source: String,
+    limits: &'a LimitsConfig,
+}
+
+/// `[pack]` plus build-relevant fields for the global cache key.
+#[derive(Serialize)]
+struct GlobalKeyConfig<'a> {
+    pack: &'a PackConfig,
+    build: BuildKeySection<'a>,
+}
+
+fn path_key(path: &Path) -> String {
+    path.to_string_lossy().replace('\\', "/")
+}
+
+fn build_key_section(build: &BuildConfig) -> BuildKeySection<'_> {
+    BuildKeySection {
+        source: path_key(&build.source),
+        limits: &build.limits,
+    }
+}
+
+/// Hash the build-relevant config sections using canonical JSON serialization.
+fn config_digest(config: &Config) -> u64 {
+    let payload = GlobalKeyConfig {
+        pack: &config.pack,
+        build: build_key_section(&config.build),
+    };
+    let bytes = serde_json::to_vec(&payload).expect("global key config serializes");
+    xxh3(&bytes)
 }
