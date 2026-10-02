@@ -1,210 +1,23 @@
-//! WASM components for JavaScript plugins: the `component.load` and `component.call`
-//! host calls and the wire encoding of component values (see `sdk/index.ts`).
+//! The wire encoding of component values exchanged with `sdk/index.ts`.
 
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Instant;
-
-use rpp_js::HostReply;
-use rpp_wasm::{Error as WasmError, Value as WasmValue, ValueType, WasmInstance};
-use serde::Deserialize;
+use rpp_wasm::{Function, Value as WasmValue, ValueType};
 use serde_json::{json, Map, Value};
 
-use super::access::RuntimeAccess;
-
-static NEXT_JOB: AtomicU64 = AtomicU64::new(0);
-
-struct Slot {
-    name: String,
-    /// `None` once a call has trapped or timed out.
-    instance: Option<WasmInstance>,
-}
-
-/// The component instances loaded during one JavaScript job.
-pub(super) struct Components {
-    job: u64,
-    slots: Vec<Slot>,
-}
-
-#[derive(Deserialize)]
-struct LoadArgs {
-    name: String,
-}
-
-#[derive(Deserialize)]
-struct CallArgs {
-    handle: String,
-    path: String,
-    args: Vec<Value>,
-}
-
-impl Components {
-    pub(super) fn new() -> Self {
-        Self {
-            job: NEXT_JOB.fetch_add(1, Ordering::Relaxed),
-            slots: Vec::new(),
-        }
-    }
-
-    pub(super) fn load(
-        &mut self,
-        access: &RuntimeAccess,
-        deadline: Instant,
-        value: Value,
-    ) -> Result<HostReply, String> {
-        let args: LoadArgs = parse("component.load", value)?;
-        let component = access
-            .components
-            .get(&args.name)
-            .ok_or_else(|| format!("unknown component `{}`", args.name))?;
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        let instance = match component
-            .instantiate_with_deadline(access.wasm_permissions(), remaining)
-        {
-            Ok(instance) => instance,
-            Err(error @ WasmError::Timeout(_)) => {
-                return Ok(HostReply {
-                    value: json!({ "failure": { "kind": "timeout", "message": error.to_string() } }),
-                    bytes: None,
-                });
-            }
-            Err(error) => {
-                return Err(format!(
-                    "component `{}` failed to instantiate: {error}",
-                    args.name
-                ));
-            }
-        };
-        let functions: Vec<Value> = component
-            .schema()
-            .functions
+/// The JSON descriptor of an export: `{ path, params: [[name, type]], results: [type] }`.
+pub(super) fn function_json(function: &Function) -> Value {
+    json!({
+        "path": function.path,
+        "params": function
+            .params
             .iter()
-            .map(|function| {
-                json!({
-                    "path": function.path,
-                    "params": function
-                        .params
-                        .iter()
-                        .map(|(name, ty)| json!([name, type_json(ty)]))
-                        .collect::<Vec<_>>(),
-                    "results": function.results.iter().map(type_json).collect::<Vec<_>>(),
-                })
-            })
-            .collect();
-        let handle = format!("{}:{}", self.job, self.slots.len());
-        self.slots.push(Slot {
-            name: args.name,
-            instance: Some(instance),
-        });
-        Ok(HostReply {
-            value: json!({ "handle": handle, "functions": functions }),
-            bytes: None,
-        })
-    }
-
-    pub(super) fn call(
-        &mut self,
-        access: &RuntimeAccess,
-        deadline: Instant,
-        value: Value,
-        bytes: Option<Vec<u8>>,
-    ) -> Result<HostReply, String> {
-        let args: CallArgs = parse("component.call", value)?;
-        let slot = self.slot(&args.handle)?;
-        let function = access
-            .components
-            .get(&slot.name)
-            .and_then(|component| {
-                component
-                    .schema()
-                    .functions
-                    .iter()
-                    .find(|function| function.path == args.path)
-            })
-            .ok_or_else(|| format!("component `{}` has no export `{}`", slot.name, args.path))?;
-        if args.args.len() != function.params.len() {
-            return Err(format!(
-                "export `{}` expects {} argument(s), got {}",
-                args.path,
-                function.params.len(),
-                args.args.len()
-            ));
-        }
-        let bytes = bytes.unwrap_or_default();
-        let params = args
-            .args
-            .iter()
-            .zip(&function.params)
-            .map(|(value, (name, ty))| {
-                from_wire(value, ty, &bytes)
-                    .map_err(|message| format!("invalid parameter `{name}`: {message}"))
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-
-        let instance = slot
-            .instance
-            .as_mut()
-            .ok_or("component handle poisoned by an earlier trap or timeout")?;
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        let failure = |kind: &str, error: &WasmError| {
-            Ok(HostReply {
-                value: json!({ "failure": { "kind": kind, "message": error.to_string() } }),
-                bytes: None,
-            })
-        };
-        let results = match instance.call_with_deadline(&args.path, &params, remaining) {
-            Ok(results) => results,
-            Err(error @ WasmError::Timeout(_)) => {
-                slot.instance = None;
-                return failure("timeout", &error);
-            }
-            Err(error @ WasmError::Trap(_)) => {
-                slot.instance = None;
-                return failure("trap", &error);
-            }
-            Err(error) => return Err(error.to_string()),
-        };
-        if results.len() != function.results.len() {
-            return Err(format!(
-                "export `{}` returned {} value(s), but its schema declares {}",
-                args.path,
-                results.len(),
-                function.results.len()
-            ));
-        }
-        let mut out = Vec::new();
-        let results = results
-            .into_iter()
-            .zip(&function.results)
-            .enumerate()
-            .map(|(index, (value, ty))| {
-                to_wire(value, ty, &mut out)
-                    .map_err(|message| format!("invalid result {}: {message}", index + 1))
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        Ok(HostReply {
-            value: json!({ "results": results }),
-            bytes: Some(out),
-        })
-    }
-
-    fn slot(&mut self, handle: &str) -> Result<&mut Slot, String> {
-        let released = || "component handle released".to_string();
-        let (job, index) = handle.split_once(':').ok_or_else(released)?;
-        if job.parse::<u64>().ok() != Some(self.job) {
-            return Err(released());
-        }
-        let index: usize = index.parse().map_err(|_| released())?;
-        self.slots.get_mut(index).ok_or_else(released)
-    }
-}
-
-fn parse<T: serde::de::DeserializeOwned>(name: &str, value: Value) -> Result<T, String> {
-    serde_json::from_value(value)
-        .map_err(|error| format!("invalid arguments for `{name}`: {error}"))
+            .map(|(name, ty)| json!([name, type_json(ty)]))
+            .collect::<Vec<_>>(),
+        "results": function.results.iter().map(type_json).collect::<Vec<_>>(),
+    })
 }
 
 /// The JSON descriptor of a value type.
-pub(super) fn type_json(ty: &ValueType) -> Value {
+fn type_json(ty: &ValueType) -> Value {
     let optional = |ty: Option<&ValueType>| ty.map_or(Value::Null, type_json);
     match ty {
         ValueType::Bool => json!("bool"),
@@ -275,6 +88,18 @@ fn array<'a>(value: &'a Value, what: &str) -> Result<&'a [Value], String> {
         .ok_or_else(|| format!("expected {what} array, got {value}"))
 }
 
+fn object<'a>(value: &'a Value, what: &str) -> Result<&'a Map<String, Value>, String> {
+    value
+        .as_object()
+        .ok_or_else(|| format!("expected a {what} object, got {value}"))
+}
+
+fn string<'a>(value: &'a Value, what: &str) -> Result<&'a str, String> {
+    value
+        .as_str()
+        .ok_or_else(|| format!("expected {what}, got {value}"))
+}
+
 fn payload<'a>(
     value: Option<&'a Value>,
     ty: Option<&ValueType>,
@@ -322,59 +147,11 @@ pub(super) fn from_wire(v: &Value, ty: &ValueType, bytes: &[u8]) -> Result<WasmV
         ValueType::U32 => WasmValue::U32(int(v, "u32")?),
         ValueType::S64 => WasmValue::S64(decimal(v, "s64")?),
         ValueType::U64 => WasmValue::U64(decimal(v, "u64")?),
-        ValueType::Float32 => {
-            let wide = float(v)?;
-            let narrow = wide as f32;
-            if wide.is_finite() && !narrow.is_finite() {
-                return Err(format!("number {wide} is outside the range of float32"));
-            }
-            WasmValue::Float32(narrow)
-        }
+        ValueType::Float32 => float32_from_wire(v)?,
         ValueType::Float64 => WasmValue::Float64(float(v)?),
-        ValueType::Char => {
-            let s = v
-                .as_str()
-                .ok_or_else(|| format!("expected a char string, got {v}"))?;
-            let mut chars = s.chars();
-            match (chars.next(), chars.next()) {
-                (Some(c), None) => WasmValue::Char(c),
-                _ => return Err("char expects one Unicode scalar value".into()),
-            }
-        }
-        ValueType::String => WasmValue::String(
-            v.as_str()
-                .ok_or_else(|| format!("expected a string, got {v}"))?
-                .to_string(),
-        ),
-        ValueType::List(inner) if **inner == ValueType::U8 => {
-            let range = array(v, "[offset, length]")?;
-            let [offset, len] = range else {
-                return Err("byte list expects [offset, length]".into());
-            };
-            let (offset, len) = (
-                offset
-                    .as_u64()
-                    .ok_or("byte list offset must be a non-negative integer")?,
-                len.as_u64()
-                    .ok_or("byte list length must be a non-negative integer")?,
-            );
-            let end = offset
-                .checked_add(len)
-                .filter(|end| *end <= bytes.len() as u64);
-            let end = end.ok_or_else(|| {
-                format!(
-                    "byte range {offset}+{len} exceeds the {} attached byte(s)",
-                    bytes.len()
-                )
-            })?;
-            WasmValue::List(
-                bytes[offset as usize..end as usize]
-                    .iter()
-                    .copied()
-                    .map(WasmValue::U8)
-                    .collect(),
-            )
-        }
+        ValueType::Char => char_from_wire(v)?,
+        ValueType::String => WasmValue::String(string(v, "a string")?.to_string()),
+        ValueType::List(inner) if **inner == ValueType::U8 => bytes_from_wire(v, bytes)?,
         ValueType::List(inner) => WasmValue::List(
             array(v, "list")?
                 .iter()
@@ -384,66 +161,11 @@ pub(super) fn from_wire(v: &Value, ty: &ValueType, bytes: &[u8]) -> Result<WasmV
                 })
                 .collect::<Result<_, _>>()?,
         ),
-        ValueType::Record(fields) => {
-            let object = v
-                .as_object()
-                .ok_or_else(|| format!("expected a record object, got {v}"))?;
-            if let Some(extra) = object.keys().find(|k| !fields.iter().any(|(n, _)| n == *k)) {
-                return Err(format!("unknown record field `{extra}`"));
-            }
-            WasmValue::Record(
-                fields
-                    .iter()
-                    .map(|(name, ty)| {
-                        let field = object
-                            .get(name)
-                            .ok_or_else(|| format!("missing record field `{name}`"))?;
-                        let field = from_wire(field, ty, bytes)
-                            .map_err(|m| format!("field `{name}`: {m}"))?;
-                        Ok((name.clone(), field))
-                    })
-                    .collect::<Result<_, String>>()?,
-            )
-        }
-        ValueType::Tuple(types) => {
-            let items = array(v, "tuple")?;
-            if items.len() != types.len() {
-                return Err(format!(
-                    "tuple expects {} element(s), got {}",
-                    types.len(),
-                    items.len()
-                ));
-            }
-            WasmValue::Tuple(
-                items
-                    .iter()
-                    .zip(types)
-                    .enumerate()
-                    .map(|(i, (e, t))| {
-                        from_wire(e, t, bytes).map_err(|m| format!("tuple element {i}: {m}"))
-                    })
-                    .collect::<Result<_, _>>()?,
-            )
-        }
-        ValueType::Variant(cases) => {
-            let object = v
-                .as_object()
-                .ok_or_else(|| format!("expected a variant object, got {v}"))?;
-            let tag = object
-                .get("tag")
-                .and_then(Value::as_str)
-                .ok_or("variant requires a string `tag`")?;
-            let ty = case(cases, tag, "variant")?;
-            let value = payload(object.get("val"), ty.as_ref())
-                .map_err(|m| format!("variant case `{tag}`: {m}"))?;
-            let value = boxed(value, ty.as_ref(), bytes)
-                .map_err(|m| format!("variant case `{tag}`: {m}"))?;
-            WasmValue::Variant(tag.to_string(), value)
-        }
+        ValueType::Record(fields) => record_from_wire(v, fields, bytes)?,
+        ValueType::Tuple(types) => tuple_from_wire(v, types, bytes)?,
+        ValueType::Variant(cases) => variant_from_wire(v, cases, bytes)?,
         ValueType::Enum(cases) => {
-            let name = v
-                .as_str()
-                .ok_or_else(|| format!("expected an enum string, got {v}"))?;
+            let name = string(v, "an enum string")?;
             if !cases.iter().any(|c| c == name) {
                 return Err(format!("unknown enum case `{name}`"));
             }
@@ -454,43 +176,154 @@ pub(super) fn from_wire(v: &Value, ty: &ValueType, bytes: &[u8]) -> Result<WasmV
             [some] => WasmValue::Option(Some(Box::new(from_wire(some, inner, bytes)?))),
             _ => return Err("option expects [] or [value]".into()),
         },
-        ValueType::Result { ok, err } => {
-            let object = v
-                .as_object()
-                .ok_or_else(|| format!("expected a result object, got {v}"))?;
-            let (branch, ty) = match (object.get("ok"), object.get("err")) {
-                (Some(v), None) => (v, ok),
-                (None, Some(v)) => (v, err),
-                _ => return Err("result must contain exactly one of `ok` or `err`".into()),
-            };
-            let value = payload(Some(branch), ty.as_deref())?;
-            let value = boxed(value, ty.as_deref(), bytes)?;
-            WasmValue::Result(if object.contains_key("ok") {
-                Ok(value)
-            } else {
-                Err(value)
-            })
-        }
-        ValueType::Flags(allowed) => {
-            let mut flags: Vec<String> = Vec::new();
-            for item in array(v, "flags")? {
-                let name = item
-                    .as_str()
-                    .ok_or_else(|| format!("flag must be a string, got {item}"))?;
-                if !allowed.iter().any(|a| a == name) {
-                    return Err(format!("unknown flag `{name}`"));
-                }
-                if flags.iter().any(|f| f == name) {
-                    return Err(format!("flag `{name}` was specified more than once"));
-                }
-                flags.push(name.to_string());
-            }
-            WasmValue::Flags(flags)
-        }
+        ValueType::Result { ok, err } => result_from_wire(v, ok.as_deref(), err.as_deref(), bytes)?,
+        ValueType::Flags(allowed) => flags_from_wire(v, allowed)?,
         ValueType::Unsupported(kind) => {
             return Err(format!("unsupported component value type `{kind}`"))
         }
     })
+}
+
+fn float32_from_wire(v: &Value) -> Result<WasmValue, String> {
+    let wide = float(v)?;
+    let narrow = wide as f32;
+    if wide.is_finite() && !narrow.is_finite() {
+        return Err(format!("number {wide} is outside the range of float32"));
+    }
+    Ok(WasmValue::Float32(narrow))
+}
+
+fn char_from_wire(v: &Value) -> Result<WasmValue, String> {
+    let mut chars = string(v, "a char string")?.chars();
+    match (chars.next(), chars.next()) {
+        (Some(c), None) => Ok(WasmValue::Char(c)),
+        _ => Err("char expects one Unicode scalar value".into()),
+    }
+}
+
+/// A byte list, sent as `[offset, length]` into the call's attached bytes.
+fn bytes_from_wire(v: &Value, bytes: &[u8]) -> Result<WasmValue, String> {
+    let [offset, len] = array(v, "[offset, length]")? else {
+        return Err("byte list expects [offset, length]".into());
+    };
+    let offset = offset
+        .as_u64()
+        .ok_or("byte list offset must be a non-negative integer")?;
+    let len = len
+        .as_u64()
+        .ok_or("byte list length must be a non-negative integer")?;
+    let end = offset
+        .checked_add(len)
+        .filter(|end| *end <= bytes.len() as u64)
+        .ok_or_else(|| {
+            format!(
+                "byte range {offset}+{len} exceeds the {} attached byte(s)",
+                bytes.len()
+            )
+        })?;
+    Ok(WasmValue::List(
+        bytes[offset as usize..end as usize]
+            .iter()
+            .copied()
+            .map(WasmValue::U8)
+            .collect(),
+    ))
+}
+
+fn record_from_wire(
+    v: &Value,
+    fields: &[(String, ValueType)],
+    bytes: &[u8],
+) -> Result<WasmValue, String> {
+    let object = object(v, "record")?;
+    if let Some(extra) = object.keys().find(|k| !fields.iter().any(|(n, _)| n == *k)) {
+        return Err(format!("unknown record field `{extra}`"));
+    }
+    let fields = fields
+        .iter()
+        .map(|(name, ty)| {
+            let field = object
+                .get(name)
+                .ok_or_else(|| format!("missing record field `{name}`"))?;
+            let field = from_wire(field, ty, bytes).map_err(|m| format!("field `{name}`: {m}"))?;
+            Ok((name.clone(), field))
+        })
+        .collect::<Result<_, String>>()?;
+    Ok(WasmValue::Record(fields))
+}
+
+fn tuple_from_wire(v: &Value, types: &[ValueType], bytes: &[u8]) -> Result<WasmValue, String> {
+    let items = array(v, "tuple")?;
+    if items.len() != types.len() {
+        return Err(format!(
+            "tuple expects {} element(s), got {}",
+            types.len(),
+            items.len()
+        ));
+    }
+    let items = items
+        .iter()
+        .zip(types)
+        .enumerate()
+        .map(|(i, (e, t))| from_wire(e, t, bytes).map_err(|m| format!("tuple element {i}: {m}")))
+        .collect::<Result<_, _>>()?;
+    Ok(WasmValue::Tuple(items))
+}
+
+fn variant_from_wire(
+    v: &Value,
+    cases: &[(String, Option<ValueType>)],
+    bytes: &[u8],
+) -> Result<WasmValue, String> {
+    let object = object(v, "variant")?;
+    let tag = object
+        .get("tag")
+        .and_then(Value::as_str)
+        .ok_or("variant requires a string `tag`")?;
+    let ty = case(cases, tag, "variant")?;
+    let value = payload(object.get("val"), ty.as_ref())
+        .map_err(|m| format!("variant case `{tag}`: {m}"))?;
+    let value =
+        boxed(value, ty.as_ref(), bytes).map_err(|m| format!("variant case `{tag}`: {m}"))?;
+    Ok(WasmValue::Variant(tag.to_string(), value))
+}
+
+fn result_from_wire(
+    v: &Value,
+    ok: Option<&ValueType>,
+    err: Option<&ValueType>,
+    bytes: &[u8],
+) -> Result<WasmValue, String> {
+    let object = object(v, "result")?;
+    let (branch, ty) = match (object.get("ok"), object.get("err")) {
+        (Some(v), None) => (v, ok),
+        (None, Some(v)) => (v, err),
+        _ => return Err("result must contain exactly one of `ok` or `err`".into()),
+    };
+    let value = payload(Some(branch), ty)?;
+    let value = boxed(value, ty, bytes)?;
+    Ok(WasmValue::Result(if object.contains_key("ok") {
+        Ok(value)
+    } else {
+        Err(value)
+    }))
+}
+
+fn flags_from_wire(v: &Value, allowed: &[String]) -> Result<WasmValue, String> {
+    let mut flags: Vec<String> = Vec::new();
+    for item in array(v, "flags")? {
+        let name = item
+            .as_str()
+            .ok_or_else(|| format!("flag must be a string, got {item}"))?;
+        if !allowed.iter().any(|a| a == name) {
+            return Err(format!("unknown flag `{name}`"));
+        }
+        if flags.iter().any(|f| f == name) {
+            return Err(format!("flag `{name}` was specified more than once"));
+        }
+        flags.push(name.to_string());
+    }
+    Ok(WasmValue::Flags(flags))
 }
 
 fn float_wire(value: f64) -> Value {
@@ -540,14 +373,7 @@ pub(super) fn to_wire(v: WasmValue, ty: &ValueType, out: &mut Vec<u8>) -> Result
         (WasmValue::Char(v), ValueType::Char) => json!(v.to_string()),
         (WasmValue::String(v), ValueType::String) => json!(v),
         (WasmValue::List(items), ValueType::List(inner)) if **inner == ValueType::U8 => {
-            let offset = out.len();
-            for item in &items {
-                let WasmValue::U8(byte) = item else {
-                    return mismatch(inner);
-                };
-                out.push(*byte);
-            }
-            json!([offset, items.len()])
+            bytes_to_wire(&items, inner, out)?
         }
         (WasmValue::List(items), ValueType::List(inner)) => Value::Array(
             items
@@ -556,16 +382,7 @@ pub(super) fn to_wire(v: WasmValue, ty: &ValueType, out: &mut Vec<u8>) -> Result
                 .collect::<Result<_, _>>()?,
         ),
         (WasmValue::Record(fields), ValueType::Record(types)) if fields.len() == types.len() => {
-            let mut object = Map::new();
-            for ((name, value), (expected, ty)) in fields.into_iter().zip(types) {
-                if &name != expected {
-                    return Err(format!(
-                        "record field `{name}` where `{expected}` was declared"
-                    ));
-                }
-                object.insert(name, to_wire(value, ty, out)?);
-            }
-            Value::Object(object)
+            record_to_wire(fields, types, out)?
         }
         (WasmValue::Tuple(items), ValueType::Tuple(types)) if items.len() == types.len() => {
             Value::Array(
@@ -599,10 +416,41 @@ pub(super) fn to_wire(v: WasmValue, ty: &ValueType, out: &mut Vec<u8>) -> Result
     })
 }
 
+/// Append a byte list to `out` and return its `[offset, length]`.
+fn bytes_to_wire(
+    items: &[WasmValue],
+    inner: &ValueType,
+    out: &mut Vec<u8>,
+) -> Result<Value, String> {
+    let offset = out.len();
+    for item in items {
+        let WasmValue::U8(byte) = item else {
+            return mismatch(inner);
+        };
+        out.push(*byte);
+    }
+    Ok(json!([offset, items.len()]))
+}
+
+fn record_to_wire(
+    fields: Vec<(String, WasmValue)>,
+    types: &[(String, ValueType)],
+    out: &mut Vec<u8>,
+) -> Result<Value, String> {
+    let mut object = Map::new();
+    for ((name, value), (expected, ty)) in fields.into_iter().zip(types) {
+        if &name != expected {
+            return Err(format!(
+                "record field `{name}` where `{expected}` was declared"
+            ));
+        }
+        object.insert(name, to_wire(value, ty, out)?);
+    }
+    Ok(Value::Object(object))
+}
+
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
-
     use super::*;
 
     fn wire(ty: &ValueType, v: Value, bytes: &[u8]) -> Result<WasmValue, String> {
@@ -740,17 +588,5 @@ mod tests {
         for (ty, expected) in cases {
             assert_eq!(type_json(&ty), expected);
         }
-    }
-
-    #[test]
-    fn stale_handle_from_previous_job_rejected() {
-        let access = RuntimeAccess::sandboxed(PathBuf::from("."));
-        let previous = Components::new();
-        let mut current = Components::new();
-        let call = json!({ "handle": format!("{}:0", previous.job), "path": "f", "args": [] });
-        let error = current
-            .call(&access, Instant::now(), call, None)
-            .unwrap_err();
-        assert_eq!(error, "component handle released");
     }
 }
