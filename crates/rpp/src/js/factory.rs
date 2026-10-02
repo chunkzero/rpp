@@ -106,13 +106,8 @@ impl JsPluginFactory {
     /// source-mapped stacks), a missing default export, or invalid processor
     /// declarations; I/O and manifest errors otherwise.
     pub fn load(spec: JsPluginSpec<'_>) -> Result<Self> {
-        let JsPluginSpec {
-            dir,
-            project_root,
-            config,
-            plugin,
-            ..
-        } = spec;
+        let (dir, project_root) = (spec.dir, spec.project_root);
+        let (config, plugin) = (spec.config, spec.plugin);
         plugin.validate(&project_root.join(CONFIG_FILE))?;
         let (manifest, manifest_source) = PluginManifest::load_with_source(dir)?;
         let id = manifest.id.clone();
