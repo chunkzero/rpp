@@ -8,7 +8,6 @@ use rpp::config::PngSetting;
 use rpp::engine::BuildResult;
 use rpp_squash::{
     copy_tree, run_packsquash, squash_dir, write_zip, PngLevel, SquashOptions, SquashReport,
-    ZipOptions,
 };
 
 use crate::codegen;
@@ -150,15 +149,16 @@ fn run_squash(project: &Project, output_dir: &Path) -> Result<()> {
             ui::phase("Squashing (builtin)");
             let start = Instant::now();
             let staging = stage_release(project, output_dir, &zip_path)?;
-            let opts = SquashOptions::builder()
-                .json(cfg.json)
-                .png(png_level(cfg.png))
-                .strip(cfg.strip.clone())
-                .build();
+            let opts = SquashOptions {
+                json: cfg.json,
+                png: png_level(cfg.png),
+                strip: cfg.strip.clone(),
+            };
             let report = squash_dir(staging.path(), &opts).context("optimizing release files")?;
             report_squash(&report);
 
-            write_release_zip(staging.path(), &zip_path)?;
+            write_zip(staging.path(), &zip_path)
+                .with_context(|| format!("writing zip {}", zip_path.display()))?;
             ui::detail(format!("zip -> {}", zip_path.display()));
             ui::detail(format!(
                 "squash finished in {}",
@@ -200,108 +200,10 @@ fn stage_release(
     Ok(staging)
 }
 
-/// Write a deterministic release zip through a sibling temporary file.
-fn write_release_zip(staging_dir: &Path, zip_path: &Path) -> Result<()> {
-    let parent = zip_path
-        .parent()
-        .filter(|p| !p.as_os_str().is_empty())
-        .unwrap_or_else(|| Path::new("."));
-    let tmp = tempfile::Builder::new()
-        .prefix(".rpp-release-")
-        .tempfile_in(parent)
-        .with_context(|| format!("staging zip in {}", parent.display()))?;
-
-    write_zip(staging_dir, tmp.path(), &ZipOptions::default())
-        .with_context(|| format!("writing zip {}", zip_path.display()))?;
-    tmp.as_file()
-        .sync_all()
-        .with_context(|| format!("flushing zip {}", zip_path.display()))?;
-    // Temporary files are private by default; the archive is a shareable artifact.
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        tmp.as_file()
-            .set_permissions(std::fs::Permissions::from_mode(0o644))
-            .with_context(|| format!("setting permissions on {}", zip_path.display()))?;
-    }
-    tmp.persist(zip_path)
-        .map_err(|error| error.error)
-        .with_context(|| format!("replacing zip {}", zip_path.display()))?;
-    Ok(())
-}
-
 fn png_level(setting: PngSetting) -> PngLevel {
     match setting {
         PngSetting::Off => PngLevel::Off,
         PngSetting::Fast => PngLevel::Fast,
         PngSetting::Max => PngLevel::Max,
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn failed_zip_write_preserves_archive_and_cleans_staging() {
-        let dir = tempfile::tempdir().unwrap();
-        let input = tempfile::tempdir().unwrap();
-        std::fs::write(input.path().join("pack.mcmeta"), "{}").unwrap();
-        let path = dir.path().join("pack.zip");
-        write_release_zip(input.path(), &path).unwrap();
-        let previous = std::fs::read(&path).unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            assert_eq!(
-                std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
-                0o644
-            );
-        }
-
-        assert!(write_release_zip(&input.path().join("missing"), &path).is_err());
-        assert_eq!(std::fs::read(&path).unwrap(), previous);
-        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
-    }
-
-    #[test]
-    fn failed_zip_persist_cleans_staging() {
-        let dir = tempfile::tempdir().unwrap();
-        let input = tempfile::tempdir().unwrap();
-        let path = dir.path().join("pack.zip");
-        std::fs::create_dir(&path).unwrap();
-        std::fs::write(path.join("keep"), "previous").unwrap();
-
-        assert!(write_release_zip(input.path(), &path).is_err());
-        assert_eq!(
-            std::fs::read_to_string(path.join("keep")).unwrap(),
-            "previous"
-        );
-        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
-    }
-
-    #[test]
-    fn concurrent_zip_writes_use_independent_staging() {
-        let dir = tempfile::tempdir().unwrap();
-        let input = tempfile::tempdir().unwrap();
-        std::fs::write(input.path().join("pack.mcmeta"), "{}").unwrap();
-        let path = dir.path().join("pack.zip");
-        let fixed_temp = dir.path().join(".pack.zip.tmp");
-        std::fs::write(&fixed_temp, "unrelated").unwrap();
-        write_release_zip(input.path(), &path).unwrap();
-        let previous = std::fs::read(&path).unwrap();
-        let barrier = std::sync::Barrier::new(2);
-        std::thread::scope(|scope| {
-            let one = scope.spawn(|| {
-                barrier.wait();
-                write_release_zip(input.path(), &path).unwrap();
-            });
-            barrier.wait();
-            write_release_zip(input.path(), &path).unwrap();
-            one.join().unwrap();
-        });
-        assert_eq!(std::fs::read(&path).unwrap(), previous);
-        assert_eq!(std::fs::read_to_string(fixed_temp).unwrap(), "unrelated");
-        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 2);
     }
 }
