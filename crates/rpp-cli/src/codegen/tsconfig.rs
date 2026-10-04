@@ -51,7 +51,12 @@ pub(super) fn tsconfig(plugin_configs: Option<&BTreeMap<String, PathBuf>>) -> St
             } else {
                 path
             };
-            let path = path.to_string_lossy().replace('\\', "/");
+            let path = path.to_string_lossy();
+            // tsc cannot resolve Windows verbatim paths, which canonicalization produces.
+            let path = path
+                .strip_prefix(r"\\?\")
+                .unwrap_or(&path)
+                .replace('\\', "/");
             text.push_str(&format!(",\n      \"#plugins/{name}\": [{path:?}]"));
         }
     }
@@ -78,5 +83,15 @@ mod tests {
         let generated = tsconfig(Some(&configs));
         assert!(generated.contains("config.d.ts"));
         assert!(!generated.contains("config.js"));
+    }
+
+    #[test]
+    fn verbatim_windows_paths_are_mapped_as_drive_paths() {
+        let configs = BTreeMap::from([(
+            "local".to_string(),
+            PathBuf::from(r"\\?\C:\plugins\local\config.ts"),
+        )]);
+        assert!(tsconfig(Some(&configs))
+            .contains(r##""#plugins/local": ["C:/plugins/local/config.ts"]"##));
     }
 }

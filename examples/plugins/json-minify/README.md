@@ -33,7 +33,7 @@ pack is as small as possible.
 import jsonMinify from "#plugins/json-minify";
 
 export default defineConfig({
-  pack: { name: "my-pack" },
+  pack: { name: "my-pack", format: 34 },
   plugins: [jsonMinify({ pretty: false })],
 });
 ```

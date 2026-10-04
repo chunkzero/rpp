@@ -6,7 +6,7 @@ use crate::model::BuildStats;
 use crate::source::SourceFile;
 
 use super::external::PublicationPlan;
-use super::output::OutputSet;
+use super::output::{OutputContent, OutputSet};
 use super::result::ChangeReport;
 use super::{boundary, output_sync, Engine};
 
@@ -43,6 +43,14 @@ impl<'a> BuildSession<'a> {
             source_files: sources.iter().map(|source| source.rel.clone()).collect(),
             stats: BuildStats::default(),
         }
+    }
+
+    /// Add the `pack.mcmeta` generated from the config to the output.
+    pub(super) fn insert_pack_metadata(&mut self) -> Result<()> {
+        let object = self.store.put(&self.engine.config.pack.mcmeta())?;
+        self.output
+            .insert_config("pack.mcmeta", OutputContent::Object(object));
+        Ok(())
     }
 
     /// Publish external outputs and the pack output, then persist the manifest and drop

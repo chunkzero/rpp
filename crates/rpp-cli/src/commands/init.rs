@@ -99,7 +99,6 @@ fn scaffold(root: &Path, name: &str, description: &str, pack_format: u32) -> Res
         root.join(CONFIG_FILE),
         root.join(PACKAGE_MANIFEST),
         root.join(".gitignore"),
-        root.join("src/pack.mcmeta"),
         root.join("plugins/hello").join(PACKAGE_MANIFEST),
         root.join("plugins/hello/src/plugin.ts"),
     ];
@@ -116,10 +115,6 @@ fn scaffold(root: &Path, name: &str, description: &str, pack_format: u32) -> Res
 
     let src = root.join("src");
     std::fs::create_dir_all(&src).with_context(|| format!("creating {}", src.display()))?;
-    write_file(
-        &src.join("pack.mcmeta"),
-        &pack_mcmeta(description, pack_format),
-    )?;
 
     // Starter local plugin under plugins/hello/.
     let plugin = root.join("plugins/hello");
@@ -153,7 +148,7 @@ export default defineConfig({{
   pack: {{
     name: {name},
     description: {description},
-    packFormat: {pack_format},
+    format: {pack_format},
   }},
   build: {{ source: "src", output: "dist" }},
   // A starter local plugin. Add more with `rpp add <name>`.
@@ -166,19 +161,6 @@ export default defineConfig({{
 /// A TypeScript string literal for `value`.
 fn ts_string(value: &str) -> String {
     serde_json::to_string(value).expect("string serializes")
-}
-
-fn pack_mcmeta(description: &str, pack_format: u32) -> String {
-    let value = serde_json::json!({
-        "pack": {
-            "pack_format": pack_format,
-            "description": description,
-        }
-    });
-    format!(
-        "{}\n",
-        serde_json::to_string_pretty(&value).expect("JSON value serializes")
-    )
 }
 
 const GITIGNORE: &str = "/.rpp/\n/dist/\n";

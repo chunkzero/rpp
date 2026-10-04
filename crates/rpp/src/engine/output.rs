@@ -46,6 +46,8 @@ enum Owner {
     Source(String),
     /// A generator plugin.
     Plugin(String),
+    /// Generated from `rpp.config.ts`.
+    Config,
 }
 
 impl Owner {
@@ -53,6 +55,7 @@ impl Owner {
         match self {
             Self::Source(rel) => format!("source `{rel}`"),
             Self::Plugin(id) => format!("plugin `{id}`"),
+            Self::Config => "rpp.config.ts".into(),
         }
     }
 }
@@ -69,6 +72,12 @@ impl OutputSet {
         &self.files
     }
 
+    /// Add `path` as generated from the config, before any source or generator output.
+    pub(super) fn insert_config(&mut self, path: &str, content: OutputContent) {
+        self.owners.insert(path.to_string(), Owner::Config);
+        self.files.insert(path.to_string(), content);
+    }
+
     /// Add `path` as an output of the processor chain of `source`.
     ///
     /// Each path may be produced by only one source file.
@@ -81,11 +90,9 @@ impl OutputSet {
         validate_relative(path).map_err(Error::Build)?;
         let owner = Owner::Source(source.to_string());
         if let Some(previous) = self.owners.insert(path.to_string(), owner) {
-            let Owner::Source(previous) = previous else {
-                unreachable!("only sources claim outputs during the file phase")
-            };
             return Err(Error::Build(format!(
-                "source files `{previous}` and `{source}` both produce `{path}`"
+                "source `{source}` produces `{path}`, which {} already produces",
+                previous.describe()
             )));
         }
         self.files.insert(path.to_string(), content);

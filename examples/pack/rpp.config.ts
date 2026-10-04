@@ -7,7 +7,7 @@ export default defineConfig({
   pack: {
     name: "rpp-example-pack",
     description: "A tiny but complete Minecraft resource pack, built end-to-end by rpp.",
-    packFormat: 34,
+    format: 34,
   },
   build: {
     source: "src",
@@ -26,8 +26,7 @@ export default defineConfig({
   plugins: [
     // 1. Compact every JSON / .mcmeta file.
     jsonMinify({ pretty: false }),
-    // 2. Validate pack.mcmeta and texture animation metadata; fail the build on anything
-    //    malformed or a packFormat mismatch.
+    // 2. Validate texture animation metadata; fail the build on anything malformed.
     plugin("mcmeta-validate"),
     // 3. Fingerprint author-owned custom/ textures by content hash and emit rename_map.json.
     //    Scoped so vanilla texture references stay intact.

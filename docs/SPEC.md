@@ -64,11 +64,14 @@ import jsonMinify from "#plugins/json-minify";
 export default defineConfig({
   pack: {
     name: "my-pack", // used for zip filename; required
-    description: "An example pack", // exposed to plugins as ctx.pack.description
-    packFormat: 34, // optional; validated against src/pack.mcmeta if present
+    description: "An example pack", // text component; defaults to ""
+    format: { min: 34, max: 69 }, // required; a number or an inclusive { min, max } range
+    overlays: [{ directory: "modern", format: { min: 65, max: 69 } }], // optional, in order
+    filter: [{ namespace: "minecraft", path: "^textures/block/" }], // optional regexes
+    language: { en_pt: { name: "Pirate Speak", region: "Seven Seas", bidirectional: false } },
   },
   build: {
-    source: "src", // pack source dir (contains pack.mcmeta, assets/)
+    source: "src", // pack source dir (contains assets/)
     output: "dist", // output dir; zip goes to dist/<name>.zip
     workers: 0, // 0 = available_parallelism
     limits: { memoryLimitMb: 256, executionDeadlineSeconds: 60 }, // per plugin runtime / call
@@ -120,8 +123,12 @@ options?, access?)` builds an entry, and a plugin's config factory (a `definePlu
 Any granted capability other than `outputs` makes the plugin non-deterministic
 from RPP's point of view and disables cache replay for it.
 
-Source `pack.mcmeta` format validation runs on each build, rather than configuration
-loading, so configuration-only commands such as `clean` work with malformed sources.
+`pack` is the only source of pack metadata: every build generates `pack.mcmeta` from it, and
+a `pack.mcmeta` in the source directory fails the build (not configuration loading, so
+`clean` still works). Formats are always written as `min_format`/`max_format`; when the range
+starts below 65, `pack_format` (the range minimum) and `supported_formats` are added for older
+clients. Overlay entries all get `formats` when any overlay starts below 65, and none otherwise. Plugins see
+`ctx.pack = { name, description, format: { min, max } }`.
 
 ## 2. Plugin manifest: `rpp.json`
 
@@ -271,7 +278,7 @@ export default definePlugin<{ pretty?: boolean }>({
   get/set, and `file.drop()` (exclude from output, stops the chain). The runtime tracks whether
   mutation occurred to report Unchanged/Modified/Dropped.
 - **ctx** (all handlers): `ctx.plugin` (the plugin name), `ctx.options` (plugin options), and
-  `ctx.pack` (`{ name, description?, format? }`).
+  `ctx.pack` (`{ name, description, format: { min, max } }`).
 - **ctx** (generator, `onStart`, `onFinish`): additionally `ctx.discovered(name)` (§2).
   Processors do not get it.
 - **ctx** (generator): additionally `files(glob?)`, `sourceFiles(glob?)`, `read(path)` and
@@ -456,8 +463,9 @@ Build flow:
    Dirty files go to the worker pool.
 3. Generators re-run iff their read-set replays to different hashes (or global_key
    changed). Their reads during the run are recorded for next time.
-   Every pack path has an owner: the source file whose processors produced it, or the
-   generator plugin that last emitted it. A generator may emit or remove a path only if it is
+   Every pack path has an owner: `rpp.config.ts` for the generated `pack.mcmeta`, the source
+   file whose processors produced it, or the generator plugin that last emitted it. Processors
+   never see `pack.mcmeta`; a generator changes it only through `overrides`. A generator may emit or remove a path only if it is
    unowned, owned by that plugin, or matched by the plugin's `overrides` (ownership then moves
    to it or is cleared). Anything else is a build error naming the owner. Cache replay applies
    recorded emits/removes through the same check against the current state.
@@ -530,7 +538,7 @@ pub fn run_packsquash(binary: &str, pack_dir: &Path, zip_path: &Path, options_fi
 ## 9. CLI (`crates/rpp-cli`, binary name `rpp`)
 
 - `rpp init [dir]` — scaffold a TypeScript project: `rpp.config.ts`, `rpp.json`,
-  `plugins/hello/{rpp.json,src/plugin.ts}`, `pack.mcmeta` and `.gitignore`.
+  `plugins/hello/{rpp.json,src/plugin.ts}`, an empty `src/` and `.gitignore`.
 - `rpp build [--no-cache] [--no-squash] [--jobs N]` — full pipeline:
   resolve plugins (lockfile-aware) → build (incremental) → squash → zip.
   Console output: per-phase timing, cache hit counts, squash savings.
@@ -644,11 +652,11 @@ example and Spigot caller integration.
 
 - `examples/pack/` — a complete project: `rpp.config.ts` and `rpp.json` (local example plugins
   as `path:` dependencies + squash enabled), a pack-local `catalog` plugin that uses `discover`
-  for item definitions, `src/pack.mcmeta`, real `assets/minecraft/...` content (a few
+  for item definitions, real `assets/minecraft/...` content (a few
   models, blockstates, lang files, textures — small hand-made PNGs are fine, generated
   by a checked-in script or tiny valid PNGs committed directly).
 - `examples/plugins/json-minify/` (processor), `examples/plugins/mcmeta-validate/`
-  (generator that validates pack.mcmeta + all `*.mcmeta` against pack_format),
+  (generator that validates texture animation `*.mcmeta` files),
   `examples/plugins/hash-rename/` (generator renaming processed output via content
   hash), `examples/plugins/grayscale-wasm/` (processor backed by a
   WASIp2 component built from a Rust guest crate; `just example-wasm`). Each is an `rpp.json`

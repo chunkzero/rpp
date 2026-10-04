@@ -174,6 +174,7 @@ impl Engine {
 
         let manifest = Manifest::empty(global_key);
         let mut session = BuildSession::new(self, store, prev.as_ref(), manifest, &sources);
+        session.insert_pack_metadata()?;
         session.process_files(sources)?;
         session.run_generators(&mut instances)?;
         let stats = session.stats.clone();

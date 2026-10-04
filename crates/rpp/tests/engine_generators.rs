@@ -71,10 +71,16 @@ fn generator_reads_use_the_pre_generator_snapshot() {
 
     let first = build(&project, vec![plugin()]);
     assert_eq!(first.generated, 1);
-    assert_eq!(project.read_out("observed.txt").as_deref(), Some("a.txt"));
+    assert_eq!(
+        project.read_out("observed.txt").as_deref(),
+        Some("a.txt\npack.mcmeta")
+    );
     let second = build(&project, vec![plugin()]);
     assert_eq!(second.generated, 0);
-    assert_eq!(project.read_out("observed.txt").as_deref(), Some("a.txt"));
+    assert_eq!(
+        project.read_out("observed.txt").as_deref(),
+        Some("a.txt\npack.mcmeta")
+    );
     assert!(second.changes.written.is_empty());
 }
 

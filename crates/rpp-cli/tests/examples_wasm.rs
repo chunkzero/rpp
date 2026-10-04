@@ -62,16 +62,11 @@ fn grayscale_project(tmp: &Path) -> PathBuf {
         br##"import { defineConfig, plugin } from "#rpp/config";
 
 export default defineConfig({
-  pack: { name: "gray", packFormat: 34 },
+  pack: { name: "gray", format: 34 },
   build: { workers: 1 },
   plugins: [plugin("grayscale-wasm")],
 });
 "##,
-    );
-    write(
-        &root,
-        "src/pack.mcmeta",
-        br#"{"pack":{"pack_format":34,"description":""}}"#,
     );
     let (red, translucent_blue) = ([255, 0, 0, 255], [0, 0, 255, 128]);
     write(

@@ -55,8 +55,8 @@ compiler. `rpp --version` reports the full version; `release.json` beside the ex
 records the full source SHA. Assets and SHA-256 sidecars are downloaded and compared
 in a draft before publication; prereleases never replace the latest stable release.
 A native matrix builds Linux x64/arm64, macOS x64/arm64, and Windows x64. Each
-packaged binary checks TypeScript and builds a Window WASIp2 UI without a compiler
-on PATH. A clean Ubuntu consumer also checks the installer without Rust or Node,
+packaged binary checks TypeScript and builds the example pack and a WASIp2 plugin
+without a compiler on PATH. A clean Ubuntu consumer also checks the installer without Rust or Node,
 and the publish job installs the release through the pinned Chunkzero aqua registry
 and runs `rpp check` using its bundled compiler.
 
@@ -83,11 +83,14 @@ import { defineConfig } from "#rpp/config";
 import jsonMinify from "#plugins/json-minify";
 
 export default defineConfig({
-  pack: { name: "my-pack", description: "My resource pack", packFormat: 34 },
+  pack: { name: "my-pack", description: "My resource pack", format: 34 },
   build: { source: "src", output: "dist" },
   plugins: [jsonMinify({ pretty: false })],
 });
 ```
+
+rpp generates `pack.mcmeta` from `pack`, so `src/` holds only pack content. `format` also takes
+an inclusive `{ min, max }` range, and `pack` accepts `overlays`, `filter`, and `language`.
 
 `rpp.json` lists the plugin packages the project depends on, either as registry
 version ranges or local directories:

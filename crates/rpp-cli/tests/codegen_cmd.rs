@@ -9,7 +9,7 @@ use common::run;
 fn project(root: &Path) {
     std::fs::write(
         root.join("rpp.config.ts"),
-        "export default { pack: { name: \"p\" } };\n",
+        "export default { pack: { name: \"p\", format: 34 } };\n",
     )
     .unwrap();
 }
@@ -265,7 +265,7 @@ fn build_runs_typescript_plugin() {
     std::fs::write(
         root.join("rpp.config.ts"),
         "import { defineConfig, plugin } from \"#rpp/config\";\n\
-         export default defineConfig({ pack: { name: \"p\" }, plugins: [plugin(\"upper\")] });\n",
+         export default defineConfig({ pack: { name: \"p\", format: 34 }, plugins: [plugin(\"upper\")] });\n",
     )
     .unwrap();
     std::fs::write(

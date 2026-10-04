@@ -37,7 +37,7 @@ fn scaffold(root: &Path, plugin_ts: &str) {
         r##"import { defineConfig, plugin } from "#rpp/config";
 
 export default defineConfig({
-  pack: { name: "js-component" },
+  pack: { name: "js-component", format: 34 },
   build: { workers: 1, wasm: { executionDeadlineSeconds: 1 } },
   plugins: [plugin("js-component")],
 });

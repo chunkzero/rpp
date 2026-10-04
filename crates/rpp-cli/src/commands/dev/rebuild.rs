@@ -254,7 +254,7 @@ mod tests {
     use super::*;
 
     const CONFIG: &str = r##"import { defineConfig } from "#rpp/config";
-export default defineConfig({ pack: { name: "test" } });
+export default defineConfig({ pack: { name: "test", format: 34 } });
 "##;
 
     #[test]
@@ -264,7 +264,7 @@ export default defineConfig({ pack: { name: "test" } });
         std::fs::create_dir(&source).unwrap();
         let config = root.path().join("rpp.config.ts");
         std::fs::write(&config, CONFIG).unwrap();
-        let file = source.join("pack.mcmeta");
+        let file = source.join("a.json");
         std::fs::write(&file, "{}").unwrap();
         let project = Project::discover(root.path()).unwrap();
         let (tx, _rx) = mpsc::unbounded_channel();
@@ -285,7 +285,7 @@ export default defineConfig({ pack: { name: "test" } });
             .unwrap();
         let event: serde_json::Value = serde_json::from_str(&event).unwrap();
         assert_eq!(event["type"], "reload");
-        assert_eq!(event["changed"], serde_json::json!(["pack.mcmeta"]));
+        assert_eq!(event["changed"], serde_json::json!(["a.json"]));
         assert_eq!(event["pack"], packs.metadata());
         assert_ne!(event["pack"], original);
 

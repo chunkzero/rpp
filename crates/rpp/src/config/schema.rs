@@ -22,16 +22,103 @@ pub struct Config {
     pub plugins: Vec<PluginConfig>,
 }
 
-/// `pack` section.
+/// `pack` section. RPP generates the pack's `pack.mcmeta` from it.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PackConfig {
     /// Pack name; used for the zip filename. Required.
     pub name: String,
-    /// Human-readable description; written into `pack.mcmeta` when generated.
-    pub description: Option<String>,
-    /// Pack format; validated against `src/pack.mcmeta` when present.
-    pub pack_format: Option<u32>,
+    /// Text component shown in the pack list: a string, array, or object.
+    #[serde(default = "empty_description")]
+    pub description: serde_json::Value,
+    /// Supported resource pack formats. Required.
+    pub format: FormatRange,
+    /// Overlay directories applied for a subset of formats, in order.
+    #[serde(default)]
+    pub overlays: Vec<OverlayConfig>,
+    /// Files from lower packs hidden by this pack.
+    #[serde(default)]
+    pub filter: Vec<FilterPattern>,
+    /// Languages added by this pack, keyed by language code.
+    #[serde(default)]
+    pub language: BTreeMap<String, LanguageConfig>,
+}
+
+fn empty_description() -> serde_json::Value {
+    serde_json::Value::String(String::new())
+}
+
+/// An inclusive range of resource pack formats: `34` or `{ min: 34, max: 69 }`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct FormatRange {
+    /// Lowest supported format.
+    pub min: u32,
+    /// Highest supported format.
+    pub max: u32,
+}
+
+impl<'de> Deserialize<'de> for FormatRange {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        use serde::de::Error as _;
+
+        let format = |value: &serde_json::Value| {
+            value.as_u64().and_then(|format| u32::try_from(format).ok())
+        };
+        let value = serde_json::Value::deserialize(deserializer)?;
+        let range = match &value {
+            serde_json::Value::Object(map) if map.len() == 2 => map
+                .get("min")
+                .and_then(format)
+                .zip(map.get("max").and_then(format))
+                .map(|(min, max)| FormatRange { min, max }),
+            value => format(value).map(|format| FormatRange {
+                min: format,
+                max: format,
+            }),
+        };
+        range.ok_or_else(|| {
+            D::Error::custom(format!(
+                "expected a format number or `{{ min, max }}` format numbers, got `{value}`"
+            ))
+        })
+    }
+}
+
+/// One `pack.overlays` entry.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct OverlayConfig {
+    /// Overlay directory at the pack root.
+    pub directory: String,
+    /// Formats the overlay applies to.
+    pub format: FormatRange,
+}
+
+/// One `pack.filter` pattern. Both fields are regular expressions; an omitted field
+/// matches everything.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct FilterPattern {
+    /// Namespace pattern.
+    pub namespace: Option<String>,
+    /// Path pattern.
+    pub path: Option<String>,
+}
+
+/// One `pack.language` entry.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct LanguageConfig {
+    /// Full language name.
+    pub name: String,
+    /// Country or region name.
+    pub region: String,
+    /// Whether the language reads right to left.
+    #[serde(default)]
+    pub bidirectional: bool,
 }
 
 /// Plugin runtime limits (`build.limits`).
@@ -76,7 +163,7 @@ impl Default for WasmConfig {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields, default)]
 pub struct BuildConfig {
-    /// Pack source directory (contains `pack.mcmeta`, `assets/`).
+    /// Pack source directory (contains `assets/`).
     pub source: PathBuf,
     /// Output directory; the zip is written to `<output>/<name>.zip`.
     pub output: PathBuf,

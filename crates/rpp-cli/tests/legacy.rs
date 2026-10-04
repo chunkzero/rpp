@@ -36,7 +36,7 @@ fn both_configs_ask_to_delete_rpp_toml() {
     write(
         dir.path(),
         "rpp.config.ts",
-        "export default { pack: { name: \"p\" } };\n",
+        "export default { pack: { name: \"p\", format: 34 } };\n",
     );
 
     let message = build_error(dir.path());
@@ -78,7 +78,7 @@ fn path_dependency_with_plugin_toml_is_rejected_with_guide() {
     write(
         root,
         "rpp.config.ts",
-        "export default { pack: { name: \"p\" } };\n",
+        "export default { pack: { name: \"p\", format: 34 } };\n",
     );
 
     let message = build_error(root);

@@ -16,13 +16,13 @@ fn config_ts(body: &str) -> String {
     )
 }
 
-/// A plugin that minifies `pack.mcmeta` and every `data.json`.
+/// A plugin that minifies every `data.json`.
 const MINIFY_PLUGIN: &str = r##"import { definePlugin } from "#rpp";
 
 export default definePlugin({
   processors: {
     minify: {
-      files: ["pack.mcmeta", "**/data.json"],
+      files: ["**/data.json"],
       run(_ctx, file) {
         file.text = JSON.stringify(JSON.parse(file.text));
       },
@@ -37,7 +37,7 @@ fn scaffold(root: &Path) {
         root,
         "rpp.config.ts",
         config_ts(
-            r#"  pack: { name: "test-pack", description: "fixture", packFormat: 34 },
+            r#"  pack: { name: "test-pack", description: "fixture", format: 34 },
   build: {
     source: "src",
     output: "dist",
@@ -54,11 +54,6 @@ fn scaffold(root: &Path) {
 
     let src = root.join("src");
     std::fs::create_dir_all(src.join("assets/minecraft")).unwrap();
-    std::fs::write(
-        src.join("pack.mcmeta"),
-        "{\n  \"pack\": {\n    \"pack_format\": 34,\n    \"description\": \"fixture\"\n  }\n}\n",
-    )
-    .unwrap();
     // A pretty-printed JSON file the plugin will minify.
     std::fs::write(
         src.join("assets/minecraft/data.json"),
@@ -165,8 +160,8 @@ fn no_squash_removes_stale_release_archive() {
     assert!(zip.is_file());
 
     std::fs::write(
-        root.join("src/pack.mcmeta"),
-        r#"{"pack":{"pack_format":34,"description":"updated"}}"#,
+        root.join("src/assets/minecraft/data.json"),
+        r#"{"updated":true}"#,
     )
     .unwrap();
     let output = build(root, &["--no-squash"]);
@@ -205,7 +200,7 @@ fn clean_does_not_load_plugins() {
         root,
         "rpp.config.ts",
         config_ts(
-            r#"  pack: { name: "test" },
+            r#"  pack: { name: "test", format: 34 },
   plugins: [plugin("missing")],"#,
         ),
     );
@@ -236,7 +231,7 @@ fn clean_rejects_output_outside_project() {
         &root,
         "rpp.config.ts",
         config_ts(
-            r#"  pack: { name: "test" },
+            r#"  pack: { name: "test", format: 34 },
   build: { output: "../victim" },"#,
         ),
     );

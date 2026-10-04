@@ -52,6 +52,6 @@ impl Project {
 
     /// A default config with `pack.name = "test-pack"`.
     pub fn config(&self) -> rpp::config::Config {
-        rpp::config::Config::new("test-pack")
+        rpp::config::Config::new("test-pack", 34)
     }
 }

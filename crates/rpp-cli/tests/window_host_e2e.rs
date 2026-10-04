@@ -71,7 +71,7 @@ fn config(hud_shaders: bool) -> String {
         r##"import {{ defineConfig, plugin }} from "#rpp/config";
 
 export default defineConfig({{
-  pack: {{ name: "window-host-fixture", packFormat: 84 }},
+  pack: {{ name: "window-host-fixture", format: 84 }},
   build: {{ source: "src", output: "dist", workers: 1 }},
   plugins: [
     plugin(
@@ -102,7 +102,7 @@ export default definePlugin<Options>({
       windows: [] as unknown[],
       huds: [],
       options: { hud_shaders: ctx.options.hudShaders === true },
-      target: { pack_format: ctx.pack.format },
+      target: { pack_format: ctx.pack.format.min },
     };
     const files: { path: string; contents: Uint8Array }[] = [];
     for (const path of ctx.sourceFiles("window/**")) {
@@ -134,11 +134,6 @@ fn scaffold(root: &Path, component: &Path) {
         root,
         "rpp.json",
         r#"{ "dependencies": { "window-host": "path:plugin" } }"#,
-    );
-    write(
-        root,
-        "src/pack.mcmeta",
-        r#"{"pack":{"pack_format":84,"description":"fixture"}}"#,
     );
     write(
         root,

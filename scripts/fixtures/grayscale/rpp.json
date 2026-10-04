@@ -1,0 +1,1 @@
+{ "dependencies": { "grayscale-wasm": "path:../examples/plugins/grayscale-wasm" } }

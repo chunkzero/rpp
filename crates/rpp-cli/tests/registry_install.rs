@@ -124,7 +124,7 @@ fn consumer(dir: &Path, server: &Server, source: &str) {
 import packed from "#plugins/packed";
 
 export default defineConfig({
-  pack: { name: "p" },
+  pack: { name: "p", format: 34 },
   plugins: [packed({ text: "x" })],
 });
 "##,

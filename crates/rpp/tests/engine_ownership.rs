@@ -91,6 +91,42 @@ fn generator_override_glob_allows_overwrite_and_remove() {
 }
 
 #[test]
+fn pack_mcmeta_comes_from_config_and_only_overrides_change_it() {
+    let project = Project::new();
+    project.write_src("a.txt", "a");
+    build(&project, Vec::new());
+    let generated: serde_json::Value =
+        serde_json::from_str(&project.read_out("pack.mcmeta").unwrap()).unwrap();
+    assert_eq!(generated["pack"]["pack_format"], 34);
+
+    let rewrite = || {
+        generator_factory("lang", |host| {
+            let mut mcmeta: serde_json::Value =
+                serde_json::from_slice(&host.read_file("pack.mcmeta").unwrap()).unwrap();
+            mcmeta["language"] = serde_json::json!({ "en_pt": { "name": "Pirate" } });
+            host.emit("pack.mcmeta", mcmeta.to_string().into_bytes());
+        })
+    };
+    let err = build_error(&project, vec![Arc::new(rewrite())]);
+    assert!(
+        err.contains("cannot emit `pack.mcmeta`: owned by rpp.config.ts"),
+        "{err}"
+    );
+    build(
+        &project,
+        vec![Arc::new(rewrite().with_overrides(&["pack.mcmeta"]))],
+    );
+    let rewritten: serde_json::Value =
+        serde_json::from_str(&project.read_out("pack.mcmeta").unwrap()).unwrap();
+    assert_eq!(rewritten["pack"]["pack_format"], 34);
+    assert_eq!(rewritten["language"]["en_pt"]["name"], "Pirate");
+
+    project.write_src("pack.mcmeta", "{}");
+    let err = build_error(&project, Vec::new());
+    assert!(err.contains("rpp generates `pack.mcmeta`"), "{err}");
+}
+
+#[test]
 fn generator_cannot_remove_other_plugins_emit() {
     let project = Project::new();
     project.write_src("a.txt", "a");

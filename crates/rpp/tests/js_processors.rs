@@ -64,7 +64,7 @@ export default definePlugin<{ suffix: string }>({
     tag: {
       files: "**/*",
       priority: 3,
-      run(ctx, file) { file.text = `${file.text}${ctx.options.suffix}|${ctx.plugin}|${ctx.pack.name}|${ctx.pack.format}`; },
+      run(ctx, file) { file.text = `${file.text}${ctx.options.suffix}|${ctx.plugin}|${ctx.pack.name}|${ctx.pack.format.min}-${ctx.pack.format.max}`; },
     },
   },
 });
@@ -74,7 +74,7 @@ export default definePlugin<{ suffix: string }>({
     assert_eq!(factory.processors()[0].priority, 3);
     let mut instance = factory.instantiate().unwrap();
     let (file, _) = process(instance.as_mut(), "tag", "a.txt", "x");
-    assert_eq!(text(&file), "x!|ts-test|test-pack|34");
+    assert_eq!(text(&file), "x!|ts-test|test-pack|34-34");
 }
 
 #[test]

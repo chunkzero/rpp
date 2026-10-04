@@ -42,8 +42,7 @@ pub fn try_load_in(
     dir: &Path,
     plugin: &PluginConfig,
 ) -> rpp::Result<JsPluginFactory> {
-    let mut config = Config::new("test-pack");
-    config.pack.pack_format = Some(34);
+    let config = Config::new("test-pack", 34);
     JsPluginFactory::load(JsPluginSpec {
         dir,
         project_root,

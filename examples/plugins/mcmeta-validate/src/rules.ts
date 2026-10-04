@@ -1,32 +1,9 @@
 const isObject = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
-/** A JSON object or array, the Lua `table` shapes a text component may take. */
-const isTable = (value: unknown): boolean => isObject(value) || Array.isArray(value);
-
 const isPositiveInteger = (value: unknown): boolean => Number.isInteger(value) && Number(value) > 0;
 
 const isIndex = (value: unknown): boolean => value === 0 || isPositiveInteger(value);
-
-/** Problems with the top-level `pack.mcmeta`; empty when valid. */
-export function validatePack(data: unknown, expectedFormat: number | undefined): string[] {
-  if (!isObject(data)) return ["pack.mcmeta must be a JSON object"];
-  const pack = data["pack"];
-  if (!isObject(pack)) return ["pack.mcmeta is missing the `pack` object"];
-
-  const problems: string[] = [];
-  const format = pack["pack_format"];
-  if (!isPositiveInteger(format)) problems.push("pack.pack_format must be a positive integer");
-  if (typeof pack["description"] !== "string" && !isTable(pack["description"])) {
-    problems.push("pack.description must be a string or a JSON text component");
-  }
-  if (expectedFormat !== undefined && isPositiveInteger(format) && format !== expectedFormat) {
-    problems.push(
-      `pack.pack_format (${format}) does not match rpp.config.ts packFormat (${expectedFormat})`,
-    );
-  }
-  return problems;
-}
 
 /**
  * Problems with one `*.png.mcmeta` animation file; empty when valid. Only the structurally
