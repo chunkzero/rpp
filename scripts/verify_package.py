@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify the packaged executable, bundled compiler, and Window WASIp2 consumer."""
+"""Verify the packaged executable, bundled compiler, example pack, and WASIp2 consumer."""
 
 import argparse
 import hashlib
@@ -46,13 +46,26 @@ def main():
         # An empty PATH and no override prove checks use the compiler shipped in the archive.
         env = dict(os.environ, PATH="")
         env.pop("RPP_TSC", None)
-        for fixture, commands in (("check-plugin", ["check"]), ("window", ["codegen", "check", "build"])):
-            consumer = root / fixture
-            shutil.copytree(repository / "scripts/fixtures" / fixture, consumer)
-            for command in commands:
-                subprocess.run([executable, "-C", consumer, command], env=env, check=True)
-            if fixture == "window" and not list((consumer / "generated").glob("*.kt")):
-                raise ValueError("Window did not generate Kotlin bindings")
+        plugin = root / "check-plugin"
+        shutil.copytree(repository / "scripts/fixtures/check-plugin", plugin)
+        subprocess.run([executable, "-C", plugin, "check"], env=env, check=True)
+        component = repository / "examples/plugins/grayscale-wasm/grayscale.wasm"
+        if not component.is_file():
+            raise ValueError(f"missing {component}; build it with `just example-wasm`")
+        examples = root / "examples"
+        artifacts = shutil.ignore_patterns(".rpp", "dist", "generated", "target", "plugin.wasm")
+        shutil.copytree(repository / "examples", examples, ignore=artifacts)
+        grayscale = root / "grayscale"
+        shutil.copytree(repository / "scripts/fixtures/grayscale", grayscale)
+        for project in (examples / "pack", grayscale):
+            for command in ["check", "build"]:
+                subprocess.run([executable, "-C", project, command], env=env, check=True)
+        if not (examples / "pack/dist/rpp-example-pack.zip").is_file():
+            raise ValueError("example pack build did not write its zip")
+        # Byte 25 of a PNG is the IHDR color type; 0 is grayscale.
+        texture = grayscale / "dist/assets/minecraft/textures/block/stone.png"
+        if texture.read_bytes()[25] != 0:
+            raise ValueError("grayscale component did not convert the texture")
         print(f"Verified {host_platform()} consumer")
 
 

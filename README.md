@@ -55,8 +55,8 @@ compiler. `rpp --version` reports the full version; `release.json` beside the ex
 records the full source SHA. Assets and SHA-256 sidecars are downloaded and compared
 in a draft before publication; prereleases never replace the latest stable release.
 A native matrix builds Linux x64/arm64, macOS x64/arm64, and Windows x64. Each
-packaged binary checks TypeScript and builds a Window WASIp2 UI without a compiler
-on PATH. A clean Ubuntu consumer also checks the installer without Rust or Node,
+packaged binary checks TypeScript and builds the example pack and a WASIp2 plugin
+without a compiler on PATH. A clean Ubuntu consumer also checks the installer without Rust or Node,
 and the publish job installs the release through the pinned Chunkzero aqua registry
 and runs `rpp check` using its bundled compiler.
 

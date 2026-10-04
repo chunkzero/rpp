@@ -91,6 +91,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: 1.96.0
+          targets: wasm32-wasip2
       - uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
@@ -98,8 +99,12 @@ jobs:
         # rust-cache keeps the v8 build-script fingerprint but deletes the archive it downloaded.
         run: rm -rf target/release/.fingerprint/v8-* target/release/build/v8-*
       - run: cargo build --release --locked -p rpp-cli
+      - name: Build the grayscale WASIp2 component
+        run: |
+          cargo build --locked --release --target wasm32-wasip2 --manifest-path examples/plugins/grayscale-wasm/guest/Cargo.toml
+          cp examples/plugins/grayscale-wasm/guest/target/wasm32-wasip2/release/grayscale_wasm_guest.wasm examples/plugins/grayscale-wasm/grayscale.wasm
       - run: python scripts/package.py --output dist
-      - name: Verify installed binary, bundled compiler, and Window consumer
+      - name: Verify installed binary, bundled compiler, example pack, and WASIp2 consumer
         run: python scripts/verify_package.py "dist/rpp-$RPP_RELEASE_VERSION-${{ matrix.platform }}.tar.gz" "$RPP_RELEASE_VERSION"
       - uses: actions/upload-artifact@v4
         id: upload
