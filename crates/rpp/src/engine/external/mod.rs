@@ -121,7 +121,8 @@ impl StagedWrite {
             .ok_or_else(|| Error::Build(format!("missing cache object {:#x}", output.object)))?;
         let parent = path.parent().expect("external paths are absolute");
         std::fs::create_dir_all(parent).map_err(|e| Error::io(parent, e))?;
-        let mut file = tempfile::NamedTempFile::new_in(parent).map_err(|e| Error::io(parent, e))?;
+        let mut file =
+            crate::util::atomic::staging_file(parent).map_err(|e| Error::io(parent, e))?;
         file.write_all(&bytes).map_err(|e| Error::io(&path, e))?;
         file.as_file().sync_all().map_err(|e| Error::io(&path, e))?;
         Ok(Self {
@@ -321,6 +322,28 @@ mod tests {
             std::fs::read(root.join("generated/b.txt")).unwrap(),
             b"manual"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn external_outputs_get_the_default_mode() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let (project, config, store) = fixture();
+        let root = project.path();
+        let reference = root.join("reference");
+        std::fs::write(&reference, "").unwrap();
+        let expected = std::fs::metadata(&reference).unwrap().permissions().mode() & 0o777;
+        let manifest = build_manifest(&store, &["a.txt"]);
+        let plan = PublicationPlan::prepare(&config, root, &manifest, &store).unwrap();
+        plan.record_recovery(root).unwrap();
+        plan.publish(root).unwrap();
+        let mode = std::fs::metadata(root.join("generated/a.txt"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, expected);
     }
 
     #[cfg(unix)]

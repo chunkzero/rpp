@@ -11,8 +11,16 @@ pub fn write(path: &Path, contents: impl AsRef<[u8]>) -> Result<()> {
     let permissions = std::fs::metadata(path)
         .ok()
         .map(|metadata| metadata.permissions());
-    let mut file = tempfile::Builder::new()
-        .prefix(".rpp-write-")
+    let mut builder = tempfile::Builder::new();
+    builder.prefix(".rpp-write-");
+    // A new file gets the mode `File::create` would give it rather than tempfile's private 0o600.
+    #[cfg(unix)]
+    if permissions.is_none() {
+        use std::os::unix::fs::PermissionsExt;
+
+        builder.permissions(std::fs::Permissions::from_mode(0o666));
+    }
+    let mut file = builder
         .tempfile_in(parent)
         .with_context(|| format!("creating temporary file in {}", parent.display()))?;
     if let Some(permissions) = permissions {
@@ -45,6 +53,21 @@ mod tests {
         assert_eq!(
             std::fs::metadata(path).unwrap().permissions().mode() & 0o777,
             0o640
+        );
+    }
+
+    #[test]
+    fn new_files_get_the_default_mode() {
+        let directory = tempfile::tempdir().unwrap();
+        let reference = directory.path().join("reference");
+        std::fs::write(&reference, "").unwrap();
+        let path = directory.path().join("rpp.json");
+
+        write(&path, "new").unwrap();
+
+        assert_eq!(
+            std::fs::metadata(path).unwrap().permissions().mode() & 0o777,
+            std::fs::metadata(reference).unwrap().permissions().mode() & 0o777
         );
     }
 }

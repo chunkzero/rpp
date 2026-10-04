@@ -5,21 +5,15 @@ use std::path::Path;
 
 /// Copy `source` into a sibling temporary file and atomically publish it at
 /// `destination`, replacing an existing file without an observable missing
-/// destination between operations.
+/// destination between operations. The destination gets the default file mode, not the source's.
 pub(crate) fn copy(source: &Path, destination: &Path) -> std::io::Result<()> {
     let parent = destination.parent().unwrap_or_else(|| Path::new("."));
     std::fs::create_dir_all(parent)?;
 
     let mut source_file = std::fs::File::open(source)?;
-    let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
+    let mut temporary = staging_file(parent)?;
     std::io::copy(&mut source_file, temporary.as_file_mut())?;
     temporary.as_file_mut().sync_all()?;
-
-    if let Ok(metadata) = source_file.metadata() {
-        temporary
-            .as_file()
-            .set_permissions(metadata.permissions())?;
-    }
     temporary
         .persist(destination)
         .map(|_| ())
@@ -32,13 +26,27 @@ pub(crate) fn write(destination: &Path, contents: &[u8]) -> std::io::Result<()> 
     let parent = destination.parent().unwrap_or_else(|| Path::new("."));
     std::fs::create_dir_all(parent)?;
 
-    let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
+    let mut temporary = staging_file(parent)?;
     temporary.write_all(contents)?;
     temporary.as_file_mut().sync_all()?;
     temporary
         .persist(destination)
         .map(|_| ())
         .map_err(|error| error.error)
+}
+
+/// A temporary file in `parent` created with the mode a plain `File::create` would get (0o666 minus the
+/// umask), rather than tempfile's private 0o600.
+pub(crate) fn staging_file(parent: &Path) -> std::io::Result<tempfile::NamedTempFile> {
+    #[cfg_attr(not(unix), allow(unused_mut))]
+    let mut builder = tempfile::Builder::new();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        builder.permissions(std::fs::Permissions::from_mode(0o666));
+    }
+    builder.tempfile_in(parent)
 }
 
 #[cfg(test)]
@@ -68,5 +76,29 @@ mod tests {
         write(&destination, b"new").unwrap();
 
         assert_eq!(std::fs::read(destination).unwrap(), b"new");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn published_files_get_the_default_mode() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempfile::tempdir().unwrap();
+        let reference = directory.path().join("reference");
+        std::fs::write(&reference, b"").unwrap();
+        let expected = std::fs::metadata(&reference).unwrap().permissions().mode() & 0o777;
+
+        let source = directory.path().join("source");
+        std::fs::write(&source, b"cached").unwrap();
+        std::fs::set_permissions(&source, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let written = directory.path().join("written");
+        let copied = directory.path().join("copied");
+        write(&written, b"new").unwrap();
+        copy(&source, &copied).unwrap();
+
+        for path in [written, copied] {
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, expected, "{}", path.display());
+        }
     }
 }
