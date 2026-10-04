@@ -2,7 +2,7 @@ import { defineConfig } from "#rpp/config";
 import window from "#plugins/window";
 
 export default defineConfig({
-  pack: { name: "window-fixture", description: "Release consumer", packFormat: 88 },
+  pack: { name: "window-fixture", description: "Release consumer", format: 88 },
   build: { source: "src", output: "dist" },
   plugins: [
     window({

@@ -13,6 +13,6 @@ Palette
 Build pipeline (see ../../rpp.config.ts)
 -----------------------------------
 1. json-minify     — compact every .json / .mcmeta.
-2. mcmeta-validate — gate the build on valid pack.mcmeta + animations.
+2. mcmeta-validate — gate the build on valid animation metadata.
 3. hash-rename     — fingerprint custom/ textures, emit rename_map.json.
 Then the built-in squash pass minifies JSON, optimizes PNGs, and zips.

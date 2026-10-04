@@ -11,7 +11,7 @@ Keys become camelCase and sections become objects:
 | `rpp.toml`                         | `rpp.config.ts`                                                |
 | ---------------------------------- | -------------------------------------------------------------- |
 | `[pack] name, description`         | `pack: { name, description }`                                  |
-| `pack_format`                      | `pack.packFormat`                                              |
+| `pack_format`                      | `pack.format` (a number or `{ min, max }`)                     |
 | `[build] source, output, workers`  | `build: { source, output, workers }`                           |
 | `[build.lua]`                      | `build.limits` (`memoryLimitMb`, `executionDeadlineSeconds`)   |
 | `[build.wasm]`                     | `build.wasm`                                                   |
@@ -30,10 +30,14 @@ rejected. Plugin permissions need `security: "trusted"`.
 import { defineConfig, plugin } from "#rpp/config";
 
 export default defineConfig({
-  pack: { name: "my-pack", packFormat: 34 },
+  pack: { name: "my-pack", format: 34 },
   plugins: [plugin("minify", { pretty: false }), plugin("codegen", undefined, { outputs: { kotlin: "gen" } })],
 });
 ```
+
+rpp generates `pack.mcmeta` from `pack`. Move the fields of `src/pack.mcmeta` into it
+(`description`, `format`, `overlays`, `filter`, `language`) and delete the file; a source
+`pack.mcmeta` fails the build. `pack.packFormat` is rejected in favor of `pack.format`.
 
 A plugin that ships a config module is configured through its factory instead, with typed and
 validated options: `import minify from "#plugins/minify"` then `minify({ pretty: false })`.

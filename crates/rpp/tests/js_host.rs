@@ -111,7 +111,7 @@ export default definePlugin({
 }
 
 #[test]
-fn module_level_randomness_validates_and_absent_pack_fields_are_undefined() {
+fn module_level_randomness_validates_and_absent_description_is_empty() {
     let dir = write_plugin(
         r##"
 import { definePlugin } from "#rpp";
@@ -119,7 +119,7 @@ export default definePlugin({
   processors: {
     [String(Math.random())]: {
       files: "**/*",
-      run(ctx, file) { file.text = String(ctx.pack.description === undefined); },
+      run(ctx, file) { file.text = String(ctx.pack.description === ""); },
     },
   },
 });

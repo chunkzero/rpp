@@ -8,23 +8,31 @@ use std::path::PathBuf;
 
 use crate::error::Result;
 
+mod mcmeta;
 mod schema;
 mod ts;
 mod validate;
 
 pub use schema::{
-    BuildConfig, Config, DevConfig, LimitsConfig, PackConfig, PluginConfig, PluginPermissions,
-    PngSetting, SecurityMode, SquashConfig, SquashEngine, WasmConfig,
+    BuildConfig, Config, DevConfig, FilterPattern, FormatRange, LanguageConfig, LimitsConfig,
+    OverlayConfig, PackConfig, PluginConfig, PluginPermissions, PngSetting, SecurityMode,
+    SquashConfig, SquashEngine, WasmConfig,
 };
 
 impl Config {
-    /// A config with default settings and the given pack name.
-    pub fn new(name: impl Into<String>) -> Self {
+    /// A config with default settings, the given pack name, and a single pack format.
+    pub fn new(name: impl Into<String>, format: u32) -> Self {
         Self {
             pack: PackConfig {
                 name: name.into(),
-                description: None,
-                pack_format: None,
+                description: serde_json::Value::String(String::new()),
+                format: FormatRange {
+                    min: format,
+                    max: format,
+                },
+                overlays: Vec::new(),
+                filter: Vec::new(),
+                language: Default::default(),
             },
             build: BuildConfig::default(),
             dev: DevConfig::default(),
@@ -35,7 +43,7 @@ impl Config {
     /// Build a [`Config`] from the JSON value `rpp.config.ts` default-exports,
     /// attributing errors to `path`.
     ///
-    /// Keys are camelCase (`pack.packFormat`, `build.squash.packsquashBinary`). `plugins` is
+    /// Keys are camelCase (`pack.format`, `build.squash.packsquashBinary`). `plugins` is
     /// an array of `{ plugin, options?, security?, permissions?, outputs? }` where `plugin`
     /// names an `rpp.json` dependency (stored in [`PluginConfig::package`]), and
     /// `build.limits` holds the plugin runtime limits. Keys from the removed TOML schema
@@ -55,7 +63,7 @@ mod tests {
 
     #[test]
     fn new_has_documented_defaults() {
-        let cfg = Config::new("demo");
+        let cfg = Config::new("demo", 34);
         assert_eq!(cfg.pack.name, "demo");
         assert_eq!(cfg.build.source, PathBuf::from("src"));
         assert_eq!(cfg.build.output, PathBuf::from("dist"));

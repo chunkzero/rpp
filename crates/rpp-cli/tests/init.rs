@@ -32,7 +32,6 @@ fn init_scaffolds_a_buildable_ts_project() {
     for file in [
         "rpp.config.ts",
         "rpp.json",
-        "src/pack.mcmeta",
         "plugins/hello/rpp.json",
         "plugins/hello/src/plugin.ts",
         ".gitignore",
@@ -41,7 +40,7 @@ fn init_scaffolds_a_buildable_ts_project() {
     }
     let config = std::fs::read_to_string(root.join("rpp.config.ts")).unwrap();
     assert!(config.contains("name: \"scaffolded\""));
-    assert!(config.contains("packFormat: 34"));
+    assert!(config.contains("format: 34"));
 
     // The scaffolded project builds successfully.
     let build = run(root, &["build"]);
@@ -52,6 +51,12 @@ fn init_scaffolds_a_buildable_ts_project() {
     );
     // The starter generator emits a marker file.
     assert!(root.join("dist/rpp_build.txt").is_file());
+    let mcmeta: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(root.join("dist/pack.mcmeta")).unwrap()).unwrap();
+    assert_eq!(
+        mcmeta,
+        serde_json::json!({ "pack": { "description": "a test", "pack_format": 34 } })
+    );
 }
 
 #[test]
@@ -74,11 +79,8 @@ fn init_uses_defaults_without_a_terminal() {
         project.config.pack.name,
         root.file_name().unwrap().to_string_lossy()
     );
-    assert_eq!(
-        project.config.pack.description.as_deref(),
-        Some("A Minecraft resource pack")
-    );
-    assert_eq!(project.config.pack.pack_format, Some(34));
+    assert_eq!(project.config.pack.description, "A Minecraft resource pack");
+    assert_eq!(project.config.pack.format.max, 34);
 }
 
 #[test]
@@ -134,7 +136,5 @@ fn init_escapes_user_strings() {
     );
     let project = rpp_cli::project::Project::discover(&root).unwrap();
     assert_eq!(project.config.pack.name, "quoted \" pack");
-    let mcmeta: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(root.join("src/pack.mcmeta")).unwrap()).unwrap();
-    assert_eq!(mcmeta["pack"]["description"], "line \" one");
+    assert_eq!(project.config.pack.description, "line \" one");
 }

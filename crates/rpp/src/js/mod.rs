@@ -23,7 +23,7 @@
 //! | export | args | bytes | returns |
 //! |---|---|---|---|
 //! | `describe` | `null` | – | `{ processors: [{ name, files: string[], priority }], generator, onStart, onFinish }` |
-//! | `init` | `{ plugin, options, pack: { name, description?, format? } }` | – | `null` |
+//! | `init` | `{ plugin, options, pack: { name, description, format: { min, max } } }` | – | `null` |
 //! | `process` | `{ processor, path }` | contents | final contents (`Uint8Array`) |
 //! | `generate` | `null` | – | `null` |
 //! | `onStart` | `null` | – | `null` |

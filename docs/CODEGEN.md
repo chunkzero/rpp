@@ -17,7 +17,7 @@ import { defineConfig } from "#rpp/config";
 import window from "#plugins/window";
 
 export default defineConfig({
-  pack: { name: "my-pack" },
+  pack: { name: "my-pack", format: 34 },
   plugins: [
     window(
       { kotlinPackage: "dev.example.generated" },

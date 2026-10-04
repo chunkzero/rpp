@@ -138,7 +138,10 @@ fn colliding_processor_outputs_fail_deterministically() {
         .build()
         .unwrap_err()
         .to_string();
-    assert!(error.contains("both produce `same.txt`"), "{error}");
+    assert!(
+        error.contains("source `b.txt` produces `same.txt`, which source `a.txt`"),
+        "{error}"
+    );
 }
 
 #[test]

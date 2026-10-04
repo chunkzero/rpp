@@ -51,7 +51,7 @@ fn evaluates_minimal_config() {
         dir.path(),
         "rpp.config.ts",
         r##"import { defineConfig } from "#rpp/config";
-export default defineConfig({ pack: { name: "mini", packFormat: 34 } });
+export default defineConfig({ pack: { name: "mini", format: 34 } });
 "##,
     );
     let evaluated = evaluate_config(dir.path(), &BTreeMap::new()).unwrap();
@@ -73,7 +73,7 @@ fn plugin_config_factory_types_options() {
         r##"import { defineConfig } from "#rpp/config";
 import demo from "#plugins/demo";
 export default defineConfig({
-  pack: { name: "p" },
+  pack: { name: "p", format: 34 },
   plugins: [demo({}), demo({ level: 5 })],
 });
 "##,
@@ -98,7 +98,7 @@ fn factory_validation_errors_name_plugin() {
         dir.path(),
         "rpp.config.ts",
         r##"import demo from "#plugins/demo";
-export default { pack: { name: "p" }, plugins: [demo({ level: -1 })] };
+export default { pack: { name: "p", format: 34 }, plugins: [demo({ level: -1 })] };
 "##,
     );
     let message = config_error(evaluate_config(dir.path(), &packages));
@@ -117,7 +117,7 @@ fn config_can_import_local_helpers() {
     write_file(
         dir.path(),
         "rpp.config.ts",
-        "import { name } from \"./config/helper.ts\";\nexport default { pack: { name } };\n",
+        "import { name } from \"./config/helper.ts\";\nexport default { pack: { name, format: 34 } };\n",
     );
     let evaluated = evaluate_config(dir.path(), &BTreeMap::new()).unwrap();
     assert_eq!(evaluated.config.pack.name, "helped");

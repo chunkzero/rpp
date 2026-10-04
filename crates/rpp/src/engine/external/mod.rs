@@ -198,7 +198,7 @@ mod tests {
 
     fn fixture() -> (tempfile::TempDir, Config, ObjectStore) {
         let project = tempfile::tempdir().unwrap();
-        let config = Config::new("test");
+        let config = Config::new("test", 34);
         let store = ObjectStore::open(project.path().join(".rpp/cache/objects")).unwrap();
         (project, config, store)
     }

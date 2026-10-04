@@ -53,7 +53,7 @@ export default definePlugin<{ text: string }>({
 import suffix from "#plugins/suffix";
 
 export default defineConfig({
-  pack: { name: "p" },
+  pack: { name: "p", format: 34 },
   plugins: [PLUGIN],
 });
 "##
@@ -85,7 +85,7 @@ fn unknown_plugin_package_errors() {
         "rpp.config.ts",
         r##"import { defineConfig, plugin } from "#rpp/config";
 
-export default defineConfig({ pack: { name: "p" }, plugins: [plugin("missing")] });
+export default defineConfig({ pack: { name: "p", format: 34 }, plugins: [plugin("missing")] });
 "##,
     );
 

@@ -1,12 +1,26 @@
 // Project configuration types, imported as `#rpp/config` from `rpp.config.ts` and
 // from plugins' config modules.
 
+/** A resource pack format, or an inclusive range of them. */
+export type PackFormat = number | { min: number; max: number };
+
+/** A text component: a string, array, or object. */
+export type TextComponent = string | unknown[] | { [key: string]: unknown };
+
+/** The `pack.mcmeta` rpp generates. A `pack.mcmeta` in the source directory is an error. */
 export interface PackConfig {
   /** Pack name; used for the zip filename. */
   name: string;
-  description?: string;
-  /** Validated against `pack.mcmeta` when present. */
-  packFormat?: number;
+  /** Shown in the pack list. Defaults to an empty string. */
+  description?: TextComponent;
+  /** Supported formats. rpp writes the fields each Minecraft version reads. */
+  format: PackFormat;
+  /** Directories applied over the pack for a subset of formats, in order. */
+  overlays?: { directory: string; format: PackFormat }[];
+  /** Regular expressions hiding files from lower packs; an omitted field matches everything. */
+  filter?: { namespace?: string; path?: string }[];
+  /** Languages added by the pack, keyed by language code. */
+  language?: Record<string, { name: string; region: string; bidirectional?: boolean }>;
 }
 
 export interface LimitsConfig {

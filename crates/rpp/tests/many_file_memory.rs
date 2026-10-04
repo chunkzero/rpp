@@ -13,7 +13,7 @@ fn many_file_memory() {
         bytes[..4].copy_from_slice(&index.to_le_bytes());
         std::fs::write(source.join(format!("{index:04}.bin")), bytes).unwrap();
     }
-    let mut config = Config::new("memory");
+    let mut config = Config::new("memory", 34);
     config.build.workers = 4;
     let engine = Engine::builder(config)
         .project_root(dir.path())

@@ -251,13 +251,11 @@ fn plugin_root(dir: &Path, manifest: &PluginManifest) -> Result<PathBuf> {
 
 /// The argument of the `init` export.
 fn init_args(id: &str, pack: &PackConfig, options: &Value) -> Value {
-    let mut pack_json = json!({ "name": pack.name });
-    if let Some(description) = &pack.description {
-        pack_json["description"] = json!(description);
-    }
-    if let Some(format) = pack.pack_format {
-        pack_json["format"] = json!(format);
-    }
+    let pack_json = json!({
+        "name": pack.name,
+        "description": pack.description,
+        "format": pack.format,
+    });
     json!({ "plugin": id, "options": options, "pack": pack_json })
 }
 

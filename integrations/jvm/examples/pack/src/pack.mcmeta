@@ -1,7 +1,0 @@
-{
-  "pack": {
-    "description": "RPP live JVM example",
-    "min_format": [88, 0],
-    "max_format": [88, 0]
-  }
-}

@@ -10,8 +10,10 @@ const toBytes = (data: Uint8Array | string): Uint8Array =>
 /** Pack metadata from the project configuration. */
 export interface Pack {
   readonly name: string;
-  readonly description?: string;
-  readonly format?: number;
+  /** A text component: a string, array, or object. */
+  readonly description: string | readonly unknown[] | { readonly [key: string]: unknown };
+  /** The inclusive range of supported resource pack formats. */
+  readonly format: { readonly min: number; readonly max: number };
 }
 
 /** A module found by one of the plugin's `discover` patterns. */

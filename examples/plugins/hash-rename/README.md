@@ -33,7 +33,7 @@ points at, but `custom/` assets are referenced only through the rename map.
 import hashRename from "#plugins/hash-rename";
 
 export default defineConfig({
-  pack: { name: "my-pack" },
+  pack: { name: "my-pack", format: 34 },
   plugins: [hashRename({ files: ["assets/*/textures/custom/**/*.png"] })],
 });
 ```

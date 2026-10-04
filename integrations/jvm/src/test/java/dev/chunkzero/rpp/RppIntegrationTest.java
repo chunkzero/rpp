@@ -28,10 +28,12 @@ class RppIntegrationTest {
         }
         var config = project.resolve("rpp.config.ts");
         String validConfig =
-                "export default { pack: { name: 'jvm-test' }, dev: { port: " + port + " } };\n";
+                "export default { pack: { name: 'jvm-test', format: 34 }, dev: { port: "
+                        + port
+                        + " } };\n";
         Files.writeString(config, validConfig);
         Files.createDirectory(project.resolve("src"));
-        Path source = project.resolve("src/pack.mcmeta");
+        Path source = project.resolve("src/marker.json");
         Files.writeString(source, "{}");
         var updates = new LinkedBlockingQueue<PackUpdate>();
         var buildFailures = new LinkedBlockingQueue<Exception>();

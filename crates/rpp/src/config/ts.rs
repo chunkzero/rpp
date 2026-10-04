@@ -47,6 +47,11 @@ fn reject_wrong_shapes(value: &Value) -> std::result::Result<(), String> {
 }
 
 fn reject_legacy_keys(value: &Value) -> std::result::Result<(), String> {
+    if value.pointer("/pack/packFormat").is_some() {
+        return Err(guided(
+            "`pack.packFormat` is not supported; use `pack.format`",
+        ));
+    }
     if value.pointer("/build/lua").is_some() {
         return Err(guided("`build.lua` is not supported; use `build.limits`"));
     }
@@ -76,7 +81,7 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-    use crate::config::{PngSetting, SecurityMode, SquashEngine};
+    use crate::config::{FormatRange, PngSetting, SecurityMode, SquashEngine};
 
     fn parse(value: Value) -> Result<Config> {
         Config::from_ts_json(&value, "rpp.config.ts")
@@ -89,7 +94,14 @@ mod tests {
     #[test]
     fn maps_camel_case_schema() {
         let config = parse(json!({
-            "pack": { "name": "demo", "description": "d", "packFormat": 34 },
+            "pack": {
+                "name": "demo",
+                "description": ["d"],
+                "format": { "min": 34, "max": 69 },
+                "overlays": [{ "directory": "modern", "format": 69 }],
+                "filter": [{ "path": "^textures/" }],
+                "language": { "en_pt": { "name": "Pirate", "region": "Sea" } }
+            },
             "build": {
                 "source": "src",
                 "workers": 2,
@@ -109,7 +121,13 @@ mod tests {
             ]
         }))
         .unwrap();
-        assert_eq!(config.pack.pack_format, Some(34));
+        assert_eq!(config.pack.format, FormatRange { min: 34, max: 69 });
+        assert_eq!(
+            config.pack.overlays[0].format,
+            FormatRange { min: 69, max: 69 }
+        );
+        assert_eq!(config.pack.filter[0].path.as_deref(), Some("^textures/"));
+        assert!(!config.pack.language["en_pt"].bidirectional);
         assert_eq!(config.build.workers, 2);
         assert_eq!(config.build.limits.memory_limit_mb, 64);
         assert_eq!(config.build.limits.execution_deadline_seconds, 5);
@@ -149,7 +167,7 @@ mod tests {
 
     #[test]
     fn rejects_positional_arrays() {
-        let pack = json!({ "name": "demo" });
+        let pack = json!({ "name": "demo", "format": 34 });
         let cases = [
             (json!([{ "name": "demo" }]), "the config must be an object"),
             (
@@ -175,7 +193,7 @@ mod tests {
 
     #[test]
     fn reports_full_paths() {
-        let pack = json!({ "name": "demo" });
+        let pack = json!({ "name": "demo", "format": 34 });
         let cases = [
             (
                 json!({ "pack": pack, "build": { "limits": { "memoryLimitMb": "big" } } }),
@@ -202,7 +220,7 @@ mod tests {
 
     #[test]
     fn rejects_unsupported_values() {
-        let pack = json!({ "name": "demo" });
+        let pack = json!({ "name": "demo", "format": 34 });
         assert!(message(
             json!({ "pack": pack, "plugins": [{ "plugin": "a", "options": { "k": null } }] })
         )
@@ -220,13 +238,24 @@ mod tests {
                 .contains("unknown field `plugin`")
         );
         assert!(
-            message(json!({ "pack": { "name": "demo", "packFromat": 1 } }))
+            message(json!({ "pack": { "name": "demo", "format": 34, "packFromat": 1 } }))
                 .contains("`packFromat`")
         );
         assert!(
-            message(json!({ "pack": { "name": "demo", "pack_format": 1 } }))
+            message(json!({ "pack": { "name": "demo", "format": 34, "pack_format": 1 } }))
                 .contains("unknown field `pack_format`")
         );
+        assert!(
+            message(json!({ "pack": { "name": "demo", "packFormat": 34 } }))
+                .contains("use `pack.format`")
+        );
+        for format in [json!([34, 69]), json!({ "min": 34 }), json!("34")] {
+            let message = message(json!({ "pack": { "name": "demo", "format": format } }));
+            assert!(
+                message.contains("pack.format: expected a format number"),
+                "{message}"
+            );
+        }
         assert!(
             message(json!({ "pack": pack, "build": { "limits": { "memoryLimitMb": 0 } } }))
                 .contains("build.limits.memoryLimitMb")

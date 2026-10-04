@@ -23,11 +23,10 @@ register a new Minecraft item or automatically assign it to an in-game item.
 ## Layout
 
 ```text
-rpp.config.ts                    Pack metadata, limits, plugin options, output roots
+rpp.config.ts                    Pack metadata (generates pack.mcmeta), limits, plugin options, output roots
 rpp.json                         Plugin dependencies (path packages)
 plugins/catalog/                 Pack-local TypeScript plugin
 src/items/ember_gem.ts           Authoring input; never included in the pack
-src/pack.mcmeta                  Validated against rpp.config.ts
 src/assets/minecraft/            Models, language, static and animated textures
 src/.rppignore                   Excludes design notes
 src/notes/design.txt             Ignored input
@@ -42,7 +41,7 @@ All file processors run before generators. Generators run in registration order;
 each sees the outputs of earlier generators.
 
 1. **json-minify** compacts JSON and metadata with a per-file processor.
-2. **mcmeta-validate** checks source pack metadata and animation metadata,
+2. **mcmeta-validate** checks source animation metadata,
    demonstrating tracked source reads and a plugin-local `rules.ts` module.
 3. **hash-rename** fingerprints `textures/custom/` outputs and emits
    `rename_map.json`. Vanilla texture paths stay fixed.
@@ -63,7 +62,7 @@ the default sandbox without filesystem or process grants.
 
 ```text
 dist/
-  pack.mcmeta
+  pack.mcmeta                                   Generated from rpp.config.ts
   assets/minecraft/models/item/magic_gem.json   Updated hashed texture reference
   assets/minecraft/textures/custom/gem.<hash>.png
   assets/rpp/models/item/ember_gem.json         Generated model

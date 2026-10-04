@@ -83,11 +83,14 @@ import { defineConfig } from "#rpp/config";
 import jsonMinify from "#plugins/json-minify";
 
 export default defineConfig({
-  pack: { name: "my-pack", description: "My resource pack", packFormat: 34 },
+  pack: { name: "my-pack", description: "My resource pack", format: 34 },
   build: { source: "src", output: "dist" },
   plugins: [jsonMinify({ pretty: false })],
 });
 ```
+
+rpp generates `pack.mcmeta` from `pack`, so `src/` holds only pack content. `format` also takes
+an inclusive `{ min, max }` range, and `pack` accepts `overlays`, `filter`, and `language`.
 
 `rpp.json` lists the plugin packages the project depends on, either as registry
 version ranges or local directories:

@@ -147,7 +147,7 @@ mod tests {
         std::fs::write(source.join("b.txt"), "b").unwrap();
         let sources = crate::source::discover(&source).unwrap();
         std::fs::remove_file(source.join("b.txt")).unwrap();
-        let config = crate::config::Config::new("test");
+        let config = crate::config::Config::new("test", 34);
         let engine = Engine::builder(config)
             .project_root(dir.path())
             .build_engine()
