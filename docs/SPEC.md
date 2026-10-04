@@ -125,10 +125,9 @@ from RPP's point of view and disables cache replay for it.
 
 `pack` is the only source of pack metadata: every build generates `pack.mcmeta` from it, and
 a `pack.mcmeta` in the source directory fails the build (not configuration loading, so
-`clean` still works). Formats are written in the fields each client generation reads:
-`min_format`/`max_format` when the range reaches format 65, and `pack_format` (the range
-minimum) plus `supported_formats` (for a range) when it starts below 65. Overlay entries
-follow the same rule with `formats` as the pre-65 field. Plugins see
+`clean` still works). Formats are always written as `min_format`/`max_format`; when the range
+starts below 65, `pack_format` (the range minimum) and `supported_formats` are added for older
+clients. Overlay entries all get `formats` when any overlay starts below 65, and none otherwise. Plugins see
 `ctx.pack = { name, description, format: { min, max } }`.
 
 ## 2. Plugin manifest: `rpp.json`

@@ -55,7 +55,10 @@ fn init_scaffolds_a_buildable_ts_project() {
         serde_json::from_slice(&std::fs::read(root.join("dist/pack.mcmeta")).unwrap()).unwrap();
     assert_eq!(
         mcmeta,
-        serde_json::json!({ "pack": { "description": "a test", "pack_format": 34 } })
+        serde_json::json!({ "pack": {
+            "description": "a test", "pack_format": 34, "supported_formats": [34, 34],
+            "min_format": 34, "max_format": 34
+        } })
     );
 }
 

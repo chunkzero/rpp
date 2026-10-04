@@ -4,7 +4,7 @@ use serde_json::{json, Map, Value};
 
 use super::{FormatRange, PackConfig};
 
-/// The first resource pack format that reads `min_format`/`max_format`.
+/// The first resource pack format that reads only `min_format`/`max_format`.
 const RANGED_FORMAT: u32 = 65;
 
 impl PackConfig {
@@ -12,23 +12,32 @@ impl PackConfig {
     pub(crate) fn mcmeta(&self) -> Vec<u8> {
         let mut pack = Map::new();
         pack.insert("description".into(), self.description.clone());
-        write_formats(
-            &mut pack,
-            self.format,
-            Some("pack_format"),
-            "supported_formats",
-        );
+        let FormatRange { min, max } = self.format;
+        if min < RANGED_FORMAT {
+            pack.insert("pack_format".into(), min.into());
+            pack.insert("supported_formats".into(), json!([min, max]));
+        }
+        insert_range(&mut pack, self.format);
 
         let mut root = Map::new();
         root.insert("pack".into(), Value::Object(pack));
         if !self.overlays.is_empty() {
+            // Pre-65 clients need `formats` on every entry once any overlay targets them.
+            let legacy = self
+                .overlays
+                .iter()
+                .any(|overlay| overlay.format.min < RANGED_FORMAT);
             let entries = self
                 .overlays
                 .iter()
                 .map(|overlay| {
                     let mut entry = Map::new();
                     entry.insert("directory".into(), overlay.directory.clone().into());
-                    write_formats(&mut entry, overlay.format, None, "formats");
+                    if legacy {
+                        let FormatRange { min, max } = overlay.format;
+                        entry.insert("formats".into(), json!([min, max]));
+                    }
+                    insert_range(&mut entry, overlay.format);
                     Value::Object(entry)
                 })
                 .collect::<Vec<_>>();
@@ -74,32 +83,11 @@ impl PackConfig {
     }
 }
 
-/// Write `range` in the fields each client generation reads: `min_format`/`max_format` from
-/// format 65, and `legacy` (plus `main`, when given) below it.
-fn write_formats(
-    object: &mut Map<String, Value>,
-    range: FormatRange,
-    main: Option<&str>,
-    legacy: &str,
-) {
-    let FormatRange { min, max } = range;
-    if min < RANGED_FORMAT {
-        if let Some(main) = main {
-            object.insert(main.into(), min.into());
-        }
-        if min != max || main.is_none() {
-            let formats = if min == max {
-                json!(min)
-            } else {
-                json!([min, max])
-            };
-            object.insert(legacy.into(), formats);
-        }
-    }
-    if max >= RANGED_FORMAT {
-        object.insert("min_format".into(), min.into());
-        object.insert("max_format".into(), max.into());
-    }
+/// Write `range` as `min_format`/`max_format`, read by format 65 and later. Pre-65 clients
+/// ignore these fields.
+fn insert_range(object: &mut Map<String, Value>, range: FormatRange) {
+    object.insert("min_format".into(), range.min.into());
+    object.insert("max_format".into(), range.max.into());
 }
 
 #[cfg(test)]
@@ -119,13 +107,15 @@ mod tests {
     }
 
     #[test]
-    fn writes_the_fields_each_format_generation_reads() {
+    fn writes_legacy_fields_only_for_pre_65_ranges() {
         let cases = [
-            (34, 34, json!({ "description": "hi", "pack_format": 34 })),
             (
                 34,
-                46,
-                json!({ "description": "hi", "pack_format": 34, "supported_formats": [34, 46] }),
+                34,
+                json!({
+                    "description": "hi", "pack_format": 34, "supported_formats": [34, 34],
+                    "min_format": 34, "max_format": 34
+                }),
             ),
             (
                 46,
@@ -175,9 +165,14 @@ mod tests {
         assert_eq!(
             value["overlays"],
             json!({ "entries": [
-                { "directory": "legacy", "formats": 34 },
-                { "directory": "modern", "min_format": 69, "max_format": 75 }
+                { "directory": "legacy", "formats": [34, 34], "min_format": 34, "max_format": 34 },
+                { "directory": "modern", "formats": [69, 75], "min_format": 69, "max_format": 75 }
             ] })
+        );
+        config.overlays.remove(0);
+        assert_eq!(
+            generated(&config)["overlays"],
+            json!({ "entries": [{ "directory": "modern", "min_format": 69, "max_format": 75 }] })
         );
         assert_eq!(
             value["filter"],
