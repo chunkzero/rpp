@@ -37,7 +37,7 @@ pub(crate) fn write(destination: &Path, contents: &[u8]) -> std::io::Result<()> 
 
 /// A temporary file in `parent` created with the mode a plain `File::create` would get (0o666 minus the
 /// umask), rather than tempfile's private 0o600.
-fn staging_file(parent: &Path) -> std::io::Result<tempfile::NamedTempFile> {
+pub(crate) fn staging_file(parent: &Path) -> std::io::Result<tempfile::NamedTempFile> {
     #[cfg_attr(not(unix), allow(unused_mut))]
     let mut builder = tempfile::Builder::new();
     #[cfg(unix)]
