@@ -14,9 +14,19 @@ Minestom example. For individual Gradle tasks:
 mise exec -- just jvm :test :publishToMavenLocal
 ```
 
-Consume `com.chunkzero.rpp:rpp-dev-client:0.1.0-alpha.0` from `mavenLocal()`.
-Include its runtime dependencies in your integration's distribution; the library
-JAR is not a fat JAR. Jackson is an internal implementation dependency.
+Every rpp release publishes `com.chunkzero.rpp:rpp-dev-client` at the same version.
+Releases are served from `https://maven.chunkzero.com` and nightlies from
+`https://maven.chunkzero.com/nightlies`:
+
+```kotlin
+repositories { maven("https://maven.chunkzero.com/nightlies") }
+dependencies { implementation("com.chunkzero.rpp:rpp-dev-client:0.1.0-nightly.20261004062300.ge282f11816cd") }
+```
+
+Use the client version matching your `rpp` binary. Local builds take the Cargo
+workspace version, or `RPP_RELEASE_VERSION` when set. Include its runtime
+dependencies in your integration's distribution; the library JAR is not a fat JAR.
+Jackson is an internal implementation dependency.
 
 ```java
 var client = new DevClient(
