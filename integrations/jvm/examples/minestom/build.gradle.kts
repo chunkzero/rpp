@@ -5,5 +5,5 @@ dependencies {
     implementation(project(":"))
     implementation(libs.minestom)
 }
-application { mainClass = "dev.chunkzero.rpp.example.PackServer" }
+application { mainClass = "com.chunkzero.rpp.example.PackServer" }
 dependencyLocking { lockAllConfigurations() }

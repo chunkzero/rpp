@@ -1,4 +1,4 @@
-package dev.chunkzero.rpp;
+package com.chunkzero.rpp;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
