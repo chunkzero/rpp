@@ -3,7 +3,7 @@ plugins {
     `maven-publish`
 }
 
-group = "dev.chunkzero.rpp"
+group = "com.chunkzero.rpp"
 version = "0.1.0-alpha.0"
 
 java {

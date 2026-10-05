@@ -10,8 +10,8 @@ the tag's GitHub release, and opens a pull request that adds the version to
 2. Give the workflow a token that can open pull requests on `chunkzero/rpp-registry`. `GITHUB_TOKEN` cannot open
    pull requests in another repository.
    - **Plugins in the chunkzero organization** use the organization's GitHub App, which is installed on
-     `chunkzero/rpp-registry` with Contents and Pull requests write access. The organization secrets `RPP_APP_ID` and
-     `RPP_APP_PRIVATE_KEY` are available to every chunkzero repository, and the workflow below exchanges them for a
+     `chunkzero/rpp-registry` with Contents and Pull requests write access. The organization secrets `REGISTRY_APP_ID` and
+     `REGISTRY_APP_PRIVATE_KEY` are available to every chunkzero repository, and the workflow below exchanges them for a
      short-lived token. The app pushes a branch to the registry directly, and its bot opens the pull request.
    - **Other plugins** use a classic personal access token with the `public_repo` scope, stored as the repository
      secret `RPP_REGISTRY_TOKEN`. The action pushes to the token owner's fork of the registry. Drop the token step
@@ -35,8 +35,8 @@ jobs:
       - id: registry-token
         uses: actions/create-github-app-token@v2
         with:
-          app-id: ${{ secrets.RPP_APP_ID }}
-          private-key: ${{ secrets.RPP_APP_PRIVATE_KEY }}
+          app-id: ${{ secrets.REGISTRY_APP_ID }}
+          private-key: ${{ secrets.REGISTRY_APP_PRIVATE_KEY }}
           owner: chunkzero
           repositories: rpp-registry
       - uses: chunkzero/rpp/.github/actions/publish-plugin@v0.5.0

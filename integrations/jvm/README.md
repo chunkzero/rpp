@@ -14,7 +14,7 @@ Minestom example. For individual Gradle tasks:
 mise exec -- just jvm :test :publishToMavenLocal
 ```
 
-Consume `dev.chunkzero.rpp:rpp-dev-client:0.1.0-alpha.0` from `mavenLocal()`.
+Consume `com.chunkzero.rpp:rpp-dev-client:0.1.0-alpha.0` from `mavenLocal()`.
 Include its runtime dependencies in your integration's distribution; the library
 JAR is not a fat JAR. Jackson is an internal implementation dependency.
 

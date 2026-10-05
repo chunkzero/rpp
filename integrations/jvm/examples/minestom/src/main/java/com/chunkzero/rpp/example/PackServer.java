@@ -1,7 +1,7 @@
-package dev.chunkzero.rpp.example;
+package com.chunkzero.rpp.example;
 
-import dev.chunkzero.rpp.DevClient;
-import dev.chunkzero.rpp.PackUpdate;
+import com.chunkzero.rpp.DevClient;
+import com.chunkzero.rpp.PackUpdate;
 
 import net.kyori.adventure.resource.ResourcePackInfo;
 import net.kyori.adventure.resource.ResourcePackRequest;

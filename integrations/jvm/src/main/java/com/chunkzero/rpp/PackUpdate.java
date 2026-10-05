@@ -1,4 +1,4 @@
-package dev.chunkzero.rpp;
+package com.chunkzero.rpp;
 
 import java.net.URI;
 import java.util.HexFormat;

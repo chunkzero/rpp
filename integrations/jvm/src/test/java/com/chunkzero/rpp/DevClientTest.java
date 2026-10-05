@@ -1,4 +1,4 @@
-package dev.chunkzero.rpp;
+package com.chunkzero.rpp;
 
 import static org.junit.jupiter.api.Assertions.*;
 
