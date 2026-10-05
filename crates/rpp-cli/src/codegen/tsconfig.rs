@@ -16,8 +16,12 @@ const TSCONFIG_HEAD: &str = r##"{
     "isolatedModules": true,
     "skipLibCheck": true,
     "types": [],
+    "jsx": "react-jsx",
+    "jsxImportSource": "#rpp/jsx",
     "paths": {
-      "#rpp": ["./sdk/index.ts"]"##;
+      "#rpp": ["./sdk/index.ts"],
+      "#rpp/jsx": ["./sdk/jsx.ts"],
+      "#rpp/jsx/jsx-runtime": ["./sdk/jsx.ts"]"##;
 
 const TSCONFIG_TAIL: &str = r#"
     }
@@ -27,7 +31,7 @@ const TSCONFIG_TAIL: &str = r#"
 
 pub(super) const ROOT_TSCONFIG: &str = r#"{
   "extends": "./.rpp/tsconfig.json",
-  "include": ["**/*.ts", "**/*.mts", ".rpp/sdk/*.d.ts", ".rpp/generated/*.d.ts"],
+  "include": ["**/*.ts", "**/*.mts", "**/*.tsx", ".rpp/sdk/*.d.ts", ".rpp/generated/*.d.ts"],
   "exclude": ["dist", ".rpp/cache"]
 }
 "#;
@@ -67,6 +71,17 @@ pub(super) fn tsconfig(plugin_configs: Option<&BTreeMap<String, PathBuf>>) -> St
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tsx_compiles_against_the_sdk_jsx_runtime() {
+        let generated: serde_json::Value = serde_json::from_str(&tsconfig(None)).unwrap();
+        let options = &generated["compilerOptions"];
+        assert_eq!(options["jsxImportSource"], rpp::js::JSX_IMPORT_SOURCE);
+        assert_eq!(
+            options["paths"]["#rpp/jsx/jsx-runtime"],
+            serde_json::json!(["./sdk/jsx.ts"])
+        );
+    }
 
     #[test]
     fn packed_config_maps_to_its_declarations() {

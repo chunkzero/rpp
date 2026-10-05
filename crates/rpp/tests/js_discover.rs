@@ -162,6 +162,7 @@ fn typescript_sources_are_authoring_when_discovering() {
     assert!(factory.is_authoring_source("lib/types.ts"));
     assert!(factory.is_authoring_source("a/b.mts"));
     assert!(factory.is_authoring_source("a/b.cts"));
+    assert!(factory.is_authoring_source("a/b.tsx"));
     assert!(!factory.is_authoring_source("a/b.json"));
 }
 
@@ -173,6 +174,84 @@ fn definitions_import_plugin_api_via_plugins_specifier() {
         "import { label } from \"#plugins/shop-ui\";\nexport const title = label(\"Api\");\n",
     );
     assert_eq!(project.found().unwrap()[0]["title"], "Api");
+}
+
+#[test]
+fn tsx_definitions_compile_against_the_sdk_jsx_runtime() {
+    let project = Project::new(PLUGIN);
+    project.write(
+        "plugin/rpp.json",
+        r#"{"name":"shop-ui","version":"1.0.0","config":"src/config.ts",
+            "discover":{"windows":"*/window/**/window.tsx"}}"#,
+    );
+    project.write(
+        "plugin/src/config.ts",
+        "export { Shop } from \"./shop.tsx\";\n",
+    );
+    project.write(
+        "plugin/src/shop.tsx",
+        "import type { Child } from \"#rpp/jsx\";\n\
+         const Label = (props: { children?: Child }) => [props.children].flat().join(\",\");\n\
+         export const Shop = (props: { key?: string; children?: Child }): string =>\n\
+           `${\"key\" in props ? props.key : \"none\"}:${<Label>{props.children}</Label>}`;\n",
+    );
+    project.write(
+        "src/shop/window/window.tsx",
+        "import { Shop } from \"#plugins/shop-ui\";\n\
+         const parts = <>{\"a\"}{false}{[\"b\", null]}</>;\n\
+         export const title = <Shop key=\"k\">{parts}</Shop>;\n",
+    );
+    project.write(
+        "src/spread/window/window.tsx",
+        "import { Shop } from \"#plugins/shop-ui\";\n\
+         export const title = <Shop key=\"first\" {...{ key: \"last\" }}>x</Shop>;\n",
+    );
+    project.write(
+        "src/undefined/window/window.tsx",
+        "import { Shop } from \"#plugins/shop-ui\";\n\
+         export const title = <Shop key={undefined}>x</Shop>;\n",
+    );
+    let found = project.found().unwrap();
+    assert_eq!(found[0]["title"], "k:a,b");
+    assert_eq!(found[1]["title"], "last:x");
+    assert_eq!(found[2]["title"], "undefined:x");
+
+    let packed = rpp_js::pack(&rpp_js::PackRequest {
+        root: project.dir.path().join("plugin"),
+        plugin: "src/plugin.ts".into(),
+        config: Some("src/config.ts".into()),
+        self_specifier: Some("#plugins/shop-ui".into()),
+        jsx_import_source: Some(rpp::js::JSX_IMPORT_SOURCE.into()),
+    })
+    .unwrap();
+    assert!(packed.declarations.contains_key("types/src/shop.d.ts"));
+    for (path, text) in packed.files.into_iter().chain(packed.declarations) {
+        project.write(&format!("plugin/{path}"), &text);
+    }
+    project.write(
+        "plugin/rpp.json",
+        r#"{"name":"shop-ui","version":"1.0.0","entry":"dist/plugin.js","config":"dist/config.js",
+            "discover":{"windows":"*/window/**/window.tsx"}}"#,
+    );
+    assert_eq!(project.found().unwrap(), found);
+}
+
+#[test]
+fn intrinsic_jsx_tags_are_rejected() {
+    let project = Project::new(PLUGIN);
+    project.write(
+        "plugin/rpp.json",
+        r#"{"name":"shop-ui","version":"1.0.0","discover":{"windows":"*/window/**/window.tsx"}}"#,
+    );
+    project.write(
+        "src/shop/window/window.tsx",
+        "export const title = <shop />;\n",
+    );
+    let error = project.found().unwrap_err().to_string();
+    assert!(
+        error.contains("<shop>: JSX tags must be components"),
+        "{error}"
+    );
 }
 
 #[test]

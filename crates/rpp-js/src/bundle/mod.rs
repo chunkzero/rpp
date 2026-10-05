@@ -10,7 +10,7 @@ use rolldown::{
     Bundler, BundlerOptions, ChunkFilenamesOutputOption, CodeSplittingMode, InputItem,
     OutputFormat, Platform, ResolveOptions, SourceMapPathTransform, SourceMapType, TsConfig,
 };
-use rolldown_common::Output;
+use rolldown_common::{BundlerTransformOptions, Either, JsxOptions, Output};
 use twox_hash::XxHash3_64;
 
 use crate::error::{Error, Result};
@@ -42,6 +42,9 @@ pub struct BundleRequest {
     /// Files inside a package directory may import each other relatively; source maps
     /// show them as `<specifier>/<path relative to the package directory>`.
     pub packages: BTreeMap<String, BundlePackage>,
+    /// Compile JSX with the automatic runtime imported from `<source>/jsx-runtime`. JSX
+    /// pragma comments, which would replace it, are rejected.
+    pub jsx_import_source: Option<String>,
 }
 
 /// A directory bundled in addition to `root`; see [`BundleRequest::packages`].
@@ -157,6 +160,7 @@ pub(crate) fn build(
         externals: settings.externals.clone(),
         aliases: settings.aliases.clone(),
         allow_node_modules: settings.allow_node_modules,
+        jsx_import_source: request.jsx_import_source.clone(),
         diagnostics: Arc::clone(&diagnostics),
         loaded: Arc::clone(&loaded),
     };
@@ -228,6 +232,19 @@ fn bundler_options(
             .split
             .then(|| ChunkFilenamesOutputOption::String("chunk-[hash].js".to_string())),
         tsconfig: Some(TsConfig::Auto(false)),
+        transform: request
+            .jsx_import_source
+            .as_ref()
+            .map(|source| BundlerTransformOptions {
+                jsx: Some(Either::Right(JsxOptions {
+                    runtime: Some("automatic".to_string()),
+                    import_source: Some(source.clone()),
+                    // Components may have side effects, so unused elements still run.
+                    pure: Some(false),
+                    ..Default::default()
+                })),
+                ..Default::default()
+            }),
         resolve: settings
             .main_fields
             .clone()

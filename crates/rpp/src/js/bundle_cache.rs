@@ -132,6 +132,8 @@ fn request_key(request: &BundleRequest) -> u64 {
         writer.write_str(&package.dir.to_string_lossy());
         writer.write_str(&package.entry);
     }
+    writer.write_str("jsx");
+    writer.write_str(request.jsx_import_source.as_deref().unwrap_or(""));
     writer.finish()
 }
 
@@ -222,6 +224,13 @@ mod tests {
             .insert("rpp:discovered".into(), "export default {};".into());
         f.get(&f.cache, &changed);
         assert_eq!(f.builds.get(), 2);
+        changed.jsx_import_source = Some("#plugins/ui".into());
+        f.get(&f.cache, &changed);
+        f.get(&f.cache, &changed);
+        assert_eq!(f.builds.get(), 3);
+        changed.jsx_import_source = Some("#plugins/other".into());
+        f.get(&f.cache, &changed);
+        assert_eq!(f.builds.get(), 4);
     }
 
     #[test]

@@ -10,6 +10,9 @@
 //! - `rpp:entry`: `import plugin from "./<entry>"; import { register } from "rpp:runtime";
 //!   register(plugin); export * from "rpp:runtime";`
 //!
+//! Every bundle also gets `#rpp/jsx` and `#rpp/jsx/jsx-runtime` (`sdk/jsx.ts`), the import
+//! source that `.tsx` files compile against.
+//!
 //! A manifest with `discover` patterns also gets `#rpp/config`, a `#plugins/<id>` package for
 //! its config module, `#plugin` (the entry) and `rpp:discovered` (the matched files' namespace
 //! objects); the bundle root is the source dir. `rpp:entry` then calls
@@ -92,6 +95,10 @@ pub const SDK_INDEX: &str = concat!(
 );
 /// `sdk/config.ts`, the config SDK imported as `#rpp/config`.
 pub const SDK_CONFIG: &str = include_str!("sdk/config.ts");
+/// `sdk/jsx.ts`, the JSX runtime imported as `#rpp/jsx` and `#rpp/jsx/jsx-runtime`.
+pub const SDK_JSX: &str = include_str!("sdk/jsx.ts");
+/// The JSX import source of `.tsx` files.
+pub const JSX_IMPORT_SOURCE: &str = "#rpp/jsx";
 /// `sdk/bridge.d.ts`, the `__rpp` declaration the SDK sources reference. Not a bundled module.
 const SDK_BRIDGE: &str = include_str!("sdk/bridge.d.ts");
 
@@ -100,10 +107,22 @@ const SDK_BRIDGE: &str = include_str!("sdk/bridge.d.ts");
 pub const SDK_FILES: &[(&str, &str)] = &[
     ("index.ts", SDK_INDEX),
     ("config.ts", SDK_CONFIG),
+    ("jsx.ts", SDK_JSX),
     ("bridge.d.ts", SDK_BRIDGE),
 ];
 
 /// The runtime limits `build.limits` sets for each plugin runtime and call.
+/// The `#rpp/jsx` and `#rpp/jsx/jsx-runtime` virtual modules.
+pub fn jsx_modules() -> [(String, String); 2] {
+    [
+        (JSX_IMPORT_SOURCE.to_string(), SDK_JSX.to_string()),
+        (
+            format!("{JSX_IMPORT_SOURCE}/jsx-runtime"),
+            SDK_JSX.to_string(),
+        ),
+    ]
+}
+
 fn runtime_limits(limits: &LimitsConfig) -> rpp_js::Limits {
     rpp_js::Limits {
         heap_bytes: limits.memory_limit_mb as usize * 1024 * 1024,

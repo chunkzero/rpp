@@ -5,7 +5,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
-use rpp::js::{SDK_CONFIG, SDK_INDEX};
+use rpp::js::{jsx_modules, JSX_IMPORT_SOURCE, SDK_CONFIG, SDK_INDEX};
 use rpp::manifest::PluginManifest;
 use rpp_fetch::registry::PACKAGE_MANIFEST;
 use rpp_js::{BundleRequest, PackOutput, PackRequest};
@@ -52,6 +52,7 @@ pub fn pack(dir: &Path, out: &Path) -> Result<Packed> {
         plugin: manifest.entry.clone(),
         config: manifest.config.clone(),
         self_specifier: Some(format!("#plugins/{}", manifest.id)),
+        jsx_import_source: Some(JSX_IMPORT_SOURCE.to_string()),
     })?;
     let files = collect_files(dir, &text, &manifest, bundled)?;
     let archive = rpp_archive::pack(&files)?;
@@ -123,7 +124,7 @@ fn write_outputs(out: &Path, file: &str, archive: &[u8]) -> Result<(PathBuf, Str
 }
 
 /// Unpacks the archive as installs do and bundles each entry with only the SDK modules
-/// its loader provides: `#rpp` for the plugin, `#rpp/config` for the config.
+/// its loader provides: `#rpp` for the plugin, `#rpp/config` for the config, and `#rpp/jsx`.
 fn self_check(archive: &[u8]) -> Result<()> {
     let dir = tempfile::tempdir()?;
     rpp_archive::unpack(archive, dir.path()).context("unpacking the archive")?;
@@ -136,7 +137,11 @@ fn self_check(archive: &[u8]) -> Result<()> {
         let request = BundleRequest {
             root: dir.path().to_path_buf(),
             entry: entry.clone(),
-            virtual_modules: BTreeMap::from([(specifier.to_string(), source.to_string())]),
+            virtual_modules: [(specifier.to_string(), source.to_string())]
+                .into_iter()
+                .chain(jsx_modules())
+                .collect(),
+            jsx_import_source: Some(JSX_IMPORT_SOURCE.to_string()),
             ..Default::default()
         };
         rpp_js::bundle(&request)

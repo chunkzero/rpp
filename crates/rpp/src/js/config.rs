@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use rpp_js::{Bundle, BundlePackage, BundleRequest, Call, Cancellation, Clock, Host, HostReply};
 use serde_json::Value;
 
-use super::{instance, log, runtime_limits, SDK_CONFIG};
+use super::{instance, jsx_modules, log, runtime_limits, JSX_IMPORT_SOURCE, SDK_CONFIG};
 use crate::config::{Config, LimitsConfig};
 use crate::error::{Error, Result};
 
@@ -112,10 +112,13 @@ fn bundle_config(
     rpp_js::bundle(&BundleRequest {
         root: project_root.to_path_buf(),
         entry: "rpp:config-entry".into(),
-        virtual_modules: BTreeMap::from([
+        virtual_modules: [
             ("rpp:config-entry".to_string(), ENTRY_MODULE.to_string()),
             ("#rpp/config".to_string(), SDK_CONFIG.to_string()),
-        ]),
+        ]
+        .into_iter()
+        .chain(jsx_modules())
+        .collect(),
         packages: packages
             .iter()
             .filter_map(|(name, package)| {
@@ -124,6 +127,7 @@ fn bundle_config(
                 Some((format!("#plugins/{name}"), BundlePackage { dir, entry }))
             })
             .collect(),
+        jsx_import_source: Some(JSX_IMPORT_SOURCE.to_string()),
     })
 }
 

@@ -27,6 +27,7 @@ pub(super) struct VirtualModules {
     pub(super) externals: Vec<String>,
     pub(super) aliases: BTreeMap<String, String>,
     pub(super) allow_node_modules: bool,
+    pub(super) jsx_import_source: Option<String>,
     pub(super) diagnostics: Arc<Mutex<Vec<String>>>,
     pub(super) loaded: Arc<Mutex<BTreeMap<PathBuf, u64>>>,
 }
@@ -239,6 +240,17 @@ impl Plugin for VirtualModules {
                 return Ok(None);
             };
             let path = PathBuf::from(args.id);
+            if let Some(source) = &self.jsx_import_source {
+                if is_jsx(&path) && has_jsx_pragma(&code) {
+                    self.diagnostics
+                        .lock()
+                        .expect("diagnostics lock")
+                        .push(format!(
+                            "{}: JSX pragmas are not supported; JSX compiles against `{source}`",
+                            relative_to(&self.root, &path)
+                        ));
+                }
+            }
             self.loaded
                 .lock()
                 .expect("loaded lock")
@@ -251,4 +263,22 @@ impl Plugin for VirtualModules {
             ..Default::default()
         }))
     }
+}
+
+fn is_jsx(path: &Path) -> bool {
+    matches!(
+        path.extension().and_then(|e| e.to_str()),
+        Some("tsx" | "jsx")
+    )
+}
+
+/// Whether `code` has an `@jsx`, `@jsxFrag`, `@jsxRuntime` or `@jsxImportSource` pragma.
+fn has_jsx_pragma(code: &str) -> bool {
+    code.match_indices("@jsx").any(|(at, _)| {
+        let rest = &code[at + "@jsx".len()..];
+        rest.starts_with(char::is_whitespace)
+            || ["Frag", "Runtime", "ImportSource"]
+                .iter()
+                .any(|name| rest.starts_with(name))
+    })
 }
