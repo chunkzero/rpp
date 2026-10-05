@@ -7,16 +7,16 @@ export type Child = JSX.Element | string | number | boolean | null | undefined |
 /** A function component. */
 export type Component = (props: any) => unknown;
 
-/** Call `type` with `props`. A `key` is an ordinary prop. */
+/** Call `type` with `props`. A `key`, passed separately when present, is an ordinary prop. */
 export function jsx(
   type: Component | string,
   props: Record<string, unknown>,
-  key?: string,
+  ...key: [key?: unknown]
 ): JSX.Element {
   if (typeof type !== "function") {
     throw new TypeError(`<${String(type)}>: JSX tags must be components`);
   }
-  return type(key === undefined ? props : { key, ...props }) as JSX.Element;
+  return type(key.length === 0 ? props : { key: key[0], ...props }) as JSX.Element;
 }
 
 export const jsxs: typeof jsx = jsx;

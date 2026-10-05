@@ -276,6 +276,8 @@ fn resolve_relative(dir: &Path, specifier: &str) -> Option<PathBuf> {
     }
     for extension in ["ts", "tsx", "mts"] {
         candidates.push(format!("{text}.{extension}").into());
+    }
+    for extension in ["ts", "tsx", "mts"] {
         candidates.push(base.join(format!("index.{extension}")));
     }
     candidates

@@ -218,7 +218,7 @@ fn pack_emits_isolated_declarations() {
 }
 
 #[test]
-fn pack_declares_tsx_modules_imported_as_jsx() {
+fn pack_declares_tsx_modules_as_tsc_resolves_them() {
     let dir = TempDir::new().unwrap();
     let root = dir.path();
     write(
@@ -228,12 +228,18 @@ fn pack_declares_tsx_modules_imported_as_jsx() {
     );
     write(
         root,
+        "src/options/index.ts",
+        "export interface Other { n: number }\n",
+    );
+    write(
+        root,
         "src/config.ts",
-        "import type { Options } from './options.jsx';\nexport default function config(options: Options): number { return options.size; }\n",
+        "import type { Options } from './options.jsx';\nimport type { Options as Same } from './options';\nexport default function config(options: Options & Same): number { return options.size; }\n",
     );
     write(root, "src/plugin.ts", "export const run = () => 1;\n");
     let output = packed(root, "src/plugin.ts", Some("src/config.ts"));
     let keys: Vec<_> = output.declarations.keys().map(String::as_str).collect();
+    // `./options` is the file, not the directory index, as tsc resolves it.
     assert_eq!(keys, ["types/src/config.d.ts", "types/src/options.d.ts"]);
 }
 

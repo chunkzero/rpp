@@ -193,7 +193,7 @@ fn tsx_definitions_compile_against_the_sdk_jsx_runtime() {
         "import type { Child } from \"#rpp/jsx\";\n\
          const Label = (props: { children?: Child }) => [props.children].flat().join(\",\");\n\
          export const Shop = (props: { key?: string; children?: Child }): string =>\n\
-           `${props.key}:${<Label>{props.children}</Label>}`;\n",
+           `${\"key\" in props ? props.key : \"none\"}:${<Label>{props.children}</Label>}`;\n",
     );
     project.write(
         "src/shop/window/window.tsx",
@@ -206,9 +206,15 @@ fn tsx_definitions_compile_against_the_sdk_jsx_runtime() {
         "import { Shop } from \"#plugins/shop-ui\";\n\
          export const title = <Shop key=\"first\" {...{ key: \"last\" }}>x</Shop>;\n",
     );
+    project.write(
+        "src/undefined/window/window.tsx",
+        "import { Shop } from \"#plugins/shop-ui\";\n\
+         export const title = <Shop key={undefined}>x</Shop>;\n",
+    );
     let found = project.found().unwrap();
     assert_eq!(found[0]["title"], "k:a,b");
     assert_eq!(found[1]["title"], "last:x");
+    assert_eq!(found[2]["title"], "undefined:x");
 
     let packed = rpp_js::pack(&rpp_js::PackRequest {
         root: project.dir.path().join("plugin"),

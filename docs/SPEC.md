@@ -119,8 +119,9 @@ options?, access?)` builds an entry, and a plugin's config factory (a `definePlu
 - Every `.tsx` file rpp bundles or packs (config imports, plugins, discovered files) compiles with
   the automatic JSX runtime from `#rpp/jsx`; plugins cannot replace it, and JSX pragma comments
   (`@jsx`, `@jsxFrag`, `@jsxRuntime`, `@jsxImportSource`) are rejected. A tag is a component:
-  `<C a={1}>x</C>` calls `C({ a: 1, children: "x" })` (several children become an array) and evaluates
-  to its result, even when the result is unused. `key` is an ordinary prop in source order, so it
+  `<C a={1}>x</C>` calls `C({ a: 1, children: "x" })` (several children become an array) and
+  evaluates to its result, even when the result is unused. `key` is an ordinary prop that takes
+  precedence in source order, though its expression is evaluated after the other props; it
   type-checks only on components that declare it. Fragments evaluate to their children as a flat
   array without `null`, `undefined` or booleans. There are no intrinsic elements: a lowercase tag is
   a type error and throws. `#rpp/jsx` exports `jsx`, `jsxs`, `createElement`, `Fragment`, the
