@@ -224,6 +224,13 @@ mod tests {
             .insert("rpp:discovered".into(), "export default {};".into());
         f.get(&f.cache, &changed);
         assert_eq!(f.builds.get(), 2);
+        changed.jsx_import_source = Some("#plugins/ui".into());
+        f.get(&f.cache, &changed);
+        f.get(&f.cache, &changed);
+        assert_eq!(f.builds.get(), 3);
+        changed.jsx_import_source = Some("#plugins/other".into());
+        f.get(&f.cache, &changed);
+        assert_eq!(f.builds.get(), 4);
     }
 
     #[test]

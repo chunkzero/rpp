@@ -6,6 +6,34 @@ use tempfile::TempDir;
 use common::{bundle_error, request, source_list, write};
 
 #[test]
+fn automatic_jsx_uses_the_config_for_key_after_spread() {
+    let dir = TempDir::new().unwrap();
+    let root = dir.path();
+    write(
+        root,
+        "main.tsx",
+        "const props = { children: 'main' };\nexport const out = <shop {...props} key=\"shop\" />;\n",
+    );
+    let mut req = request(root, "main.tsx");
+    req.jsx_import_source = Some("#plugins/ui".into());
+    req.virtual_modules.insert(
+        "#plugins/ui/jsx-runtime".into(),
+        "export const jsx = (type: string, props: unknown) => [type, props];\nexport const jsxs = jsx;\nexport const Fragment = 'fragment';\n".into(),
+    );
+    req.virtual_modules.insert(
+        "#plugins/ui".into(),
+        "export const jsx = (type: string, props: unknown) => [type, props];\n".into(),
+    );
+    assert!(bundle_error(&req).contains("\"createElement\" is not exported"));
+    req.virtual_modules.insert(
+        "#plugins/ui".into(),
+        "export const createElement = (type: string, props: unknown) => [type, props];\n".into(),
+    );
+    let output = bundle(&req).unwrap();
+    assert!(!output.code.contains("import "), "{}", output.code);
+}
+
+#[test]
 fn bundles_typescript_with_relative_imports() {
     let dir = TempDir::new().unwrap();
     let root = dir.path().canonicalize().unwrap();

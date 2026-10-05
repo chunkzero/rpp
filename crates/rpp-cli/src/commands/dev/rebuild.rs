@@ -136,6 +136,7 @@ impl DevSession {
         self.watcher
             .set_config_files(reloaded.config_files())
             .context("updating watched config files")?;
+        crate::codegen::write_best_effort(&reloaded.root);
         Ok(reloaded)
     }
 

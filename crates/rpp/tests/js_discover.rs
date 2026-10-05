@@ -186,13 +186,32 @@ fn tsx_definitions_compile_against_the_plugin_jsx_runtime() {
     );
     project.write(
         "plugin/src/config.ts",
-        "export const jsx = (type: string, props: { children?: string }) => `${type}:${props.children}`;
-\
-         export const jsxs = jsx;\nexport const Fragment = \"fragment\";\n",
+        "export const jsx = (type: string, props: { children?: string }): string => `${type}:${props.children}`;\n\
+         export const jsxs: typeof jsx = jsx;\nexport const Fragment: string = \"fragment\";\n\
+         export namespace JSX { export type Element = string; export interface IntrinsicElements { shop: { children?: string } } }\n",
     );
     project.write(
         "src/shop/window/window.tsx",
         "export const title = <shop>Main</shop>;\n",
+    );
+    assert_eq!(project.found().unwrap()[0]["title"], "shop:Main");
+
+    let packed = rpp_js::pack(&rpp_js::PackRequest {
+        root: project.dir.path().join("plugin"),
+        plugin: "src/plugin.ts".into(),
+        config: Some("src/config.ts".into()),
+        self_specifier: Some("#plugins/shop-ui".into()),
+    })
+    .unwrap();
+    assert!(packed.files["dist/config.d.ts"].contains("export *"));
+    assert!(packed.declarations["types/src/config.d.ts"].contains("namespace JSX"));
+    for (path, text) in packed.files.into_iter().chain(packed.declarations) {
+        project.write(&format!("plugin/{path}"), &text);
+    }
+    project.write(
+        "plugin/rpp.json",
+        r#"{"name":"shop-ui","version":"1.0.0","entry":"dist/plugin.js","config":"dist/config.js","jsx":true,
+            "discover":{"windows":"*/window/**/window.tsx"}}"#,
     );
     assert_eq!(project.found().unwrap()[0]["title"], "shop:Main");
 }

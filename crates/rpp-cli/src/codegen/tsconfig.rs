@@ -50,10 +50,11 @@ pub(super) fn tsconfig(plugin_configs: Option<&BTreeMap<String, PluginConfig>>) 
         .into_iter()
         .flatten()
         .filter(|(_, config)| config.jsx);
-    if let (Some((name, _)), None) = (jsx.next(), jsx.next()) {
-        text.push_str(&format!(
-            "\n    \"jsx\": \"react-jsx\",\n    \"jsxImportSource\": \"#plugins/{name}\","
-        ));
+    if let Some((name, _)) = jsx.next() {
+        text.push_str("\n    \"jsx\": \"react-jsx\",");
+        if jsx.next().is_none() {
+            text.push_str(&format!("\n    \"jsxImportSource\": \"#plugins/{name}\","));
+        }
     }
     text.push_str(PATHS_HEAD);
     if let Some(plugin_configs) = plugin_configs {
@@ -118,7 +119,15 @@ mod tests {
             "more".to_string(),
             plugin(PathBuf::from("/more/config.ts"), true),
         );
-        assert!(!tsconfig(Some(&configs)).contains("jsxImportSource"));
+        let generated: serde_json::Value = serde_json::from_str(&tsconfig(Some(&configs))).unwrap();
+        assert_eq!(generated["compilerOptions"]["jsx"], "react-jsx");
+        assert!(generated["compilerOptions"]
+            .get("jsxImportSource")
+            .is_none());
+        for configs in [None, Some(&BTreeMap::new())] {
+            let generated: serde_json::Value = serde_json::from_str(&tsconfig(configs)).unwrap();
+            assert!(generated["compilerOptions"].get("jsx").is_none());
+        }
     }
 
     #[test]
@@ -126,7 +135,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let config = root.path().join("config.js");
         std::fs::write(&config, "export default () => {};\n").unwrap();
-        let configs = BTreeMap::from([("packed".to_string(), plugin(config.clone(), false))]);
+        let configs = BTreeMap::from([("packed".to_string(), plugin(config.clone(), true))]);
         assert!(tsconfig(Some(&configs)).contains("config.js"));
         std::fs::write(
             config.with_extension("d.ts"),
@@ -136,6 +145,11 @@ mod tests {
         let generated = tsconfig(Some(&configs));
         assert!(generated.contains("config.d.ts"));
         assert!(!generated.contains("config.js"));
+        let generated: serde_json::Value = serde_json::from_str(&generated).unwrap();
+        assert_eq!(
+            generated["compilerOptions"]["paths"]["#plugins/packed/jsx-runtime"],
+            generated["compilerOptions"]["paths"]["#plugins/packed"]
+        );
     }
 
     #[test]

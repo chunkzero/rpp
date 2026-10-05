@@ -40,7 +40,8 @@ pub struct PluginManifest {
     pub config: Option<String>,
     /// Whether the config module also exports the automatic JSX runtime (`jsx`, `jsxs`,
     /// `Fragment` and the `JSX` namespace) as `#plugins/<id>/jsx-runtime`. JSX in the files
-    /// this plugin discovers compiles against it.
+    /// this plugin discovers compiles against it. A `key` after spread props also requires
+    /// a `createElement` export from `#plugins/<id>`.
     pub jsx: bool,
     /// Required rpp version range.
     pub rpp: Option<VersionReq>,

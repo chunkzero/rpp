@@ -170,8 +170,14 @@ migration guide, as is an `entry` ending in `.lua`.
   content).
 - `jsx: true` (requires `config`) declares that the config module also exports the automatic JSX
   runtime (`jsx`, `jsxs`, `Fragment` and the `JSX` namespace), importable as
-  `#plugins/<name>/jsx-runtime`. JSX in the plugin's discovered files compiles against it, and
-  `rpp codegen` makes it the `jsxImportSource` when it is the project's only JSX plugin.
+  `#plugins/<name>/jsx-runtime`. A `key` after spread props (such as `<Tag {...props} key="id" />`)
+  also requires `createElement` from `#plugins/<name>`, called with the tag, props and variadic
+  children. JSX in the plugin's discovered files and their imports compiles against this runtime.
+  `rpp codegen` enables `react-jsx` when any dependency declares JSX and sets `jsxImportSource`
+  when exactly one does. With multiple JSX plugins, set `jsxImportSource` in the root tsconfig or
+  use `/** @jsxImportSource #plugins/<name> */` in each `.tsx` file. Existing root tsconfigs are
+  preserved; add `**/*.tsx` to their `include` if needed. Packed plugins retain the JSX exports
+  through `dist/config.js` and the `JSX` namespace through `dist/config.d.ts`.
 - `dependencies` is accepted and ignored; other unknown keys are rejected.
 
 ## 3. Core plugin model (in `crates/rpp`)
