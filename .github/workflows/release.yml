@@ -1,4 +1,4 @@
-name: Release binaries
+name: Release
 
 on:
   pull_request:
@@ -7,55 +7,61 @@ on:
       - scripts/package.sh
       - scripts/package.py
       - scripts/verify_package.py
-      - scripts/release.py
-      - scripts/test_release.py
       - scripts/install.sh
       - scripts/fixtures/**
       - crates/**
+      - integrations/jvm/**
       - Cargo.toml
       - Cargo.lock
   schedule:
     - cron: "17 4 * * *"
-  push:
-    tags: ["v*"]
   workflow_dispatch:
     inputs:
-      mode:
-        description: Release channel
+      channel:
+        description:
+          "`nightly` publishes `<workspace version>-nightly.<UTC commit time>.g<commit>`; `release` publishes the
+          workspace version"
         type: choice
         options: [nightly, release]
         default: nightly
-      publish:
-        description: Publish this rpp version to GitHub Releases
-        type: boolean
-        default: false
 
 permissions:
   contents: read
 
+# Publishing runs one at a time, so a version is never published concurrently.
 concurrency:
   group: release-${{ github.event_name == 'pull_request' && github.ref || 'publish' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+env:
+  CHANNEL: ${{ inputs.channel || 'nightly' }}
+
 jobs:
-  plan:
-    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
-    runs-on: ubuntu-latest
+  version:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
     outputs:
-      version: ${{ steps.plan.outputs.version }}
-      build: ${{ steps.plan.outputs.build }}
+      version: ${{ steps.version.outputs.version }}
+      published: ${{ steps.version.outputs.published }}
     steps:
       - uses: actions/checkout@v6
-      - run: python3 -m unittest discover -s scripts -p test_release.py
-      - id: plan
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_MODE: ${{ inputs.mode || 'release' }}
-        run: python3 scripts/release.py plan
+      - id: base
+        run: |
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import tomllib
+          with open("Cargo.toml", "rb") as source:
+              print("version=" + tomllib.load(source)["workspace"]["package"]["version"])
+          PY
+      - id: version
+        uses: chunkzero/release-tools/version@v1
+        with:
+          base: ${{ steps.base.outputs.version }}
+          channel: ${{ env.CHANNEL }}
 
   package:
-    needs: plan
-    if: needs.plan.outputs.build == 'true'
+    needs: version
+    # A commit's version is fixed, so an already published version only needs registering.
+    if: needs.version.outputs.published != 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -76,10 +82,8 @@ jobs:
       run:
         shell: bash
     env:
-      RPP_RELEASE_VERSION: ${{ needs.plan.outputs.version }}
+      RPP_RELEASE_VERSION: ${{ needs.version.outputs.version }}
       RUST_BACKTRACE: "1"
-    outputs:
-      version: ${{ needs.plan.outputs.version }}
     steps:
       - name: Free disk space
         if: runner.os == 'Linux'
@@ -107,7 +111,6 @@ jobs:
       - name: Verify installed binary, bundled compiler, example pack, and WASIp2 consumer
         run: python scripts/verify_package.py "dist/rpp-$RPP_RELEASE_VERSION-${{ matrix.platform }}.tar.gz" "$RPP_RELEASE_VERSION"
       - uses: actions/upload-artifact@v4
-        id: upload
         with:
           name: rpp-${{ matrix.platform }}
           path: |
@@ -117,16 +120,41 @@ jobs:
           # Cleanup deletes it once used; retention only bounds runs that never reach cleanup.
           retention-days: 1
 
+  maven:
+    needs: version
+    if: needs.version.outputs.published != 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      RPP_RELEASE_VERSION: ${{ needs.version.outputs.version }}
+    defaults:
+      run:
+        working-directory: integrations/jvm
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 21
+      - uses: gradle/actions/setup-gradle@v5
+      - name: Publish to a local directory and check the coordinates
+        run: |
+          ./gradlew :publishToMavenLocal "-Dmaven.repo.local=$RUNNER_TEMP/maven"
+          pom="$RUNNER_TEMP/maven/com/chunkzero/rpp/rpp-dev-client/$RPP_RELEASE_VERSION/rpp-dev-client-$RPP_RELEASE_VERSION.pom"
+          grep -q "<version>$RPP_RELEASE_VERSION</version>" "$pom"
+
   verify:
-    needs: package
-    runs-on: ubuntu-latest
+    needs: [version, package]
+    runs-on: ubuntu-24.04
     container: ubuntu:24.04
     timeout-minutes: 20
+    env:
+      RPP_VERSION: ${{ needs.version.outputs.version }}
     steps:
       - name: Install consumer prerequisites
         run: |
           apt-get update -qq
-          apt-get install -y --no-install-recommends ca-certificates curl
+          apt-get install -y --no-install-recommends ca-certificates curl git python3
       - uses: actions/checkout@v6
         with:
           sparse-checkout-cone-mode: false
@@ -138,8 +166,6 @@ jobs:
           name: rpp-linux-x64
           path: artifact
       - name: Install and run without a Rust toolchain or tsc
-        env:
-          RPP_VERSION: ${{ needs.package.outputs.version }}
         run: |
           set -eu
           export RPP_INSTALL_DIR="$RUNNER_TEMP/prefix"
@@ -151,8 +177,6 @@ jobs:
           cd scripts/fixtures/check-plugin
           rpp check
       - name: Reject a corrupted checksum
-        env:
-          RPP_VERSION: ${{ needs.package.outputs.version }}
         run: |
           set -eu
           cp -r artifact corrupted
@@ -163,84 +187,135 @@ jobs:
             exit 1
           fi
           test ! -e "$RUNNER_TEMP/rejected/bin/rpp"
+      - uses: jdx/mise-action@v3
+        with:
+          version: 2026.9.1
+          install: false
+      - name: Install through mise-chunkzero from a local registry entry
+        env:
+          MISE_CHUNKZERO_REGISTRY: http://127.0.0.1:8765
+          MISE_YES: "1"
+        run: |
+          set -eu
+          name="rpp-$RPP_VERSION-linux-x64.tar.gz"
+          mkdir -p registry/tools consumer
+          cp "artifact/$name" registry/
+          cat > registry/tools/rpp.json <<EOF
+          {"repository": "chunkzero/rpp", "channels": {}, "versions": [{"version": "$RPP_VERSION", "tag": "v$RPP_VERSION",
+            "assets": {"linux-x64": {"url": "$MISE_CHUNKZERO_REGISTRY/$name", "sha256": "$(cut -d ' ' -f 1 "artifact/$name.sha256")"}}}]}
+          EOF
+          python3 -m http.server 8765 --bind 127.0.0.1 --directory registry >/dev/null 2>&1 &
+          trap 'kill $!' EXIT
+          cd consumer
+          case "$RPP_VERSION" in
+            *-nightly.*) tool='"chunkzero:rpp-nightly" = { version = "latest", prerelease = true }' ;;
+            *) tool="\"chunkzero:rpp\" = \"$RPP_VERSION\"" ;;
+          esac
+          printf '[plugins]\nchunkzero = "https://github.com/chunkzero/mise-chunkzero"\n\n[tools]\n%s\n' "$tool" > mise.toml
+          mise trust -q
+          mise install
+          test "$(mise exec -- rpp --version)" = "rpp $RPP_VERSION"
+          mise exec -- rpp -C "$GITHUB_WORKSPACE/scripts/fixtures/check-plugin" check
 
+  # Maven first: a published CLI's dev client must already resolve.
   publish:
-    if: github.event_name == 'schedule' || github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish)
-    needs: [plan, package, verify]
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    environment: release
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    needs: [version, package, maven, verify]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
     permissions:
       contents: write
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      RPP_RELEASE_VERSION: ${{ needs.version.outputs.version }}
+      REPOSITORY: ${{ inputs.channel == 'release' && 'releases' || 'nightlies' }}
+      MAVEN_URL: https://maven.chunkzero.com${{ inputs.channel != 'release' && '/nightlies' || '' }}
     steps:
       - uses: actions/checkout@v6
       - uses: actions/download-artifact@v4
         with:
           pattern: rpp-*
           merge-multiple: true
-          path: artifact/dist
-      - name: Publish verified draft assets
+          path: dist
+      - name: Add the installer
+        run: |
+          cp scripts/install.sh dist/
+          (cd dist && sha256sum install.sh > install.sh.sha256)
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 21
+      - uses: gradle/actions/setup-gradle@v5
+      - uses: chunkzero/maven-r2@v1
+        with:
+          version: v0.1.0
+      - name: Publish the Maven artifacts
+        working-directory: integrations/jvm
+        env:
+          MAVEN_R2_SERVER: https://maven.chunkzero.com
+          MAVEN_R2_TOKEN: ${{ secrets.MAVEN_R2_TOKEN }}
+        run: |
+          : "${MAVEN_R2_TOKEN:?Set the Maven R2 publishing token secret}"
+          pom="com/chunkzero/rpp/rpp-dev-client/$VERSION/rpp-dev-client-$VERSION.pom"
+          # A retry after a failed GitHub release finds the Maven artifacts already published.
+          status=$(curl -sS -o /dev/null -w '%{http_code}' "$MAVEN_URL/$pom")
+          case "$status" in
+            200) echo "$pom is already published" ;;
+            404) maven-r2 publish --repository "default/$REPOSITORY" -- ./gradlew :publishAllPublicationsToMavenR2Repository ;;
+            *) echo "::error::Unexpected HTTP $status from $MAVEN_URL/$pom"; exit 1 ;;
+          esac
+          curl --fail --retry 5 --retry-all-errors --retry-delay 2 "$MAVEN_URL/$pom" -o "$RUNNER_TEMP/published.pom"
+          grep -q "<version>$VERSION</version>" "$RUNNER_TEMP/published.pom"
+      - uses: chunkzero/release-tools/publish@v1
+        with:
+          version: ${{ needs.version.outputs.version }}
+          directory: dist
+          title: rpp
+
+  register:
+    if: >-
+      always() && github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && needs.version.result ==
+      'success' && (needs.publish.result == 'success' || needs.version.outputs.published == 'true')
+    needs: [version, publish]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Download the published archives
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_VERSION: ${{ needs.package.outputs.version }}
-        run: |
-          cp scripts/install.sh artifact/dist/
-          (cd artifact/dist && sha256sum install.sh > install.sh.sha256)
-          python3 scripts/release.py publish --directory artifact/dist
-      - uses: aquaproj/aqua-installer@v4.0.5
+          VERSION: ${{ needs.version.outputs.version }}
+        run: gh release download "v$VERSION" --repo "$GITHUB_REPOSITORY" --pattern 'rpp-*' --dir dist
+      - uses: actions/create-github-app-token@v2
+        id: token
         with:
-          aqua_version: v2.63.0
-          skip_install_aqua: false
-          enable_aqua_install: "false"
-      - name: Verify registry installation and bundled compiler
-        env:
-          AQUA_GITHUB_TOKEN: ${{ github.token }}
-          RELEASE_VERSION: ${{ needs.package.outputs.version }}
-        run: |
-          mkdir -p "$RUNNER_TEMP/aqua-consumer"
-          cd "$RUNNER_TEMP/aqua-consumer"
-          cat > aqua.yaml <<EOF
-          checksum:
-            enabled: true
-            require_checksum: true
-          registries:
-            - name: chunkzero-github
-              type: github_content
-              repo_owner: chunkzero
-              repo_name: aqua-registry
-              ref: 377cfe0fcd1a42625c428a00bf209b7544e92297
-              path: registry.yaml
-          packages:
-            - name: chunkzero/rpp@v$RELEASE_VERSION
-              registry: chunkzero-github
-          EOF
-          cp "$GITHUB_WORKSPACE/scripts/aqua-policy.yaml" .
-          export AQUA_POLICY_CONFIG="$PWD/aqua-policy.yaml"
-          aqua policy allow "$AQUA_POLICY_CONFIG"
-          aqua update-checksum
-          aqua install
-          test "$(aqua exec -- rpp --version)" = "rpp $RELEASE_VERSION"
-          cd "$GITHUB_WORKSPACE/scripts/fixtures/check-plugin"
-          aqua -c "$RUNNER_TEMP/aqua-consumer/aqua.yaml" exec -- rpp check
+          app-id: ${{ secrets.REGISTRY_APP_ID }}
+          private-key: ${{ secrets.REGISTRY_APP_PRIVATE_KEY }}
+          owner: chunkzero
+          repositories: mise-registry
+      - uses: chunkzero/release-tools/mise-registry@v1
+        with:
+          tool: rpp
+          version: ${{ needs.version.outputs.version }}
+          directory: dist
+          token: ${{ steps.token.outputs.token }}
 
-  # Release archives only need to survive the handoff between these jobs.
+  # Preserve archives after failures so retries can reuse the successful builds.
   cleanup:
     if: >-
-      always() && github.actor != 'dependabot[bot]' &&
-      (github.event_name != 'pull_request' ||
-      github.event.pull_request.head.repo.full_name == github.repository)
-    needs: [package, verify, publish]
-    runs-on: ubuntu-latest
+      always() && github.actor != 'dependabot[bot]' && (needs.publish.result == 'success' || (github.event_name ==
+      'pull_request' && needs.verify.result == 'success' && github.event.pull_request.head.repo.full_name ==
+      github.repository))
+    needs: [verify, publish]
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
       actions: write
     steps:
-      - name: Delete release artifacts from this run
+      - name: Delete this run's artifacts
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/artifacts" --paginate \
-            --jq '.artifacts[] | select(.name | startswith("rpp-")) | .id' |
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/artifacts" --paginate --jq '.artifacts[].id' |
             while read -r id; do
               gh api --method DELETE "repos/$GITHUB_REPOSITORY/actions/artifacts/$id"
             done
