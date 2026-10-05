@@ -116,6 +116,14 @@ outputs? }`; `plugin` names an `rpp.json` dependency (`^[a-z0-9][a-z0-9_-]*$`). 
 options?, access?)` builds an entry, and a plugin's config factory (a `definePluginConfig`
   default export, imported as `#plugins/<name>`) validates and normalizes its options first.
 - `#rpp/config` provides `defineConfig`, `plugin`, `definePluginConfig` and the config types.
+- Every `.tsx` file rpp bundles or packs (config imports, plugins, discovered files) compiles
+  with the automatic JSX runtime from `#rpp/jsx`; plugins cannot replace it. A tag is a component: `<C a={1}>x</C>` calls
+  `C({ a: 1, children: "x" })` (several children become an array) and evaluates to its result.
+  `key` is an ordinary prop, so it type-checks only on components that declare it. Fragments
+  evaluate to their children as a flat array without `null`, `undefined` or booleans. There are
+  no intrinsic elements: a lowercase tag is a type error and throws. `#rpp/jsx` exports `jsx`,
+  `jsxs`, `createElement`, `Fragment`, the `Child` and `Component` types and the `JSX` namespace,
+  whose `Element` accepts any component result.
 - Keys inside `options` and `outputs` are kept verbatim; `null` values are invalid.
 - The Lua-era keys (`build.lua`, `permissions.lua`, `security: "native"`, `id`, `source`, `ref`,
   `subdir`) are rejected with a pointer to the migration guide. Errors blame `rpp.config.ts`.
@@ -144,7 +152,6 @@ migration guide, as is an `entry` ending in `.lua`.
   "rpp": ">=0.2",
   "entry": "src/plugin.ts",
   "config": "src/config.ts",
-  "jsx": true,
   "components": { "compiler": "window.wasm" },
   "discover": { "windows": "*/window/**/window.ts" },
   "overrides": ["assets/*/textures/**"]
@@ -167,17 +174,8 @@ migration guide, as is an `entry` ending in `.lua`.
   module as `#plugins/<name>`. Discovered files and the source files they import are
   authoring inputs: they are excluded from processors, `sourceFiles()` and pack output, as is
   every `.ts`, `.mts`, `.cts` or `.tsx` file under the source directory (TypeScript is never pack
-  content).
-- `jsx: true` (requires `config`) declares that the config module also exports the automatic JSX
-  runtime (`jsx`, `jsxs`, `Fragment` and the `JSX` namespace), importable as
-  `#plugins/<name>/jsx-runtime`. A `key` after spread props (such as `<Tag {...props} key="id" />`)
-  also requires `createElement` from `#plugins/<name>`, called with the tag, props and variadic
-  children. JSX in the plugin's discovered files and their imports compiles against this runtime.
-  `rpp codegen` enables `react-jsx` when any dependency declares JSX and sets `jsxImportSource`
-  when exactly one does. With multiple JSX plugins, set `jsxImportSource` in the root tsconfig or
-  use `/** @jsxImportSource #plugins/<name> */` in each `.tsx` file. Existing root tsconfigs are
-  preserved; add `**/*.tsx` to their `include` if needed. Packed plugins retain the JSX exports
-  through `dist/config.js` and the `JSX` namespace through `dist/config.d.ts`.
+  content). Discovered files are evaluated when the bundle loads, before any hook, so they have no
+  build context; anything that depends on it is a reference the plugin resolves in `generate`.
 - `dependencies` is accepted and ignored; other unknown keys are rejected.
 
 ## 3. Core plugin model (in `crates/rpp`)
@@ -321,8 +319,8 @@ stderr }`. Requires `security: "trusted"` with the program in `permissions.proce
 
 ### Module resolution & sandbox
 
-- Imports resolve within the plugin package, to `#rpp`, `#rpp/config`, `#plugins/<name>` for
-  packages with a config module, and to npm dependencies inlined from `node_modules`. `node:`
+- Imports resolve within the plugin package, to `#rpp`, `#rpp/config`, `#rpp/jsx`,
+  `#plugins/<name>` for packages with a config module, and to npm dependencies inlined from `node_modules`. `node:`
   imports are rejected. There is no filesystem, network, clock or randomness access: the
   isolate gets deterministic host calls only, and trusted clock/random grants disable cache
   replay for that plugin.
@@ -558,9 +556,11 @@ pub fn run_packsquash(binary: &str, pack_dir: &Path, zip_path: &Path, options_fi
   live-reload events listing changed paths. Plugin file changes reload that plugin and
   invalidate accordingly; `rpp.config.ts` and `rpp.json` changes do a full reload.
 - `rpp clean` — remove output + cache.
-- `rpp codegen` — write the TypeScript SDK (`.rpp/sdk/`) and `.rpp/tsconfig.json`, and a
-  root `tsconfig.json` (including `.tsx` files) if missing, in the nearest directory with
-  `rpp.config.ts` or `rpp.json`, and a `.rpp/generated/<name>.d.ts` for each built component a plugin manifest declares.
+- `rpp codegen` — write the TypeScript SDK (`.rpp/sdk/`) and `.rpp/tsconfig.json` (which sets
+  `jsxImportSource` to `#rpp/jsx`), and a root `tsconfig.json` (including `.tsx` files) if missing,
+  in the nearest directory with `rpp.config.ts` or `rpp.json`, and a
+  `.rpp/generated/<name>.d.ts` for each built component a plugin manifest declares. Existing root
+  tsconfigs are preserved; add `**/*.tsx` to their `include` to check `.tsx` files.
   `build` and `dev` do this best-effort.
 - `rpp check` — `codegen`, then run `tsc -p tsconfig.json --noEmit`. The compiler is
   `RPP_TSC`, else `toolchain/typescript/7.0.2/tsc` beside the `rpp` executable (bundled in

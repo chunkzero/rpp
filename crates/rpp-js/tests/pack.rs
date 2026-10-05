@@ -24,6 +24,7 @@ fn request(root: &Path, plugin: &str, config: Option<&str>) -> PackRequest {
         plugin: plugin.to_string(),
         config: config.map(str::to_string),
         self_specifier: None,
+        jsx_import_source: None,
     }
 }
 

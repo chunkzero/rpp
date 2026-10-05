@@ -8,7 +8,7 @@ use serde_json::Value;
 
 use super::bundle_cache::cached_bundle;
 use super::discover::{discovered_module, Discovery};
-use super::{SDK_CONFIG, SDK_INDEX};
+use super::{jsx_modules, JSX_IMPORT_SOURCE, SDK_CONFIG, SDK_INDEX};
 use crate::error::{Error, Result};
 use crate::manifest::PluginManifest;
 use crate::util::path::to_forward_slash;
@@ -42,6 +42,7 @@ pub(super) fn bundle_plugin(
             root: root.to_path_buf(),
             entry: "rpp:entry".into(),
             virtual_modules: virtual_modules(&format!("./{}", manifest.entry), false),
+            jsx_import_source: Some(JSX_IMPORT_SOURCE.to_string()),
             ..Default::default()
         };
         let bundle = cached_bundle(cache_dir, &manifest.id, &request, || {
@@ -86,11 +87,14 @@ fn virtual_modules(entry: &str, discovered: bool) -> BTreeMap<String, String> {
         "import plugin from {};\nimport {{ register }} from \"rpp:runtime\";\n{import}{register}\nexport * from \"rpp:runtime\";\n",
         Value::String(entry.to_string())
     );
-    BTreeMap::from([
+    [
         ("#rpp".to_string(), SDK_INDEX.to_string()),
         ("rpp:runtime".to_string(), RUNTIME_SOURCE.to_string()),
         ("rpp:entry".to_string(), entry_module),
-    ])
+    ]
+    .into_iter()
+    .chain(jsx_modules())
+    .collect()
 }
 
 /// Bundle the plugin together with the files its patterns match under `source`. The bundle
@@ -115,21 +119,15 @@ fn bundle_discovered(
         entry: entry.to_string(),
     };
     let mut packages = BTreeMap::from([("#plugin".to_string(), package(&manifest.entry))]);
-    let mut jsx_import_source = None;
     if let Some(config) = &manifest.config {
-        let specifier = format!("#plugins/{}", manifest.id);
-        packages.insert(specifier.clone(), package(config));
-        if manifest.jsx {
-            packages.insert(format!("{specifier}/jsx-runtime"), package(config));
-            jsx_import_source = Some(specifier);
-        }
+        packages.insert(format!("#plugins/{}", manifest.id), package(config));
     }
     let request = BundleRequest {
         root: source.to_path_buf(),
         entry: "rpp:entry".into(),
         virtual_modules,
         packages,
-        jsx_import_source,
+        jsx_import_source: Some(JSX_IMPORT_SOURCE.to_string()),
     };
     let bundle = cached_bundle(cache_dir, &manifest.id, &request, || {
         rpp_js::bundle(&request).map_err(|e| e.to_string())

@@ -32,6 +32,8 @@ pub struct PackRequest {
     /// The specifier other plugins use to import this plugin's config (e.g.
     /// `#plugins/window`); it resolves to the `config` entry.
     pub self_specifier: Option<String>,
+    /// See [`BundleRequest::jsx_import_source`]; the import source stays an import.
+    pub jsx_import_source: Option<String>,
 }
 
 /// The files of a packed plugin, as text keyed by archive path.
@@ -64,6 +66,7 @@ pub fn pack(request: &PackRequest) -> Result<PackOutput> {
     }
     let bundle_request = BundleRequest {
         root: request.root.clone(),
+        jsx_import_source: request.jsx_import_source.clone(),
         ..Default::default()
     };
     let mut settings = settings(request);
@@ -145,16 +148,21 @@ fn chunk_files(chunks: Vec<Chunk>) -> Result<BTreeMap<String, String>> {
 fn is_typescript(path: &str) -> bool {
     (path.ends_with(".ts") && !path.ends_with(".d.ts"))
         || (path.ends_with(".mts") && !path.ends_with(".d.mts"))
+        || path.ends_with(".tsx")
 }
 
-/// `types/<path>.d.ts` for a `.ts` file, `.d.mts` for a `.mts` file.
+/// The path without its `.ts` or `.tsx` extension.
+fn ts_stem(path: &str) -> &str {
+    path.strip_suffix(".tsx")
+        .or_else(|| path.strip_suffix(".ts"))
+        .unwrap_or(path)
+}
+
+/// `types/<path>.d.ts` for a `.ts` or `.tsx` file, `.d.mts` for a `.mts` file.
 fn declaration_path(relative: &str) -> String {
     match relative.strip_suffix(".mts") {
         Some(stem) => format!("types/{stem}.d.mts"),
-        None => format!(
-            "types/{}.d.ts",
-            relative.strip_suffix(".ts").unwrap_or(relative)
-        ),
+        None => format!("types/{}.d.ts", ts_stem(relative)),
     }
 }
 
@@ -164,10 +172,7 @@ fn config_stub(config: &str, declarations: &BTreeMap<String, Declaration>) -> Op
     let declaration = declarations.get(&declaration_path(config))?;
     let target = match config.strip_suffix(".mts") {
         Some(stem) => format!("../types/{stem}.mjs"),
-        None => format!(
-            "../types/{}.js",
-            config.strip_suffix(".ts").unwrap_or(config)
-        ),
+        None => format!("../types/{}.js", ts_stem(config)),
     };
     let mut stub = format!("export * from \"{target}\";\n");
     if declaration.has_default {
@@ -199,7 +204,7 @@ struct Declaration {
     has_default: bool,
 }
 
-/// Isolated declarations for every `.ts`/`.mts` file in `inputs` under `root` outside
+/// Isolated declarations for every `.ts`/`.tsx`/`.mts` file in `inputs` under `root` outside
 /// `node_modules`, and for the relative modules those declarations refer to, which
 /// bundling never loads when they are only used as types.
 fn declare(root: &Path, inputs: &[PathBuf]) -> Result<BTreeMap<String, Declaration>> {
@@ -261,17 +266,23 @@ fn resolve_relative(dir: &Path, specifier: &str) -> Option<PathBuf> {
     let mut candidates = vec![base.clone()];
     if let Some(stem) = text.strip_suffix(".js") {
         candidates.push(format!("{stem}.ts").into());
+        candidates.push(format!("{stem}.tsx").into());
     }
     if let Some(stem) = text.strip_suffix(".mjs") {
         candidates.push(format!("{stem}.mts").into());
     }
-    for extension in ["ts", "mts"] {
+    for extension in ["ts", "tsx", "mts"] {
         candidates.push(format!("{text}.{extension}").into());
         candidates.push(base.join(format!("index.{extension}")));
     }
     candidates
         .into_iter()
-        .filter(|c| matches!(c.extension().and_then(|e| e.to_str()), Some("ts" | "mts")))
+        .filter(|c| {
+            matches!(
+                c.extension().and_then(|e| e.to_str()),
+                Some("ts" | "tsx" | "mts")
+            )
+        })
         .find_map(|c| c.canonicalize().ok().filter(|c| c.is_file()))
 }
 

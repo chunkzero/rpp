@@ -38,11 +38,6 @@ pub struct PluginManifest {
     /// Config module (relative to the plugin root) whose default export is the
     /// plugin's config factory.
     pub config: Option<String>,
-    /// Whether the config module also exports the automatic JSX runtime (`jsx`, `jsxs`,
-    /// `Fragment` and the `JSX` namespace) as `#plugins/<id>/jsx-runtime`. JSX in the files
-    /// this plugin discovers compiles against it. A `key` after spread props also requires
-    /// a `createElement` export from `#plugins/<id>`.
-    pub jsx: bool,
     /// Required rpp version range.
     pub rpp: Option<VersionReq>,
     /// Entry discovery patterns by name, relative to the pack source directory.
@@ -72,8 +67,6 @@ struct RawJsonManifest {
     entry: Option<String>,
     #[serde(default)]
     config: Option<String>,
-    #[serde(default)]
-    jsx: bool,
     #[serde(default)]
     components: BTreeMap<String, String>,
     #[serde(default)]
@@ -172,7 +165,6 @@ impl PluginManifest {
     ///   "rpp": ">=0.2",
     ///   "entry": "src/plugin.ts",
     ///   "config": "src/config.ts",
-    ///   "jsx": true,
     ///   "components": { "compiler": "window.wasm" },
     ///   "discover": { "windows": "*/window/**/window.ts" }
     /// }
@@ -181,7 +173,7 @@ impl PluginManifest {
     /// `discover` maps names (same grammar) to one glob each, relative to the pack source
     /// directory. `name` becomes [`PluginManifest::id`] (same grammar). `entry` defaults to
     /// `src/plugin.ts` and must be a JavaScript entry; `entry`, `config` and component
-    /// paths must be relative. `jsx` requires `config`. `rpp` is a version requirement checked by
+    /// paths must be relative. `rpp` is a version requirement checked by
     /// [`PluginManifest::load`]. Unknown keys are rejected, except `dependencies`, which is
     /// ignored.
     pub fn parse_json(text: &str, path: impl Into<PathBuf>) -> Result<Self> {
@@ -198,8 +190,6 @@ impl PluginManifest {
         validate_entry(&entry)?;
         if let Some(config) = &raw.config {
             validate_relative(config).map_err(|m| format!("invalid `config`: {m}"))?;
-        } else if raw.jsx {
-            return Err("`jsx` requires a `config` module that exports the JSX runtime".into());
         }
         let components = parse_components(raw.components)?;
         validate_discover(&raw.discover)?;
@@ -211,7 +201,6 @@ impl PluginManifest {
             entry,
             components,
             config: raw.config,
-            jsx: raw.jsx,
             rpp,
             discover: raw.discover,
             overrides: raw.overrides,
@@ -303,22 +292,6 @@ mod tests {
             let err = PluginManifest::parse_json(&text, "rpp.json").unwrap_err();
             assert!(matches!(err, Error::Manifest { .. }), "{discover}");
         }
-    }
-
-    #[test]
-    fn jsx_requires_a_config_module() {
-        let m = PluginManifest::parse_json(
-            r#"{"name":"x","version":"1.0.0","config":"src/config.ts","jsx":true}"#,
-            "rpp.json",
-        );
-        assert!(m.unwrap().jsx);
-        let err =
-            PluginManifest::parse_json(r#"{"name":"x","version":"1.0.0","jsx":true}"#, "rpp.json")
-                .unwrap_err();
-        assert!(
-            err.to_string().contains("`jsx` requires a `config`"),
-            "{err}"
-        );
     }
 
     #[test]

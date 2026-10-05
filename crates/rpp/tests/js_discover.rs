@@ -177,43 +177,68 @@ fn definitions_import_plugin_api_via_plugins_specifier() {
 }
 
 #[test]
-fn tsx_definitions_compile_against_the_plugin_jsx_runtime() {
+fn tsx_definitions_compile_against_the_sdk_jsx_runtime() {
     let project = Project::new(PLUGIN);
     project.write(
         "plugin/rpp.json",
-        r#"{"name":"shop-ui","version":"1.0.0","config":"src/config.ts","jsx":true,
+        r#"{"name":"shop-ui","version":"1.0.0","config":"src/config.ts",
             "discover":{"windows":"*/window/**/window.tsx"}}"#,
     );
     project.write(
         "plugin/src/config.ts",
-        "export const jsx = (type: string, props: { children?: string }): string => `${type}:${props.children}`;\n\
-         export const jsxs: typeof jsx = jsx;\nexport const Fragment: string = \"fragment\";\n\
-         export namespace JSX { export type Element = string; export interface IntrinsicElements { shop: { children?: string } } }\n",
+        "export { Shop } from \"./shop.tsx\";\n",
+    );
+    project.write(
+        "plugin/src/shop.tsx",
+        "import type { Child } from \"#rpp/jsx\";\n\
+         const Label = (props: { children?: Child }) => [props.children].flat().join(\",\");\n\
+         export const Shop = (props: { key?: string; children?: Child }): string =>\n\
+           `${props.key}:${<Label>{props.children}</Label>}`;\n",
     );
     project.write(
         "src/shop/window/window.tsx",
-        "export const title = <shop>Main</shop>;\n",
+        "import { Shop } from \"#plugins/shop-ui\";\n\
+         const parts = <>{\"a\"}{false}{[\"b\", null]}</>;\n\
+         export const title = <Shop key=\"k\">{parts}</Shop>;\n",
     );
-    assert_eq!(project.found().unwrap()[0]["title"], "shop:Main");
+    assert_eq!(project.found().unwrap()[0]["title"], "k:a,b");
 
     let packed = rpp_js::pack(&rpp_js::PackRequest {
         root: project.dir.path().join("plugin"),
         plugin: "src/plugin.ts".into(),
         config: Some("src/config.ts".into()),
         self_specifier: Some("#plugins/shop-ui".into()),
+        jsx_import_source: Some(rpp::js::JSX_IMPORT_SOURCE.into()),
     })
     .unwrap();
-    assert!(packed.files["dist/config.d.ts"].contains("export *"));
-    assert!(packed.declarations["types/src/config.d.ts"].contains("namespace JSX"));
+    assert!(packed.declarations.contains_key("types/src/shop.d.ts"));
     for (path, text) in packed.files.into_iter().chain(packed.declarations) {
         project.write(&format!("plugin/{path}"), &text);
     }
     project.write(
         "plugin/rpp.json",
-        r#"{"name":"shop-ui","version":"1.0.0","entry":"dist/plugin.js","config":"dist/config.js","jsx":true,
+        r#"{"name":"shop-ui","version":"1.0.0","entry":"dist/plugin.js","config":"dist/config.js",
             "discover":{"windows":"*/window/**/window.tsx"}}"#,
     );
-    assert_eq!(project.found().unwrap()[0]["title"], "shop:Main");
+    assert_eq!(project.found().unwrap()[0]["title"], "k:a,b");
+}
+
+#[test]
+fn intrinsic_jsx_tags_are_rejected() {
+    let project = Project::new(PLUGIN);
+    project.write(
+        "plugin/rpp.json",
+        r#"{"name":"shop-ui","version":"1.0.0","discover":{"windows":"*/window/**/window.tsx"}}"#,
+    );
+    project.write(
+        "src/shop/window/window.tsx",
+        "export const title = <shop />;\n",
+    );
+    let error = project.found().unwrap_err().to_string();
+    assert!(
+        error.contains("<shop>: JSX tags must be components"),
+        "{error}"
+    );
 }
 
 #[test]
