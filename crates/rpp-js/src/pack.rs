@@ -268,6 +268,9 @@ fn resolve_relative(dir: &Path, specifier: &str) -> Option<PathBuf> {
         candidates.push(format!("{stem}.ts").into());
         candidates.push(format!("{stem}.tsx").into());
     }
+    if let Some(stem) = text.strip_suffix(".jsx") {
+        candidates.push(format!("{stem}.tsx").into());
+    }
     if let Some(stem) = text.strip_suffix(".mjs") {
         candidates.push(format!("{stem}.mts").into());
     }

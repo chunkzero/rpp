@@ -16,7 +16,7 @@ export function jsx(
   if (typeof type !== "function") {
     throw new TypeError(`<${String(type)}>: JSX tags must be components`);
   }
-  return type(key === undefined ? props : { ...props, key }) as JSX.Element;
+  return type(key === undefined ? props : { key, ...props }) as JSX.Element;
 }
 
 export const jsxs: typeof jsx = jsx;
@@ -51,6 +51,7 @@ export function Fragment(props: { children?: Child }): Child[] {
 export declare namespace JSX {
   /** Any component result. */
   interface Element {}
+  type ElementType = Component;
   interface ElementChildrenAttribute {
     children: {};
   }

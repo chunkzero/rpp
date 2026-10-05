@@ -1,9 +1,57 @@
 mod common;
 
-use rpp_js::bundle;
+use rpp_js::{bundle, BundleRequest, Engine};
 use tempfile::TempDir;
 
-use common::{bundle_error, request, source_list, write};
+use common::{bundle_error, call, load, request, source_list, write};
+
+/// Compile JSX against `#ui`, whose runtime calls the component.
+fn with_jsx_runtime(mut req: BundleRequest) -> BundleRequest {
+    req.jsx_import_source = Some("#ui".into());
+    req.virtual_modules.insert(
+        "#ui/jsx-runtime".into(),
+        "export const jsx = (type: (props: unknown) => unknown, props: unknown) => type(props);\nexport const jsxs = jsx;\n".into(),
+    );
+    req
+}
+
+#[test]
+fn unused_jsx_elements_still_call_their_components() {
+    let dir = TempDir::new().unwrap();
+    let root = dir.path();
+    write(
+        root,
+        "main.tsx",
+        "let count = 0;\nconst C = () => { count++; return null; };\n<C />;\nexport const read = () => count;\n",
+    );
+    let output = bundle(&with_jsx_runtime(request(root, "main.tsx"))).unwrap();
+    let engine = Engine::new().unwrap();
+    let mut runtime = load(&engine, &output.code);
+    assert_eq!(
+        call(&mut runtime, &engine, "read", serde_json::Value::Null).unwrap(),
+        1
+    );
+}
+
+#[test]
+fn jsx_pragmas_are_rejected() {
+    let dir = TempDir::new().unwrap();
+    let root = dir.path();
+    for pragma in ["@jsxImportSource ./custom", "@jsxRuntime classic", "@jsx h"] {
+        write(
+            root,
+            "main.tsx",
+            &format!(
+                "/** {pragma} */\nconst h = (..._: unknown[]) => 1;\nexport const out = <h />;\n"
+            ),
+        );
+        let error = bundle_error(&with_jsx_runtime(request(root, "main.tsx")));
+        assert!(
+            error.contains("main.tsx: JSX pragmas are not supported"),
+            "{error}"
+        );
+    }
+}
 
 #[test]
 fn automatic_jsx_uses_create_element_for_key_after_spread() {

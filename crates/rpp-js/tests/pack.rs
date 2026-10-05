@@ -218,6 +218,26 @@ fn pack_emits_isolated_declarations() {
 }
 
 #[test]
+fn pack_declares_tsx_modules_imported_as_jsx() {
+    let dir = TempDir::new().unwrap();
+    let root = dir.path();
+    write(
+        root,
+        "src/options.tsx",
+        "export interface Options { size: number }\n",
+    );
+    write(
+        root,
+        "src/config.ts",
+        "import type { Options } from './options.jsx';\nexport default function config(options: Options): number { return options.size; }\n",
+    );
+    write(root, "src/plugin.ts", "export const run = () => 1;\n");
+    let output = packed(root, "src/plugin.ts", Some("src/config.ts"));
+    let keys: Vec<_> = output.declarations.keys().map(String::as_str).collect();
+    assert_eq!(keys, ["types/src/config.d.ts", "types/src/options.d.ts"]);
+}
+
+#[test]
 fn pack_reports_isolated_declaration_errors() {
     let dir = TempDir::new().unwrap();
     let root = dir.path();

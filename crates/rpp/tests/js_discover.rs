@@ -201,7 +201,14 @@ fn tsx_definitions_compile_against_the_sdk_jsx_runtime() {
          const parts = <>{\"a\"}{false}{[\"b\", null]}</>;\n\
          export const title = <Shop key=\"k\">{parts}</Shop>;\n",
     );
-    assert_eq!(project.found().unwrap()[0]["title"], "k:a,b");
+    project.write(
+        "src/spread/window/window.tsx",
+        "import { Shop } from \"#plugins/shop-ui\";\n\
+         export const title = <Shop key=\"first\" {...{ key: \"last\" }}>x</Shop>;\n",
+    );
+    let found = project.found().unwrap();
+    assert_eq!(found[0]["title"], "k:a,b");
+    assert_eq!(found[1]["title"], "last:x");
 
     let packed = rpp_js::pack(&rpp_js::PackRequest {
         root: project.dir.path().join("plugin"),
@@ -220,7 +227,7 @@ fn tsx_definitions_compile_against_the_sdk_jsx_runtime() {
         r#"{"name":"shop-ui","version":"1.0.0","entry":"dist/plugin.js","config":"dist/config.js",
             "discover":{"windows":"*/window/**/window.tsx"}}"#,
     );
-    assert_eq!(project.found().unwrap()[0]["title"], "k:a,b");
+    assert_eq!(project.found().unwrap(), found);
 }
 
 #[test]

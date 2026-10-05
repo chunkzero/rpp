@@ -116,14 +116,16 @@ outputs? }`; `plugin` names an `rpp.json` dependency (`^[a-z0-9][a-z0-9_-]*$`). 
 options?, access?)` builds an entry, and a plugin's config factory (a `definePluginConfig`
   default export, imported as `#plugins/<name>`) validates and normalizes its options first.
 - `#rpp/config` provides `defineConfig`, `plugin`, `definePluginConfig` and the config types.
-- Every `.tsx` file rpp bundles or packs (config imports, plugins, discovered files) compiles
-  with the automatic JSX runtime from `#rpp/jsx`; plugins cannot replace it. A tag is a component: `<C a={1}>x</C>` calls
-  `C({ a: 1, children: "x" })` (several children become an array) and evaluates to its result.
-  `key` is an ordinary prop, so it type-checks only on components that declare it. Fragments
-  evaluate to their children as a flat array without `null`, `undefined` or booleans. There are
-  no intrinsic elements: a lowercase tag is a type error and throws. `#rpp/jsx` exports `jsx`,
-  `jsxs`, `createElement`, `Fragment`, the `Child` and `Component` types and the `JSX` namespace,
-  whose `Element` accepts any component result.
+- Every `.tsx` file rpp bundles or packs (config imports, plugins, discovered files) compiles with
+  the automatic JSX runtime from `#rpp/jsx`; plugins cannot replace it, and JSX pragma comments
+  (`@jsx`, `@jsxFrag`, `@jsxRuntime`, `@jsxImportSource`) are rejected. A tag is a component:
+  `<C a={1}>x</C>` calls `C({ a: 1, children: "x" })` (several children become an array) and evaluates
+  to its result, even when the result is unused. `key` is an ordinary prop in source order, so it
+  type-checks only on components that declare it. Fragments evaluate to their children as a flat
+  array without `null`, `undefined` or booleans. There are no intrinsic elements: a lowercase tag is
+  a type error and throws. `#rpp/jsx` exports `jsx`, `jsxs`, `createElement`, `Fragment`, the
+  `Child` and `Component` types and the `JSX` namespace, whose `Element` accepts any component
+  result.
 - Keys inside `options` and `outputs` are kept verbatim; `null` values are invalid.
 - The Lua-era keys (`build.lua`, `permissions.lua`, `security: "native"`, `id`, `source`, `ref`,
   `subdir`) are rejected with a pointer to the migration guide. Errors blame `rpp.config.ts`.
