@@ -249,6 +249,20 @@ jobs:
       - uses: chunkzero/maven-r2@v1
         with:
           version: v0.1.0
+      # Tagging before Maven ties the version to this commit, so a retry can only resume from it.
+      - name: Reserve the release tag
+        run: |
+          tag="v$VERSION"
+          refs=$(git ls-remote origin "refs/tags/$tag" "refs/tags/$tag^{}")
+          commit=$(echo "$refs" | awk '/\^\{\}$/ { print $1 }')
+          commit=${commit:-$(echo "$refs" | awk '{ print $1 }')}
+          if [ -z "$commit" ]; then
+            git tag "$tag"
+            git push origin "$tag"
+          elif [ "$commit" != "$GITHUB_SHA" ]; then
+            echo "::error::$tag already belongs to $commit, not $GITHUB_SHA"
+            exit 1
+          fi
       - name: Publish the Maven artifacts
         working-directory: integrations/jvm
         env:

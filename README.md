@@ -22,14 +22,8 @@ rpp is alpha software (`0.1.0-alpha.0`). Expect breaking changes.
 
 ## Install
 
-With [mise](https://mise.jdx.dev), on Linux, macOS, and Windows x64:
-
-```toml
-[tools]
-"github:chunkzero/rpp" = "latest"
-```
-
-Nightlies install through the [mise-chunkzero](https://github.com/chunkzero/mise-chunkzero) plugin:
+With [mise](https://mise.jdx.dev), on Linux, macOS, and Windows x64, install the newest nightly through the
+[mise-chunkzero](https://github.com/chunkzero/mise-chunkzero) plugin:
 
 ```toml
 [plugins]
@@ -38,6 +32,8 @@ chunkzero = "https://github.com/chunkzero/mise-chunkzero"
 [tools]
 "chunkzero:rpp-nightly" = { version = "latest", prerelease = true }
 ```
+
+Once rpp has a stable release, `"github:chunkzero/rpp" = "latest"` installs it.
 
 Without mise, on Linux x64/arm64 and macOS Intel/Apple Silicon (use a published version):
 
