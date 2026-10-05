@@ -226,21 +226,38 @@ fn pack_declares_tsx_modules_as_tsc_resolves_them() {
         "src/options.tsx",
         "export interface Options { size: number }\n",
     );
+    write(root, "src/size.ts", "export type Size = number;\n");
     write(
         root,
-        "src/options/index.ts",
+        "src/other.tsx",
         "export interface Other { n: number }\n",
     );
     write(
         root,
+        "src/other/index.ts",
+        "export interface Index { n: number }\n",
+    );
+    write(
+        root,
         "src/config.ts",
-        "import type { Options } from './options.jsx';\nimport type { Options as Same } from './options';\nexport default function config(options: Options & Same): number { return options.size; }\n",
+        "import type { Options } from './options.jsx';\n\
+         import type { Size } from './size.jsx';\n\
+         import type { Other } from './other';\n\
+         export default function config(options: Options & Other): Size { return options.size; }\n",
     );
     write(root, "src/plugin.ts", "export const run = () => 1;\n");
     let output = packed(root, "src/plugin.ts", Some("src/config.ts"));
     let keys: Vec<_> = output.declarations.keys().map(String::as_str).collect();
-    // `./options` is the file, not the directory index, as tsc resolves it.
-    assert_eq!(keys, ["types/src/config.d.ts", "types/src/options.d.ts"]);
+    // `.jsx` names a `.tsx` or `.ts` file, and `./other` prefers the file over the directory index.
+    assert_eq!(
+        keys,
+        [
+            "types/src/config.d.ts",
+            "types/src/options.d.ts",
+            "types/src/other.d.ts",
+            "types/src/size.d.ts"
+        ]
+    );
 }
 
 #[test]
