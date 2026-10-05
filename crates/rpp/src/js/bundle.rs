@@ -115,14 +115,21 @@ fn bundle_discovered(
         entry: entry.to_string(),
     };
     let mut packages = BTreeMap::from([("#plugin".to_string(), package(&manifest.entry))]);
+    let mut jsx_import_source = None;
     if let Some(config) = &manifest.config {
-        packages.insert(format!("#plugins/{}", manifest.id), package(config));
+        let specifier = format!("#plugins/{}", manifest.id);
+        packages.insert(specifier.clone(), package(config));
+        if manifest.jsx {
+            packages.insert(format!("{specifier}/jsx-runtime"), package(config));
+            jsx_import_source = Some(specifier);
+        }
     }
     let request = BundleRequest {
         root: source.to_path_buf(),
         entry: "rpp:entry".into(),
         virtual_modules,
         packages,
+        jsx_import_source,
     };
     let bundle = cached_bundle(cache_dir, &manifest.id, &request, || {
         rpp_js::bundle(&request).map_err(|e| e.to_string())

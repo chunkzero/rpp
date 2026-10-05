@@ -124,6 +124,7 @@ fn bundle_config(
                 Some((format!("#plugins/{name}"), BundlePackage { dir, entry }))
             })
             .collect(),
+        jsx_import_source: None,
     })
 }
 

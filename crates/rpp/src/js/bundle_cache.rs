@@ -132,6 +132,8 @@ fn request_key(request: &BundleRequest) -> u64 {
         writer.write_str(&package.dir.to_string_lossy());
         writer.write_str(&package.entry);
     }
+    writer.write_str("jsx");
+    writer.write_str(request.jsx_import_source.as_deref().unwrap_or(""));
     writer.finish()
 }
 

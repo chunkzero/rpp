@@ -162,6 +162,7 @@ fn typescript_sources_are_authoring_when_discovering() {
     assert!(factory.is_authoring_source("lib/types.ts"));
     assert!(factory.is_authoring_source("a/b.mts"));
     assert!(factory.is_authoring_source("a/b.cts"));
+    assert!(factory.is_authoring_source("a/b.tsx"));
     assert!(!factory.is_authoring_source("a/b.json"));
 }
 
@@ -173,6 +174,27 @@ fn definitions_import_plugin_api_via_plugins_specifier() {
         "import { label } from \"#plugins/shop-ui\";\nexport const title = label(\"Api\");\n",
     );
     assert_eq!(project.found().unwrap()[0]["title"], "Api");
+}
+
+#[test]
+fn tsx_definitions_compile_against_the_plugin_jsx_runtime() {
+    let project = Project::new(PLUGIN);
+    project.write(
+        "plugin/rpp.json",
+        r#"{"name":"shop-ui","version":"1.0.0","config":"src/config.ts","jsx":true,
+            "discover":{"windows":"*/window/**/window.tsx"}}"#,
+    );
+    project.write(
+        "plugin/src/config.ts",
+        "export const jsx = (type: string, props: { children?: string }) => `${type}:${props.children}`;
+\
+         export const jsxs = jsx;\nexport const Fragment = \"fragment\";\n",
+    );
+    project.write(
+        "src/shop/window/window.tsx",
+        "export const title = <shop>Main</shop>;\n",
+    );
+    assert_eq!(project.found().unwrap()[0]["title"], "shop:Main");
 }
 
 #[test]

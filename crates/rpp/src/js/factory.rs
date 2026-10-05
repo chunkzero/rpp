@@ -232,7 +232,7 @@ impl PluginFactory for JsPluginFactory {
 /// so the bundle's inputs alone would miss them.
 fn is_typescript(rel: &str) -> bool {
     rel.rsplit_once('.')
-        .is_some_and(|(_, ext)| matches!(ext, "ts" | "mts" | "cts"))
+        .is_some_and(|(_, ext)| matches!(ext, "ts" | "mts" | "cts" | "tsx"))
 }
 
 /// The canonical plugin directory, after checking that the entry stays inside it.

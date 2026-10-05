@@ -12,7 +12,7 @@ use anyhow::{Context, Result};
 use rpp::manifest::PluginManifest;
 use rpp_fetch::registry::PACKAGE_MANIFEST;
 
-use self::tsconfig::{tsconfig, ROOT_TSCONFIG};
+use self::tsconfig::{tsconfig, PluginConfig, ROOT_TSCONFIG};
 use crate::project::{is_plugin_manifest, resolve_ts_packages, CONFIG_FILE};
 
 /// Write the SDK and tsconfig files under `root`, and `tsconfig.json` if absent.
@@ -25,8 +25,9 @@ pub fn write(root: &Path) -> Result<bool> {
             packages
                 .into_iter()
                 .filter_map(|(name, package)| {
-                    let config = package.manifest.config?;
-                    Some((name, package.dir.join(config)))
+                    let path = package.dir.join(package.manifest.config?);
+                    let jsx = package.manifest.jsx;
+                    Some((name, PluginConfig { path, jsx }))
                 })
                 .collect(),
         )

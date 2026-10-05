@@ -144,6 +144,7 @@ migration guide, as is an `entry` ending in `.lua`.
   "rpp": ">=0.2",
   "entry": "src/plugin.ts",
   "config": "src/config.ts",
+  "jsx": true,
   "components": { "compiler": "window.wasm" },
   "discover": { "windows": "*/window/**/window.ts" },
   "overrides": ["assets/*/textures/**"]
@@ -165,7 +166,12 @@ migration guide, as is an `entry` ending in `.lua`.
   literal, and must match `^[a-z0-9_.-]+$`. Authoring files import the plugin's `config`
   module as `#plugins/<name>`. Discovered files and the source files they import are
   authoring inputs: they are excluded from processors, `sourceFiles()` and pack output, as is
-  every `.ts`, `.mts` or `.cts` file under the source directory (TypeScript is never pack content).
+  every `.ts`, `.mts`, `.cts` or `.tsx` file under the source directory (TypeScript is never pack
+  content).
+- `jsx: true` (requires `config`) declares that the config module also exports the automatic JSX
+  runtime (`jsx`, `jsxs`, `Fragment` and the `JSX` namespace), importable as
+  `#plugins/<name>/jsx-runtime`. JSX in the plugin's discovered files compiles against it, and
+  `rpp codegen` makes it the `jsxImportSource` when it is the project's only JSX plugin.
 - `dependencies` is accepted and ignored; other unknown keys are rejected.
 
 ## 3. Core plugin model (in `crates/rpp`)
@@ -547,8 +553,8 @@ pub fn run_packsquash(binary: &str, pack_dir: &Path, zip_path: &Path, options_fi
   invalidate accordingly; `rpp.config.ts` and `rpp.json` changes do a full reload.
 - `rpp clean` — remove output + cache.
 - `rpp codegen` — write the TypeScript SDK (`.rpp/sdk/`) and `.rpp/tsconfig.json`, and a
-  root `tsconfig.json` if missing, in the nearest directory with `rpp.config.ts` or `rpp.json`, and a
-  `.rpp/generated/<name>.d.ts` for each built component a plugin manifest declares.
+  root `tsconfig.json` (including `.tsx` files) if missing, in the nearest directory with
+  `rpp.config.ts` or `rpp.json`, and a `.rpp/generated/<name>.d.ts` for each built component a plugin manifest declares.
   `build` and `dev` do this best-effort.
 - `rpp check` — `codegen`, then run `tsc -p tsconfig.json --noEmit`. The compiler is
   `RPP_TSC`, else `toolchain/typescript/7.0.2/tsc` beside the `rpp` executable (bundled in
