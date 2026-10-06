@@ -71,7 +71,11 @@ impl<'a> BuildSession<'a> {
         changes.external = external.publish(root)?;
 
         self.manifest.save(&engine.manifest_path())?;
-        self.store.gc(&self.manifest.live_objects())?;
+        let mut live = self.manifest.live_objects();
+        live.extend(self.output.files().values().map(|content| match content {
+            OutputContent::Object(key) | OutputContent::Linked { key, .. } => *key,
+        }));
+        self.store.gc(&live)?;
         Ok(changes)
     }
 }

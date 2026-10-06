@@ -45,10 +45,9 @@ fn corrupt_cache_object_is_rebuilt() {
     let objects = project.root().join(".rpp/cache/objects");
     let object = std::fs::read_dir(&objects)
         .unwrap()
-        .next()
-        .unwrap()
-        .unwrap()
-        .path();
+        .map(|entry| entry.unwrap().path())
+        .find(|path| std::fs::read(path).unwrap() == b"a")
+        .unwrap();
     std::fs::write(object, "corrupt").unwrap();
 
     // The output directory still holds the right bytes, so this is a hit.
