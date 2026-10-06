@@ -5,8 +5,8 @@ Read it before architectural changes, and update the relevant contract when beha
 changes. Contributor tooling and code conventions live in `AGENTS.md`.
 
 RPP is a build tool for Minecraft resource packs: it takes a source directory, runs it
-through a plugin pipeline (TypeScript and WASM plugins), and produces an optimized output
-directory and a distributable `.zip`.
+through a plugin pipeline (TypeScript and WASM plugins), and produces an output directory
+and an optimized, distributable `.zip`.
 
 ## Goals
 
@@ -79,7 +79,7 @@ export default defineConfig({
     squash: {
       enabled: true,
       engine: "builtin", // "builtin" | "packsquash"
-      json: true, // minify .json/.mcmeta in output
+      json: true, // minify .json/.mcmeta in the release archive
       png: "fast", // false | "off" | "fast" | "max" (oxipng levels)
       zip: true, // produce dist/<name>.zip
       strip: ["**/.DS_Store", "**/Thumbs.db", "**/*.psd", "**/*.xcf"],
@@ -543,7 +543,7 @@ These checks assume directories are not concurrently replaced by another process
 
 `BuildResult` reports processed/cached/generated/dropped counts + duration; the engine
 exposes what changed (paths written/removed) so dev-server can broadcast minimal
-reloads and squash can run incrementally. `generated` counts generator executions,
+reloads and `rpp build` can keep an unchanged release archive. `generated` counts generator executions,
 not individual emitted files. External written/removed paths are reported separately.
 `output_digest` is an xxh3 over the final output paths and their content hashes.
 

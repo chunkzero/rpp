@@ -198,13 +198,13 @@ pub struct SquashConfig {
     pub enabled: bool,
     /// Optimization engine.
     pub engine: SquashEngine,
-    /// Minify `.json`/`.mcmeta` in the output.
+    /// Minify `.json`/`.mcmeta` in the release archive; the output directory stays unsquashed.
     pub json: bool,
-    /// PNG optimization level: `false`, `"fast"`, or `"max"`.
+    /// PNG optimization level for the release archive: `false`, `"fast"`, or `"max"`.
     pub png: PngSetting,
     /// Produce `<output>/<name>.zip`.
     pub zip: bool,
-    /// Glob patterns of files to strip from the output before zipping.
+    /// Glob patterns of files to leave out of the release archive; the output directory keeps them.
     pub strip: Vec<String>,
     /// PackSquash binary name/path (used when `engine` is `"packsquash"`).
     pub packsquash_binary: String,
