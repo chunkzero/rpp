@@ -273,6 +273,32 @@ mod tests {
         assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn unreadable_input_preserves_archive_and_cleans_staging() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let input = pack_dir();
+        let path = dir.path().join("pack.zip");
+        write_zip(input.path(), &path).unwrap();
+        let previous = fs::read(&path).unwrap();
+        let locked = input.path().join("locked.json");
+        fs::write(&locked, "{}").unwrap();
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
+        if fs::read(&locked).is_ok() {
+            // Running with privileges that bypass file modes.
+            return;
+        }
+
+        assert!(write_zip(input.path(), &path).is_err());
+        assert_eq!(fs::read(&path).unwrap(), previous);
+        let names: Vec<_> = fs::read_dir(dir.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(names, ["pack.zip"]);
+    }
+
     #[test]
     fn failed_persist_cleans_staging() {
         let dir = tempfile::tempdir().unwrap();
