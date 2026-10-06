@@ -6,7 +6,7 @@ use std::path::Path;
 
 use rayon::prelude::*;
 use zip::write::SimpleFileOptions;
-use zip::{CompressionMethod, DateTime, ZipWriter};
+use zip::{CompressionMethod, DateTime, ZipArchive, ZipWriter};
 
 use crate::error::{Error, Result};
 use crate::optimize::{build_glob_set, optimize, Outcome, SquashReport};
@@ -139,8 +139,9 @@ fn is_staging_name(name: &str) -> bool {
 }
 
 /// Write `entries` as a zip archive into `sink`, archiving the contents `prepare`
-/// returns for each. Batches are prepared in parallel while the previous batch is
-/// written. `label` names the archive in errors.
+/// returns for each. Batches are prepared and deflated in parallel while the
+/// previous batch is copied into the archive in order. `label` names the archive
+/// in errors.
 fn write_archive<W, F>(
     entries: &[WalkedFile],
     sink: W,
@@ -151,46 +152,56 @@ where
     W: Write + Seek + Send,
     F: Fn(&WalkedFile) -> Result<(Vec<u8>, Outcome)> + Sync,
 {
+    let zip_err = |source| Error::Zip {
+        path: label.to_path_buf(),
+        source,
+    };
+    let deflate = |file: &WalkedFile| {
+        let (contents, outcome) = prepare(file)?;
+        let entry = deflate_entry(&file.rel, &contents).map_err(zip_err)?;
+        Ok((entry, outcome))
+    };
+    let prepare_batch =
+        |batch: &[WalkedFile]| -> Vec<Result<_>> { batch.par_iter().map(deflate).collect() };
+
+    let mut writer = ZipWriter::new(sink);
+    let mut report = SquashReport::default();
+    let mut write_batch = |prepared: Vec<Result<(Vec<u8>, Outcome)>>| {
+        for prepared in prepared {
+            let (entry, outcome) = prepared?;
+            report.record(outcome);
+            let mut entry = ZipArchive::new(Cursor::new(entry)).map_err(zip_err)?;
+            let file = entry.by_index_raw(0).map_err(zip_err)?;
+            writer.raw_copy_file(file).map_err(zip_err)?;
+        }
+        Ok::<_, Error>(())
+    };
+
+    let mut batches = batches(entries, BATCH_FILES, BATCH_BYTES).into_iter();
+    let mut pending = batches.next().map(prepare_batch);
+    while let Some(prepared) = pending {
+        let next = batches.next();
+        let (written, next) = rayon::join(|| write_batch(prepared), || next.map(prepare_batch));
+        written?;
+        pending = next;
+    }
+    let sink = writer.finish().map_err(zip_err)?;
+    Ok((sink, report))
+}
+
+/// Deflate one entry into a single-entry archive, so it can be compressed off
+/// the writer thread and raw-copied into the release archive unchanged.
+fn deflate_entry(name: &str, contents: &[u8]) -> zip::result::ZipResult<Vec<u8>> {
     let options = SimpleFileOptions::default()
         .compression_method(CompressionMethod::Deflated)
         .compression_level(Some(COMPRESSION_LEVEL))
         .last_modified_time(DateTime::default())
         .unix_permissions(FILE_MODE)
         .large_file(false);
-    let zip_err = |source| Error::Zip {
-        path: label.to_path_buf(),
-        source,
-    };
-    let prepare_batch =
-        |batch: &[WalkedFile]| -> Vec<_> { batch.par_iter().map(&prepare).collect() };
-
-    let mut writer = ZipWriter::new(sink);
-    let mut report = SquashReport::default();
-    let mut write_batch = |batch: &[WalkedFile], prepared: Vec<Result<(Vec<u8>, Outcome)>>| {
-        for (entry, prepared) in batch.iter().zip(prepared) {
-            let (contents, outcome) = prepared?;
-            report.record(outcome);
-            writer.start_file(&entry.rel, options).map_err(zip_err)?;
-            writer
-                .write_all(&contents)
-                .map_err(|err| Error::io(label, err))?;
-        }
-        Ok::<_, Error>(())
-    };
-
-    let mut batches = batches(entries, BATCH_FILES, BATCH_BYTES).into_iter();
-    let mut pending = batches.next().map(|batch| (batch, prepare_batch(batch)));
-    while let Some((batch, prepared)) = pending {
-        let next = batches.next();
-        let (written, next) = rayon::join(
-            || write_batch(batch, prepared),
-            || next.map(|batch| (batch, prepare_batch(batch))),
-        );
-        written?;
-        pending = next;
-    }
-    let sink = writer.finish().map_err(zip_err)?;
-    Ok((sink, report))
+    let mut writer = ZipWriter::new(Cursor::new(Vec::new()));
+    writer.start_file(name, options)?;
+    writer.write_all(contents)?;
+    Ok(writer.finish()?.into_inner())
 }
 
 /// Split `entries` into consecutive batches of at most `max_files` files and
