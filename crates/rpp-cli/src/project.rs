@@ -193,13 +193,26 @@ impl Project {
     /// The engine in `slot`, created first when the slot is empty.
     fn wasm_engine<'a>(&self, slot: &'a mut Option<WasmEngine>) -> Result<&'a WasmEngine> {
         if slot.is_none() {
-            let cache = self.root.join(".rpp/cache/wasmtime");
-            let engine = WasmEngine::new(self.wasm_limits(), Some(&cache))
-                .context("initializing the wasm engine")?;
-            *slot = Some(engine);
+            *slot = Some(new_wasm_engine(self.wasm_limits())?);
         }
         Ok(slot.as_ref().expect("the wasm engine was just created"))
     }
+}
+
+/// A wasm engine persisting compiled code in `<rpp cache>/wasmtime`, shared by every project.
+/// Wasmtime keys entries by component bytes, compiler settings, and its own version, and
+/// trims the directory itself. Compilation caching is optional: when the directory cannot
+/// be determined or used, the engine compiles without it.
+fn new_wasm_engine(limits: rpp_wasm::Limits) -> Result<WasmEngine> {
+    let cached = rpp_fetch::registry::cache_root()
+        .map_err(anyhow::Error::from)
+        .and_then(|root| Ok(WasmEngine::new(limits, Some(&root.join("wasmtime")))?));
+    cached
+        .or_else(|error| {
+            tracing::warn!("Compiling wasm without a persistent cache: {error:#}");
+            WasmEngine::new(limits, None)
+        })
+        .context("initializing the wasm engine")
 }
 
 /// The nearest of `start` (resolved against the current directory) and its ancestors

@@ -381,8 +381,11 @@ impl WasmInstance {
 - `rpp codegen` generates `.rpp/generated/<name>.d.ts` from a built component's export schema,
   typing `components.load(name)`.
 - Component compilation uses an in-memory content-digest map and a persistent
-  project-local Wasmtime cache. Replacing a component binary invalidates the plugin
-  cache key even when its path and TypeScript are unchanged.
+  Wasmtime cache at `<cache>/wasmtime` (`<cache>` as in §6), shared across projects
+  and kept by `rpp clean`. Wasmtime keys entries by component bytes, compiler settings
+  and its version, and trims the directory itself. When that directory is unavailable
+  the CLI warns and compiles without it. Replacing a component binary invalidates the
+  plugin cache key even when its path and TypeScript are unchanged.
 - Permissionless WASI random imports receive deterministic streams. Granting
   `permissions.random = true` enables host randomness and disables build replay for
   that plugin.
@@ -558,7 +561,7 @@ pub fn run_packsquash(binary: &str, pack_dir: &Path, zip_path: &Path, options_fi
 - `rpp dev` — watch + incremental rebuild + static file server + SSE (`/events`)
   live-reload events listing changed paths. Plugin file changes reload that plugin and
   invalidate accordingly; `rpp.config.ts` and `rpp.json` changes do a full reload.
-- `rpp clean` — remove output + cache.
+- `rpp clean` — remove output + the project `.rpp` cache; the user-wide `<cache>` is kept.
 - `rpp codegen` — write the TypeScript SDK (`.rpp/sdk/`) and `.rpp/tsconfig.json` (which sets
   `jsxImportSource` to `#rpp/jsx`), and a root `tsconfig.json` (including `.tsx` files) if missing,
   in the nearest directory with `rpp.config.ts` or `rpp.json`, and a

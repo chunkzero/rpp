@@ -86,7 +86,8 @@ worker scheduling. Calls from a sequential generator or hook reuse the handle's
 instance, which permits multi-call compiler workflows without cross-file state.
 
 Component binaries participate in the plugin's cache key. RPP also caches
-Wasmtime compilation by component content in memory and in `.rpp/cache/wasmtime`.
+Wasmtime compilation by component content in memory and in the user-wide
+`<cache>/wasmtime` directory shared across projects.
 Per-instance memory and per-call time limits come from `build.wasm`
 (`memoryLimitMb`, `executionDeadlineSeconds`) in `rpp.config.ts`.
 

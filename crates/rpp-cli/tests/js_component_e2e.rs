@@ -240,3 +240,61 @@ fn interface_exports_are_namespaced() {
     let dir = generate(r#"ctx.emit("frob.txt", json(c.exports.tools.frob(5n)));"#).unwrap();
     assert_eq!(text(&dir, "frob.txt"), "\"15n\"");
 }
+
+#[test]
+fn compiled_components_are_cached_outside_the_project() {
+    require_wasip2!();
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    scaffold(
+        root,
+        r##"import { components, definePlugin } from "#rpp";
+export default definePlugin({ generate(ctx) { ctx.emit("out.txt", String(components.load("c").exports.parse("1"))); } });
+"##,
+    );
+    let wasmtime = root.join(".test-rpp-cache/wasmtime");
+    let has_entries = || walk_files(&wasmtime) > 0;
+
+    let built = common::build(root, &[]);
+    assert!(built.status.success(), "{built:?}");
+    assert!(
+        has_entries(),
+        "no compiled code under {}",
+        wasmtime.display()
+    );
+    assert!(!root.join(".rpp/cache/wasmtime").exists());
+
+    let cleaned = common::run(root, &["clean"]);
+    assert!(cleaned.status.success(), "{cleaned:?}");
+    assert!(
+        has_entries(),
+        "`rpp clean` removed the shared compilation cache"
+    );
+
+    let unusable = root.join("cache-file");
+    std::fs::write(&unusable, "").unwrap();
+    let uncached = common::command(root)
+        .env("RPP_CACHE_DIR", &unusable)
+        .arg("build")
+        .output()
+        .unwrap();
+    assert!(uncached.status.success(), "{uncached:?}");
+    assert!(String::from_utf8_lossy(&uncached.stderr).contains("without a persistent cache"));
+    assert_eq!(text_at(root, "out.txt"), "1");
+}
+
+fn walk_files(dir: &Path) -> usize {
+    std::fs::read_dir(dir).map_or(0, |entries| {
+        entries
+            .flatten()
+            .map(|entry| match entry.file_type() {
+                Ok(kind) if kind.is_dir() => walk_files(&entry.path()),
+                _ => 1,
+            })
+            .sum()
+    })
+}
+
+fn text_at(root: &Path, name: &str) -> String {
+    std::fs::read_to_string(root.join("dist").join(name)).unwrap()
+}
