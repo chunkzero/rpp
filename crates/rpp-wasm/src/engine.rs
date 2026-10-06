@@ -2,10 +2,8 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{
-    atomic::{AtomicBool, Ordering},
-    Arc, Mutex,
-};
+use std::sync::mpsc::{self, RecvTimeoutError, Sender};
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
@@ -19,25 +17,25 @@ use crate::{CompiledComponent, Error, Result};
 
 const EPOCH_TICK: Duration = Duration::from_millis(50);
 
+/// Advances the engine epoch every `EPOCH_TICK` until dropped. Dropping wakes the
+/// thread immediately instead of waiting out the current tick.
 struct EpochTicker {
-    stop: Arc<AtomicBool>,
+    stop: Option<Sender<()>>,
     handle: Option<JoinHandle<()>>,
 }
 
 impl EpochTicker {
     fn spawn(engine: Engine) -> std::io::Result<Self> {
-        let stop = Arc::new(AtomicBool::new(false));
-        let stop_thread = Arc::clone(&stop);
+        let (stop, stopped) = mpsc::channel::<()>();
         let handle = std::thread::Builder::new()
             .name("rpp-wasm-epoch".into())
             .spawn(move || {
-                while !stop_thread.load(Ordering::Relaxed) {
-                    std::thread::sleep(EPOCH_TICK);
+                while let Err(RecvTimeoutError::Timeout) = stopped.recv_timeout(EPOCH_TICK) {
                     engine.increment_epoch();
                 }
             })?;
         Ok(Self {
-            stop,
+            stop: Some(stop),
             handle: Some(handle),
         })
     }
@@ -45,7 +43,7 @@ impl EpochTicker {
 
 impl Drop for EpochTicker {
     fn drop(&mut self) {
-        self.stop.store(true, Ordering::Relaxed);
+        self.stop.take();
         if let Some(handle) = self.handle.take() {
             let _ = handle.join();
         }
