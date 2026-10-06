@@ -253,7 +253,13 @@ export default definePlugin({ generate(ctx) { ctx.emit("out.txt", String(compone
 "##,
     );
     let wasmtime = root.join(".test-rpp-cache/wasmtime");
-    let has_entries = || walk_files(&wasmtime) > 0;
+    let has_entries = || {
+        std::fs::read_dir(&wasmtime).is_ok_and(|entries| {
+            entries
+                .flatten()
+                .any(|entry| entry.path().extension().is_some_and(|ext| ext == "cwasm"))
+        })
+    };
 
     let built = common::build(root, &[]);
     assert!(built.status.success(), "{built:?}");
@@ -281,18 +287,6 @@ export default definePlugin({ generate(ctx) { ctx.emit("out.txt", String(compone
     assert!(uncached.status.success(), "{uncached:?}");
     assert!(String::from_utf8_lossy(&uncached.stderr).contains("without a persistent cache"));
     assert_eq!(text_at(root, "out.txt"), "1");
-}
-
-fn walk_files(dir: &Path) -> usize {
-    std::fs::read_dir(dir).map_or(0, |entries| {
-        entries
-            .flatten()
-            .map(|entry| match entry.file_type() {
-                Ok(kind) if kind.is_dir() => walk_files(&entry.path()),
-                _ => 1,
-            })
-            .sum()
-    })
 }
 
 fn text_at(root: &Path, name: &str) -> String {

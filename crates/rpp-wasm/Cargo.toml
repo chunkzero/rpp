@@ -10,13 +10,12 @@ authors.workspace = true
 repository.workspace = true
 
 [dependencies]
-wasmtime = { version = "=49.0.1", features = ["cache", "component-model", "cranelift", "runtime"] }
+wasmtime = { version = "=49.0.1", features = ["component-model", "cranelift", "runtime"] }
 wasmtime-wasi = "=49.0.1"
 thiserror.workspace = true
 sha2.workspace = true
-
-[dev-dependencies]
 tempfile.workspace = true
+twox-hash = { version = "2.1.2", default-features = false, features = ["std", "xxhash3_128"] }
 
 [lints]
 workspace = true

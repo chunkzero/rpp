@@ -380,12 +380,18 @@ impl WasmInstance {
   filesystem preopens, network, passed env, or process execution by default.
 - `rpp codegen` generates `.rpp/generated/<name>.d.ts` from a built component's export schema,
   typing `components.load(name)`.
-- Component compilation uses an in-memory content-digest map and a persistent
-  Wasmtime cache at `<cache>/wasmtime` (`<cache>` as in §6), shared across projects
-  and kept by `rpp clean`. Wasmtime keys entries by component bytes, compiler settings
-  and its version, and trims the directory itself. When that directory is unavailable
-  the CLI warns and compiles without it. Replacing a component binary invalidates the
-  plugin cache key even when its path and TypeScript are unchanged.
+- Component compilation uses an in-memory content-digest map and persistent,
+  uncompressed precompiled artifacts at `<cache>/wasmtime/<key>.cwasm` (`<cache>` as
+  in §6), shared across projects, memory-mapped on load, and kept by `rpp clean`. The
+  key covers the component's SHA-256, Wasmtime's compilation settings and the rpp-wasm
+  version; Wasmtime also rejects artifacts from another Wasmtime version. Each artifact
+  is flushed to stable storage before it is published and ends with an XXH3-128 checksum
+  of its contents, verified before mapping. Unreadable, incompatible or damaged artifacts
+  are recompiled and replaced. Writing an artifact removes others unused for 30 days.
+  The checksum detects damage, not tampering: artifacts are trusted native code, so the
+  directory must only be writable by the user. When it is unavailable the CLI warns and compiles
+  without it. Replacing a component binary invalidates the plugin cache key even when
+  its path and TypeScript are unchanged; that key reuses the digest computed on load.
 - Permissionless WASI random imports receive deterministic streams. Granting
   `permissions.random = true` enables host randomness and disables build replay for
   that plugin.

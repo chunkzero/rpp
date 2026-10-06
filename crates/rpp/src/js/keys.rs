@@ -11,7 +11,8 @@ use crate::manifest::PluginManifest;
 use crate::util::hash::HashWriter;
 
 /// The key of cached processor results: the rpp version, every bundled file outside `source`,
-/// the manifest, component binaries, `options` (already [`canonical_options`]) and host access.
+/// the manifest, component binaries (by the digest they were compiled from when loaded),
+/// `options` (already [`canonical_options`]) and host access.
 pub(super) fn processor_key(
     root: &Path,
     manifest: &PluginManifest,
@@ -37,11 +38,18 @@ pub(super) fn processor_key(
     writer.write_str("manifest");
     writer.write(manifest_source.as_bytes());
     for (name, component) in &manifest.components {
-        let path = root.join(&component.module);
-        let bytes = std::fs::read(&path).map_err(|e| Error::io(&path, e))?;
         writer.write_str("component");
         writer.write_str(name);
         writer.write_str(&component.module);
+        #[cfg(feature = "wasm")]
+        if let Some(compiled) = access.components.get(name) {
+            writer.write_str("sha256");
+            writer.write(&compiled.digest());
+            continue;
+        }
+        let path = root.join(&component.module);
+        let bytes = std::fs::read(&path).map_err(|e| Error::io(&path, e))?;
+        writer.write_str("bytes");
         writer.write(&bytes);
     }
     writer.write_str("options");

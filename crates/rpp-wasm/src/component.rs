@@ -20,16 +20,23 @@ pub struct CompiledComponent {
     engine: WasmEngine,
     component: Component,
     schema: Schema,
+    digest: [u8; 32],
 }
 
 impl CompiledComponent {
-    pub(crate) fn new(engine: WasmEngine, component: Component) -> Self {
+    pub(crate) fn new(engine: WasmEngine, component: Component, digest: [u8; 32]) -> Self {
         let schema = schema(&engine.engine, &component);
         Self {
             engine,
             component,
             schema,
+            digest,
         }
+    }
+
+    /// SHA-256 of the component binary this was compiled from.
+    pub fn digest(&self) -> [u8; 32] {
+        self.digest
     }
 
     /// Discovered imports and exported function signatures.
