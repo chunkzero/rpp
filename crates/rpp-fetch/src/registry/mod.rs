@@ -36,6 +36,27 @@ pub struct PackageSummary {
     pub version: Version,
 }
 
+/// The user-wide rpp cache directory: `RPP_CACHE_DIR` if set and non-empty, else
+/// `rpp` under the platform cache directory (`~/.cache/rpp` on Linux).
+///
+/// # Errors
+///
+/// Returns an error if `RPP_CACHE_DIR` is unset and no platform cache directory exists.
+pub fn cache_root() -> Result<PathBuf> {
+    if let Some(dir) = std::env::var_os("RPP_CACHE_DIR").filter(|dir| !dir.is_empty()) {
+        return Ok(PathBuf::from(dir));
+    }
+    dirs::cache_dir().map(|dir| dir.join("rpp")).ok_or_else(|| {
+        Error::io(
+            "determining user cache directory",
+            std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "no cache directory available; set RPP_CACHE_DIR",
+            ),
+        )
+    })
+}
+
 /// Client for the registry index plus the local archive cache.
 pub struct Registry {
     client: RegistryClient,
@@ -53,27 +74,16 @@ impl Registry {
     }
 
     /// A client using [`HttpConfig::default`] and `<rpp cache>/registry`, where the
-    /// rpp cache is `RPP_CACHE_DIR` if set, else `~/.cache/rpp`.
+    /// rpp cache is [`cache_root`].
     ///
     /// # Errors
     ///
     /// Returns an error if no cache directory can be determined.
     pub fn from_env() -> Result<Self> {
-        let base = match std::env::var_os("RPP_CACHE_DIR").filter(|dir| !dir.is_empty()) {
-            Some(dir) => PathBuf::from(dir),
-            None => dirs::cache_dir()
-                .ok_or_else(|| {
-                    Error::io(
-                        "determining user cache directory",
-                        std::io::Error::new(
-                            std::io::ErrorKind::NotFound,
-                            "no cache directory available; set RPP_CACHE_DIR",
-                        ),
-                    )
-                })?
-                .join("rpp"),
-        };
-        Ok(Self::new(HttpConfig::default(), base.join("registry")))
+        Ok(Self::new(
+            HttpConfig::default(),
+            cache_root()?.join("registry"),
+        ))
     }
 
     /// Fetch `plugins/<name>.json`. A 404 is [`Error::UnknownPackage`].
