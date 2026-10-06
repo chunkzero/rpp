@@ -28,6 +28,9 @@ impl ObjectStore {
     }
 
     /// Store `contents`, returning the object key. Idempotent.
+    ///
+    /// Objects are published atomically but not fsynced: they are regenerable, and every read
+    /// verifies the hash, so an object lost or truncated by a power failure is treated as missing.
     pub(crate) fn put(&self, contents: &[u8]) -> Result<u64> {
         let key = xxh3(contents);
         let path = self.object_path(key);
@@ -35,7 +38,8 @@ impl ObjectStore {
             .map(|existing| xxh3(&existing) == key)
             .unwrap_or(false);
         if !valid {
-            crate::util::atomic::write(&path, contents).map_err(|e| Error::io(&path, e))?;
+            crate::util::atomic::write_unsynced(&path, contents)
+                .map_err(|e| Error::io(&path, e))?;
         }
         Ok(key)
     }
