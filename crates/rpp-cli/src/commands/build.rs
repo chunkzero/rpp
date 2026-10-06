@@ -7,13 +7,14 @@ use anyhow::{Context, Result};
 use clap::Args;
 use rpp::config::{PngSetting, SquashEngine};
 use rpp::engine::{BuildResult, Engine};
-use rpp_squash::{
-    copy_tree, run_packsquash, squash_dir, write_zip, PngLevel, SquashOptions, SquashReport,
-};
+use rpp_squash::{run_packsquash, squash_zip, PngLevel, SquashOptions, SquashReport};
 
+use self::release::ReleaseInputs;
 use crate::codegen;
 use crate::project::Project;
 use crate::ui;
+
+mod release;
 
 /// Arguments for `rpp build`.
 #[derive(Debug, Clone, Default, Args)]
@@ -59,7 +60,7 @@ pub fn run(dir: &Path, args: BuildArgs) -> Result<()> {
     report_build(&result);
 
     if !args.no_squash && project.config.build.squash.enabled {
-        run_squash(&project)?;
+        run_squash(&project, &result)?;
     } else {
         ui::detail("squash disabled");
     }
@@ -75,7 +76,7 @@ pub fn run(dir: &Path, args: BuildArgs) -> Result<()> {
 /// Remove only the cache and keep the output, which the engine resyncs.
 fn clean_cache(project: &Project) -> Result<()> {
     ui::phase("Cleaning cache");
-    let cache = project.root.join(".rpp").join("cache");
+    let cache = release::cache_dir(project);
     if cache.exists() {
         std::fs::remove_dir_all(&cache).with_context(|| format!("removing {}", cache.display()))?;
     }
@@ -125,7 +126,7 @@ fn report_build(result: &BuildResult) {
 }
 
 /// Run the squash + zip phase against the materialized output directory.
-fn run_squash(project: &Project) -> Result<()> {
+fn run_squash(project: &Project, result: &BuildResult) -> Result<()> {
     let squash = &project.config.build.squash;
     if !squash.zip {
         ui::detail("release archive disabled; squash skipped");
@@ -133,7 +134,7 @@ fn run_squash(project: &Project) -> Result<()> {
     }
     match squash.engine {
         SquashEngine::Packsquash => squash_packsquash(project),
-        SquashEngine::Builtin => squash_builtin(project),
+        SquashEngine::Builtin => squash_builtin(project, result),
     }
 }
 
@@ -165,23 +166,40 @@ fn squash_packsquash(project: &Project) -> Result<()> {
     Ok(())
 }
 
-/// Optimize a staged copy of the output and zip it.
-fn squash_builtin(project: &Project) -> Result<()> {
+/// Zip the output with in-memory optimization, leaving the loose output unsquashed.
+///
+/// The existing archive is kept when the build changed no output and the archive still
+/// matches the record written with it for the same inputs.
+fn squash_builtin(project: &Project, result: &BuildResult) -> Result<()> {
     let squash = &project.config.build.squash;
     let zip_path = project.release_zip();
     ui::phase("Squashing (builtin)");
     let start = Instant::now();
-    let staging = stage_release(project, &zip_path)?;
+    let inputs = ReleaseInputs::current(project)?;
+    let unchanged_output = result.changes.written.is_empty() && result.changes.removed.is_empty();
+    if unchanged_output
+        && inputs
+            .as_ref()
+            .is_some_and(|inputs| release::is_current(project, inputs, &zip_path))
+    {
+        ui::detail(format!(
+            "release archive unchanged -> {}",
+            zip_path.display()
+        ));
+        return Ok(());
+    }
+    release::forget(project)?;
     let opts = SquashOptions {
         json: squash.json,
         png: png_level(squash.png),
         strip: squash.strip.clone(),
     };
-    let report = squash_dir(staging.path(), &opts).context("optimizing release files")?;
-    report_squash(&report);
-
-    write_zip(staging.path(), &zip_path)
+    let report = squash_zip(&project.output_dir(), &zip_path, &opts)
         .with_context(|| format!("writing zip {}", zip_path.display()))?;
+    report_squash(&report);
+    if let Some(inputs) = inputs {
+        release::remember(project, inputs, &zip_path)?;
+    }
     ui::detail(format!("zip -> {}", zip_path.display()));
     ui::detail(format!(
         "squash finished in {}",
@@ -202,19 +220,6 @@ fn report_squash(report: &SquashReport) {
     for warning in &report.warnings {
         ui::warn(warning);
     }
-}
-
-/// Copy the engine-owned loose output to a temporary release staging directory.
-fn stage_release(project: &Project, zip_path: &Path) -> Result<tempfile::TempDir> {
-    let temp_root = project.root.join(".rpp");
-    std::fs::create_dir_all(&temp_root)
-        .with_context(|| format!("creating {}", temp_root.display()))?;
-    let staging = tempfile::Builder::new()
-        .prefix("release-")
-        .tempdir_in(&temp_root)
-        .context("creating release staging directory")?;
-    copy_tree(&project.output_dir(), staging.path(), zip_path).context("staging release files")?;
-    Ok(staging)
 }
 
 fn png_level(setting: PngSetting) -> PngLevel {

@@ -4,10 +4,10 @@ use std::fs;
 use std::io::Read;
 use std::path::Path;
 
-use rpp_squash::{run_packsquash, squash_dir, write_zip, PngLevel, SquashOptions};
+use rpp_squash::{run_packsquash, squash_zip, PngLevel, SquashOptions};
 
 // ---------------------------------------------------------------------------
-// squash_dir end-to-end
+// squash_zip end-to-end
 // ---------------------------------------------------------------------------
 
 /// Build a 16x16 RGBA PNG with redundant data that oxipng can shrink.
@@ -28,7 +28,7 @@ fn make_png() -> Vec<u8> {
 }
 
 #[test]
-fn squash_dir_optimizes_strips_and_reports() {
+fn squash_zip_optimizes_strips_and_reports() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
 
@@ -47,22 +47,26 @@ fn squash_dir_optimizes_strips_and_reports() {
         ..Default::default()
     };
 
-    let report = squash_dir(root, &opts).unwrap();
+    let out = tempfile::tempdir().unwrap();
+    let zip_path = out.path().join("pack.zip");
+    let report = squash_zip(root, &zip_path, &opts).unwrap();
+    let zip_bytes = fs::read(&zip_path).unwrap();
 
-    // .DS_Store removed.
-    assert!(!root.join(".DS_Store").exists());
+    // .DS_Store left out of the archive.
+    assert!(!zip_entry_names(&zip_bytes).contains(&".DS_Store".to_string()));
     assert_eq!(report.files_stripped, 1);
 
     // a.json, pack.mcmeta, tex.png optimized = 3 (broken.json not, already-min not).
     assert_eq!(report.files_optimized, 3, "report: {report:?}");
     assert!(report.bytes_after < report.bytes_before);
 
-    // a.json minified on disk.
-    let on_disk = fs::read(root.join("assets/a.json")).unwrap();
-    assert_eq!(on_disk, br#"{"x":1,"y":2}"#);
+    // a.json minified in the archive; the source tree is untouched.
+    assert_eq!(zip_entry(&zip_bytes, "assets/a.json"), br#"{"x":1,"y":2}"#);
+    assert_eq!(fs::read(root.join("assets/a.json")).unwrap(), pretty_json);
+    assert!(root.join(".DS_Store").exists());
 
-    // broken.json untouched + produced a warning.
-    assert_eq!(fs::read(root.join("broken.json")).unwrap(), b"{ not json ");
+    // broken.json passed through + produced a warning.
+    assert_eq!(zip_entry(&zip_bytes, "broken.json"), b"{ not json ");
     assert_eq!(report.warnings.len(), 1, "warnings: {:?}", report.warnings);
     assert!(report.warnings[0].contains("broken.json"));
 }
@@ -77,6 +81,26 @@ fn build_tree(root: &Path) {
     fs::write(root.join("assets/minecraft/zebra.json"), b"z").unwrap();
     fs::write(root.join("assets/minecraft/apple.json"), b"a").unwrap();
     fs::write(root.join("readme.txt"), b"hi").unwrap();
+}
+
+/// Write an unoptimized archive of `root`, so entries keep their source bytes.
+fn write_zip(root: &Path, zip_path: &Path) {
+    let opts = SquashOptions {
+        json: false,
+        ..Default::default()
+    };
+    squash_zip(root, zip_path, &opts).unwrap();
+}
+
+fn zip_entry(zip_bytes: &[u8], name: &str) -> Vec<u8> {
+    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(zip_bytes)).unwrap();
+    let mut contents = Vec::new();
+    archive
+        .by_name(name)
+        .unwrap()
+        .read_to_end(&mut contents)
+        .unwrap();
+    contents
 }
 
 fn zip_entry_names(zip_bytes: &[u8]) -> Vec<String> {
@@ -98,8 +122,8 @@ fn zip_is_byte_identical_across_runs() {
     let out = tempfile::tempdir().unwrap();
     let za = out.path().join("a.zip");
     let zb = out.path().join("b.zip");
-    write_zip(root, &za).unwrap();
-    write_zip(root, &zb).unwrap();
+    write_zip(root, &za);
+    write_zip(root, &zb);
     let a = fs::read(&za).unwrap();
     let b = fs::read(&zb).unwrap();
     assert_eq!(a, b, "two zips of the same tree must be byte-identical");
@@ -113,7 +137,7 @@ fn zip_orders_pack_mcmeta_first_then_sorted() {
 
     let out = tempfile::tempdir().unwrap();
     let zip_path = out.path().join("pack.zip");
-    write_zip(root, &zip_path).unwrap();
+    write_zip(root, &zip_path);
 
     let names = zip_entry_names(&fs::read(&zip_path).unwrap());
     assert_eq!(names.first().map(String::as_str), Some("pack.mcmeta"));
@@ -135,7 +159,7 @@ fn zip_roundtrips_contents() {
     build_tree(root);
     let out = tempfile::tempdir().unwrap();
     let zip_path = out.path().join("pack.zip");
-    write_zip(root, &zip_path).unwrap();
+    write_zip(root, &zip_path);
 
     let reader = std::io::Cursor::new(fs::read(&zip_path).unwrap());
     let mut archive = zip::ZipArchive::new(reader).unwrap();

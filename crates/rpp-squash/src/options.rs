@@ -29,16 +29,16 @@ impl PngLevel {
     }
 }
 
-/// Options controlling directory squash operations.
+/// Options controlling release archive optimization.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SquashOptions {
     /// Minify `.json` and `.mcmeta` files (parse -> compact re-serialize).
     pub json: bool,
     /// PNG optimization level.
     pub png: PngLevel,
-    /// Glob patterns of files to delete from the directory before squashing
-    /// (e.g. `"**/.DS_Store"`, `"**/*.psd"`). Matched against forward-slash
-    /// relative paths.
+    /// Glob patterns of files to leave out of the archive (e.g.
+    /// `"**/.DS_Store"`, `"**/*.psd"`). Matched against forward-slash relative
+    /// paths.
     pub strip: Vec<String>,
 }
 
