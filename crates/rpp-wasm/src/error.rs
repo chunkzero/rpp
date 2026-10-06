@@ -19,6 +19,15 @@ pub enum Error {
     /// The current directory could not be resolved for a relative cache path.
     #[error("failed to resolve the current directory for the WASM compilation cache: {0}")]
     CurrentDir(#[source] std::io::Error),
+    /// The compiled component cache directory could not be created.
+    #[error("failed to create WASM compilation cache {path}: {source}")]
+    CacheDir {
+        /// Cache directory.
+        path: PathBuf,
+        /// Underlying I/O error.
+        #[source]
+        source: std::io::Error,
+    },
     /// Reading the component file failed.
     #[error("failed to read component file {path}: {source}")]
     Io {

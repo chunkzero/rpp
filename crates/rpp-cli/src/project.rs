@@ -199,10 +199,9 @@ impl Project {
     }
 }
 
-/// A wasm engine persisting compiled code in `<rpp cache>/wasmtime`, shared by every project.
-/// Wasmtime keys entries by component bytes, compiler settings, and its own version, and
-/// trims the directory itself. Compilation caching is optional: when the directory cannot
-/// be determined or used, the engine compiles without it.
+/// A wasm engine persisting precompiled components in `<rpp cache>/wasmtime`, shared by every
+/// project (see [`WasmEngine::new`]). Compilation caching is optional: when the directory
+/// cannot be determined or created, the engine compiles without it.
 fn new_wasm_engine(limits: rpp_wasm::Limits) -> Result<WasmEngine> {
     let cached = rpp_fetch::registry::cache_root()
         .map_err(anyhow::Error::from)
