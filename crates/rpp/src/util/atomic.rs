@@ -23,12 +23,25 @@ pub(crate) fn copy(source: &Path, destination: &Path) -> std::io::Result<()> {
 /// Write `contents` into a sibling temporary file and atomically publish it at
 /// `destination`.
 pub(crate) fn write(destination: &Path, contents: &[u8]) -> std::io::Result<()> {
+    publish(destination, contents, true)
+}
+
+/// Like [`write`], but without flushing contents to stable storage before publication. Concurrent
+/// readers still never observe a partial file, but after a power failure the destination may be
+/// missing, empty, or partial, so callers must only use it for regenerable data they verify on read.
+pub(crate) fn write_unsynced(destination: &Path, contents: &[u8]) -> std::io::Result<()> {
+    publish(destination, contents, false)
+}
+
+fn publish(destination: &Path, contents: &[u8], sync: bool) -> std::io::Result<()> {
     let parent = destination.parent().unwrap_or_else(|| Path::new("."));
     std::fs::create_dir_all(parent)?;
 
     let mut temporary = staging_file(parent)?;
     temporary.write_all(contents)?;
-    temporary.as_file_mut().sync_all()?;
+    if sync {
+        temporary.as_file_mut().sync_all()?;
+    }
     temporary
         .persist(destination)
         .map(|_| ())
@@ -92,11 +105,13 @@ mod tests {
         std::fs::write(&source, b"cached").unwrap();
         std::fs::set_permissions(&source, std::fs::Permissions::from_mode(0o600)).unwrap();
         let written = directory.path().join("written");
+        let unsynced = directory.path().join("unsynced");
         let copied = directory.path().join("copied");
         write(&written, b"new").unwrap();
+        write_unsynced(&unsynced, b"new").unwrap();
         copy(&source, &copied).unwrap();
 
-        for path in [written, copied] {
+        for path in [written, unsynced, copied] {
             let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
             assert_eq!(mode, expected, "{}", path.display());
         }
