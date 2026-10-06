@@ -51,42 +51,43 @@ pub(crate) fn value_type(ty: Type) -> ValueType {
     }
 }
 
-pub(crate) fn to_wasmtime(value: Value) -> Val {
+/// Builds the wasmtime value from a borrowed one, copying each argument once.
+pub(crate) fn to_wasmtime(value: &Value) -> Val {
     match value {
-        Value::Bool(value) => Val::Bool(value),
-        Value::S8(value) => Val::S8(value),
-        Value::U8(value) => Val::U8(value),
-        Value::S16(value) => Val::S16(value),
-        Value::U16(value) => Val::U16(value),
-        Value::S32(value) => Val::S32(value),
-        Value::U32(value) => Val::U32(value),
-        Value::S64(value) => Val::S64(value),
-        Value::U64(value) => Val::U64(value),
-        Value::Float32(value) => Val::Float32(value),
-        Value::Float64(value) => Val::Float64(value),
-        Value::Char(value) => Val::Char(value),
-        Value::String(value) => Val::String(value),
-        Value::List(values) => Val::List(values.into_iter().map(to_wasmtime).collect()),
+        Value::Bool(value) => Val::Bool(*value),
+        Value::S8(value) => Val::S8(*value),
+        Value::U8(value) => Val::U8(*value),
+        Value::S16(value) => Val::S16(*value),
+        Value::U16(value) => Val::U16(*value),
+        Value::S32(value) => Val::S32(*value),
+        Value::U32(value) => Val::U32(*value),
+        Value::S64(value) => Val::S64(*value),
+        Value::U64(value) => Val::U64(*value),
+        Value::Float32(value) => Val::Float32(*value),
+        Value::Float64(value) => Val::Float64(*value),
+        Value::Char(value) => Val::Char(*value),
+        Value::String(value) => Val::String(value.clone()),
+        Value::List(values) => Val::List(values.iter().map(to_wasmtime).collect()),
         Value::Record(fields) => Val::Record(
             fields
-                .into_iter()
-                .map(|(name, value)| (name, to_wasmtime(value)))
+                .iter()
+                .map(|(name, value)| (name.clone(), to_wasmtime(value)))
                 .collect(),
         ),
-        Value::Tuple(values) => Val::Tuple(values.into_iter().map(to_wasmtime).collect()),
-        Value::Variant(case, value) => Val::Variant(case, boxed_to_wasmtime(value)),
-        Value::Enum(case) => Val::Enum(case),
+        Value::Tuple(values) => Val::Tuple(values.iter().map(to_wasmtime).collect()),
+        Value::Variant(case, value) => Val::Variant(case.clone(), boxed_to_wasmtime(value)),
+        Value::Enum(case) => Val::Enum(case.clone()),
         Value::Option(value) => Val::Option(boxed_to_wasmtime(value)),
         Value::Result(result) => Val::Result(match result {
             Ok(value) => Ok(boxed_to_wasmtime(value)),
             Err(value) => Err(boxed_to_wasmtime(value)),
         }),
-        Value::Flags(flags) => Val::Flags(flags),
+        Value::Flags(flags) => Val::Flags(flags.clone()),
     }
 }
 
-fn boxed_to_wasmtime(value: Option<Box<Value>>) -> Option<Box<Val>> {
-    value.map(|value| Box::new(to_wasmtime(*value)))
+fn boxed_to_wasmtime(value: &Option<Box<Value>>) -> Option<Box<Val>> {
+    value.as_deref().map(|value| Box::new(to_wasmtime(value)))
 }
 
 pub(crate) fn from_wasmtime(value: Val) -> Result<Value> {
@@ -143,4 +144,54 @@ fn boxed_from_wasmtime(value: Option<Box<Val>>) -> Result<Option<Box<Value>>> {
     value
         .map(|value| from_wasmtime(*value).map(Box::new))
         .transpose()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn bytes(len: usize) -> Value {
+        Value::List((0..len).map(|index| Value::U8(index as u8)).collect())
+    }
+
+    fn sample() -> Value {
+        Value::Record(vec![
+            ("name".into(), Value::String("window".into())),
+            ("image".into(), bytes(4096)),
+            (
+                "layers".into(),
+                Value::List(vec![
+                    bytes(3),
+                    Value::Tuple(vec![Value::Char('x'), bytes(0)]),
+                ]),
+            ),
+            (
+                "choice".into(),
+                Value::Variant("some".into(), Some(Box::new(bytes(2)))),
+            ),
+            ("mode".into(), Value::Enum("fast".into())),
+            (
+                "maybe".into(),
+                Value::Option(Some(Box::new(Value::S64(-7)))),
+            ),
+            ("none".into(), Value::Option(None)),
+            ("ok".into(), Value::Result(Ok(Some(Box::new(bytes(1)))))),
+            ("err".into(), Value::Result(Err(None))),
+            ("flags".into(), Value::Flags(vec!["a".into(), "b".into()])),
+            ("float".into(), Value::Float64(1.5)),
+        ])
+    }
+
+    #[test]
+    fn borrowed_conversion_round_trips_and_leaves_the_argument_intact() {
+        let original = sample();
+        let snapshot = original.clone();
+
+        let converted = to_wasmtime(&original);
+        assert_eq!(original, snapshot);
+        assert_eq!(from_wasmtime(converted).unwrap(), snapshot);
+
+        // The argument is reusable for another conversion.
+        assert_eq!(from_wasmtime(to_wasmtime(&original)).unwrap(), snapshot);
+    }
 }

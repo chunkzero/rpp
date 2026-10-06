@@ -67,7 +67,7 @@ impl WasmInstance {
             .get_func(&mut self.store, function_index)
             .ok_or_else(|| Error::MissingExport(path.to_string()))?;
 
-        let params = params.iter().cloned().map(to_wasmtime).collect::<Vec<_>>();
+        let params = params.iter().map(to_wasmtime).collect::<Vec<_>>();
         let result_count = function.ty(&self.store).results().len();
         let mut results = vec![Val::Bool(false); result_count];
         self.store.set_epoch_deadline(ticks);
