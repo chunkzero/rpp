@@ -353,8 +353,12 @@ mod tests {
 
         let (project, config, store) = fixture();
         let root = project.path();
-        let manifest = build_manifest(&store, &["a.txt"]);
-        let plan = PublicationPlan::prepare(&config, root, &manifest, &store).unwrap();
+        let old = build_manifest(&store, &["stale.txt"]);
+        let plan = PublicationPlan::prepare(&config, root, &old, &store).unwrap();
+        plan.record_recovery(root).unwrap();
+        plan.publish(root).unwrap();
+        let next = build_manifest(&store, &["a.txt"]);
+        let plan = PublicationPlan::prepare(&config, root, &next, &store).unwrap();
         plan.record_recovery(root).unwrap();
         let bookkeeping = root.join(".rpp");
         let permissions = std::fs::metadata(&bookkeeping).unwrap().permissions();
@@ -367,8 +371,9 @@ mod tests {
         let result = plan.publish(root);
         std::fs::set_permissions(&bookkeeping, permissions).unwrap();
         assert!(result.is_err());
+        assert!(!root.join("generated/stale.txt").exists());
         assert!(root.join("generated/a.txt").is_file());
-        assert_eq!(OwnershipManifest::load(root).unwrap().outputs.len(), 1);
+        assert_eq!(OwnershipManifest::load(root).unwrap().outputs.len(), 2);
         clean(&config, root).unwrap();
         assert!(!root.join("generated/a.txt").exists());
     }

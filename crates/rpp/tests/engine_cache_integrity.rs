@@ -95,7 +95,9 @@ fn same_size_source_change_with_preserved_mtime_is_rebuilt() {
     let source = project.src().join("a.txt");
     let modified = std::fs::metadata(&source).unwrap().modified().unwrap();
     std::fs::write(&source, "bb").unwrap();
-    std::fs::File::open(&source)
+    std::fs::File::options()
+        .write(true)
+        .open(&source)
         .unwrap()
         .set_times(std::fs::FileTimes::new().set_modified(modified))
         .unwrap();
