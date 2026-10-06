@@ -545,6 +545,7 @@ These checks assume directories are not concurrently replaced by another process
 exposes what changed (paths written/removed) so dev-server can broadcast minimal
 reloads and squash can run incrementally. `generated` counts generator executions,
 not individual emitted files. External written/removed paths are reported separately.
+`output_digest` is an xxh3 over the final output paths and their content hashes.
 
 ## 8. Squash (`crates/rpp-squash`)
 
@@ -575,8 +576,9 @@ pub fn run_packsquash(binary: &str, pack_dir: &Path, zip_path: &Path, options_fi
   archive. PackSquash likewise produces a release archive and is not run by `rpp dev`.
 - `rpp build` keeps an existing builtin release archive when the build wrote and removed no
   output and `.rpp/cache/release.json` records the same inputs (squash settings, rpp version,
-  archive path, cache manifest hash) and the archive's current size and xxh3. Otherwise, and
-  always after `--no-cache`, the archive is rewritten.
+  archive path, and an xxh3 over the sorted output paths and content hashes) and the
+  archive's current size and xxh3. Otherwise, and always after `--no-cache`, the archive is
+  rewritten.
 
 ## 9. CLI (`crates/rpp-cli`, binary name `rpp`)
 

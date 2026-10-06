@@ -186,6 +186,13 @@ fn unchanged_release_archive_is_reused() {
         "unchanged build kept the archive"
     );
 
+    let loose = root.join("dist/assets/minecraft/release.json");
+    let restored = std::fs::read(&loose).unwrap();
+    std::fs::write(&loose, "edited by hand").unwrap();
+    assert!(build_rewrites_zip(root, &[]), "restored loose output");
+    assert_eq!(std::fs::read(&loose).unwrap(), restored);
+    assert_eq!(std::fs::read(&zip).unwrap(), archive);
+
     std::fs::write(&zip, "tampered").unwrap();
     assert!(build_rewrites_zip(root, &[]), "modified archive is rebuilt");
     assert_eq!(std::fs::read(&zip).unwrap(), archive);

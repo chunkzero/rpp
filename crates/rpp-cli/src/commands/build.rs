@@ -169,19 +169,16 @@ fn squash_packsquash(project: &Project) -> Result<()> {
 /// Zip the output with in-memory optimization, leaving the loose output unsquashed.
 ///
 /// The existing archive is kept when the build changed no output and the archive still
-/// matches the record written with it for the same inputs.
+/// matches the record written with it for the same inputs, which include the engine's
+/// digest of the output.
 fn squash_builtin(project: &Project, result: &BuildResult) -> Result<()> {
     let squash = &project.config.build.squash;
     let zip_path = project.release_zip();
     ui::phase("Squashing (builtin)");
     let start = Instant::now();
-    let inputs = ReleaseInputs::current(project)?;
+    let inputs = ReleaseInputs::current(project, result)?;
     let unchanged_output = result.changes.written.is_empty() && result.changes.removed.is_empty();
-    if unchanged_output
-        && inputs
-            .as_ref()
-            .is_some_and(|inputs| release::is_current(project, inputs, &zip_path))
-    {
+    if unchanged_output && release::is_current(project, &inputs, &zip_path) {
         ui::detail(format!(
             "release archive unchanged -> {}",
             zip_path.display()
@@ -197,9 +194,7 @@ fn squash_builtin(project: &Project, result: &BuildResult) -> Result<()> {
     let report = squash_zip(&project.output_dir(), &zip_path, &opts)
         .with_context(|| format!("writing zip {}", zip_path.display()))?;
     report_squash(&report);
-    if let Some(inputs) = inputs {
-        release::remember(project, inputs, &zip_path)?;
-    }
+    release::remember(project, inputs, &zip_path)?;
     ui::detail(format!("zip -> {}", zip_path.display()));
     ui::detail(format!(
         "squash finished in {}",
