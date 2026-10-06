@@ -61,8 +61,13 @@ impl<'a> BuildSession<'a> {
         boundary::validate_destinations(config, root, &engine.factories)?;
         let external = PublicationPlan::prepare(config, root, &self.manifest, &self.store)?;
         external.record_recovery(root)?;
-        let mut changes =
-            output_sync::sync_output(config, &engine.output, &self.output, &self.store)?;
+        let mut changes = output_sync::sync_output(
+            config,
+            &engine.output,
+            &self.output,
+            &self.store,
+            engine.worker_count(),
+        )?;
         changes.external = external.publish(root)?;
 
         self.manifest.save(&engine.manifest_path())?;

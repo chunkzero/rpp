@@ -2,6 +2,7 @@
 
 use std::collections::BTreeSet;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use crate::cache::ObjectStore;
 use crate::config::Config;
@@ -9,22 +10,26 @@ use crate::error::{Error, Result};
 use crate::util::hash::xxh3;
 use crate::util::path::{to_forward_slash, validate_relative};
 
-use super::boundary::checked_path;
+use super::boundary::{checked_path, BoundaryChecker};
 use super::output::{OutputContent, OutputSet};
 use super::result::ChangeReport;
 
 /// Make `output_dir` hold exactly `output`, keeping the squash release archive.
+///
+/// Up to `threads` outputs are written concurrently; a failure reports the first failing path.
 pub(super) fn sync_output(
     config: &Config,
     output_dir: &Path,
     output: &OutputSet,
     store: &ObjectStore,
+    threads: usize,
 ) -> Result<ChangeReport> {
     checked_path(output_dir, Path::new("."))?;
+    let mut boundary = BoundaryChecker::new(output_dir);
     for rel in output.files().keys() {
         validate_relative(rel).map_err(Error::Build)?;
         if let Some(parent) = Path::new(rel).parent() {
-            checked_path(output_dir, parent)?;
+            boundary.check(parent)?;
         }
     }
     std::fs::create_dir_all(output_dir).map_err(|e| Error::io(output_dir, e))?;
@@ -47,15 +52,55 @@ pub(super) fn sync_output(
         remove_file(output_dir, rel)?;
         report.removed.push(rel.clone());
     }
-    for (rel, content) in output.files() {
-        if write_output(output_dir, rel, content, store)? {
-            report.written.push(rel.clone());
-        }
-    }
-
-    report.written.sort();
+    let files: Vec<_> = output.files().iter().collect();
+    let written = write_outputs(&files, threads, |(rel, content)| {
+        write_output(output_dir, rel, content, store)
+    })?;
+    report.written = files
+        .iter()
+        .zip(written)
+        .filter(|(_, written)| *written)
+        .map(|((rel, _), _)| (*rel).clone())
+        .collect();
     report.removed.sort();
     Ok(report)
+}
+
+/// Run `write` over `items` on up to `threads` threads, returning each result in item order.
+///
+/// Stopping after a failure is best effort: workers stop claiming items once one fails, but a
+/// worker may still claim and run one more item concurrently. Every claimed item is reported, so
+/// the error of the first failing item is returned.
+fn write_outputs<T: Sync>(
+    items: &[T],
+    threads: usize,
+    write: impl Fn(&T) -> Result<bool> + Sync,
+) -> Result<Vec<bool>> {
+    let next = AtomicUsize::new(0);
+    let failed = AtomicBool::new(false);
+    let run = || {
+        let mut done = Vec::new();
+        while !failed.load(Ordering::Relaxed) {
+            let index = next.fetch_add(1, Ordering::Relaxed);
+            let Some(item) = items.get(index) else { break };
+            let result = write(item);
+            failed.fetch_or(result.is_err(), Ordering::Relaxed);
+            done.push((index, result));
+        }
+        done
+    };
+    let threads = threads.clamp(1, items.len().max(1));
+    let mut results: Vec<_> = std::thread::scope(|scope| {
+        let workers: Vec<_> = (1..threads).map(|_| scope.spawn(run)).collect();
+        let mut results = run();
+        for worker in workers {
+            results.extend(worker.join().expect("output writer panicked"));
+        }
+        results
+    });
+    // Items are claimed in order, so every item before a failing one has run.
+    results.sort_by_key(|(index, _)| *index);
+    results.into_iter().map(|(_, result)| result).collect()
 }
 
 /// Write one output unless the destination already holds its bytes. Returns whether it wrote.
