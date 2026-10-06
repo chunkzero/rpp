@@ -505,6 +505,19 @@ retry or clean uses the retained ownership to account for partially published fi
 Staging or initial ownership persistence failures leave published files unchanged.
 This is recoverable publication, not a transaction across filesystems.
 
+Only the cache manifest, the ownership records (including the recovery record), and the JS
+cache entries are flushed to stable storage before they are published, and their parent
+directory is flushed after the rename (except on Windows, which cannot flush directories).
+Newly created ancestor directories, such as `.rpp` on a project's first build, are not
+flushed, so these records are durable before any external output is written only once their
+bookkeeping directory exists. A crash during a project's first build can at worst leave
+external outputs without ownership; the next build reports them ("refusing to overwrite
+unowned file"), and `rpp clean` or deleting the generated folder recovers. CAS objects, pack
+outputs, and external outputs are published atomically but not fsynced, so a power failure can
+leave them empty or partial. Every build hashes each pack and owned external destination
+against its expected object and rewrites mismatches, so the next build repairs such files even
+on a full cache hit.
+
 Build and clean validate filesystem destinations before mutation. Pack output,
 bookkeeping paths, and external roots inside the project must not pass through
 symlinks below the project root; existing ancestors are checked even when the final

@@ -44,15 +44,10 @@ impl ObjectStore {
         Ok(key)
     }
 
-    /// Path to a stored object, if present and valid. Reads and hashes the
-    /// object; a corrupt object is left for the next `put` to replace.
-    fn object_path_for(&self, key: u64) -> Option<PathBuf> {
-        self.get(key).map(|_| self.object_path(key))
-    }
-
-    /// Whether a valid object exists for `key` (reads the object).
+    /// Whether a valid object exists for `key` (reads the object). A corrupt object is left for
+    /// the next `put` to replace.
     pub(crate) fn contains(&self, key: u64) -> bool {
-        self.object_path_for(key).is_some()
+        self.get(key).is_some()
     }
 
     /// Read an object by key, or `None` if it is missing or corrupt.
@@ -62,13 +57,14 @@ impl ObjectStore {
             .filter(|bytes| xxh3(bytes) == key)
     }
 
-    /// Copy an object to a mutable external destination without hard-linking
-    /// it to the immutable CAS entry.
+    /// Copy an object to a mutable destination without hard-linking it to the immutable CAS
+    /// entry. Like objects, the copy is published atomically but not fsynced, so callers must
+    /// verify the destination against `key` on every build.
     pub(crate) fn copy_object(&self, key: u64, dest: &std::path::Path) -> Result<()> {
-        let src = self
-            .object_path_for(key)
+        let bytes = self
+            .get(key)
             .ok_or_else(|| Error::Build(format!("missing cache object {key:#x}")))?;
-        crate::util::atomic::copy(&src, dest).map_err(|e| Error::io(dest, e))
+        crate::util::atomic::write_unsynced(dest, &bytes).map_err(|e| Error::io(dest, e))
     }
 
     /// Garbage-collect objects not present in `live`.
