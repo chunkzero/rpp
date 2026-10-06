@@ -4084,6 +4084,7 @@ dependencies = [
  "tower-http",
  "tracing",
  "tracing-subscriber",
+ "twox-hash",
  "wit-component",
  "wit-parser",
  "zip",

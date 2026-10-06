@@ -9,9 +9,12 @@ use rpp::config::{PngSetting, SquashEngine};
 use rpp::engine::{BuildResult, Engine};
 use rpp_squash::{run_packsquash, squash_zip, PngLevel, SquashOptions, SquashReport};
 
+use self::release::ReleaseInputs;
 use crate::codegen;
 use crate::project::Project;
 use crate::ui;
+
+mod release;
 
 /// Arguments for `rpp build`.
 #[derive(Debug, Clone, Default, Args)]
@@ -57,7 +60,7 @@ pub fn run(dir: &Path, args: BuildArgs) -> Result<()> {
     report_build(&result);
 
     if !args.no_squash && project.config.build.squash.enabled {
-        run_squash(&project)?;
+        run_squash(&project, &result)?;
     } else {
         ui::detail("squash disabled");
     }
@@ -73,7 +76,7 @@ pub fn run(dir: &Path, args: BuildArgs) -> Result<()> {
 /// Remove only the cache and keep the output, which the engine resyncs.
 fn clean_cache(project: &Project) -> Result<()> {
     ui::phase("Cleaning cache");
-    let cache = project.root.join(".rpp").join("cache");
+    let cache = release::cache_dir(project);
     if cache.exists() {
         std::fs::remove_dir_all(&cache).with_context(|| format!("removing {}", cache.display()))?;
     }
@@ -123,7 +126,7 @@ fn report_build(result: &BuildResult) {
 }
 
 /// Run the squash + zip phase against the materialized output directory.
-fn run_squash(project: &Project) -> Result<()> {
+fn run_squash(project: &Project, result: &BuildResult) -> Result<()> {
     let squash = &project.config.build.squash;
     if !squash.zip {
         ui::detail("release archive disabled; squash skipped");
@@ -131,7 +134,7 @@ fn run_squash(project: &Project) -> Result<()> {
     }
     match squash.engine {
         SquashEngine::Packsquash => squash_packsquash(project),
-        SquashEngine::Builtin => squash_builtin(project),
+        SquashEngine::Builtin => squash_builtin(project, result),
     }
 }
 
@@ -164,11 +167,28 @@ fn squash_packsquash(project: &Project) -> Result<()> {
 }
 
 /// Zip the output with in-memory optimization, leaving the loose output unsquashed.
-fn squash_builtin(project: &Project) -> Result<()> {
+///
+/// The existing archive is kept when the build changed no output and the archive still
+/// matches the record written with it for the same inputs.
+fn squash_builtin(project: &Project, result: &BuildResult) -> Result<()> {
     let squash = &project.config.build.squash;
     let zip_path = project.release_zip();
     ui::phase("Squashing (builtin)");
     let start = Instant::now();
+    let inputs = ReleaseInputs::current(project)?;
+    let unchanged_output = result.changes.written.is_empty() && result.changes.removed.is_empty();
+    if unchanged_output
+        && inputs
+            .as_ref()
+            .is_some_and(|inputs| release::is_current(project, inputs, &zip_path))
+    {
+        ui::detail(format!(
+            "release archive unchanged -> {}",
+            zip_path.display()
+        ));
+        return Ok(());
+    }
+    release::forget(project)?;
     let opts = SquashOptions {
         json: squash.json,
         png: png_level(squash.png),
@@ -177,6 +197,9 @@ fn squash_builtin(project: &Project) -> Result<()> {
     let report = squash_zip(&project.output_dir(), &zip_path, &opts)
         .with_context(|| format!("writing zip {}", zip_path.display()))?;
     report_squash(&report);
+    if let Some(inputs) = inputs {
+        release::remember(project, inputs, &zip_path)?;
+    }
     ui::detail(format!("zip -> {}", zip_path.display()));
     ui::detail(format!(
         "squash finished in {}",

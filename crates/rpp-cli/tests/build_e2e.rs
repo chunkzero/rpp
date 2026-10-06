@@ -149,6 +149,73 @@ fn build_minifies_and_zips_then_caches() {
     assert_eq!(std::fs::read(&zip).unwrap(), archive_bytes);
 }
 
+/// Give `path` an old modification time, so a rewrite is observable.
+fn backdate(path: &Path) {
+    std::fs::File::options()
+        .write(true)
+        .open(path)
+        .unwrap()
+        .set_times(std::fs::FileTimes::new().set_modified(old_time()))
+        .unwrap();
+}
+
+fn old_time() -> std::time::SystemTime {
+    std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000_000)
+}
+
+/// Build `root` and report whether the backdated release archive was rewritten.
+fn build_rewrites_zip(root: &Path, args: &[&str]) -> bool {
+    let zip = root.join("dist/test-pack.zip");
+    backdate(&zip);
+    let out = build(root, args);
+    assert!(out.status.success(), "build failed:\n{}", stderr(&out));
+    std::fs::metadata(&zip).unwrap().modified().unwrap() != old_time()
+}
+
+#[test]
+fn unchanged_release_archive_is_reused() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    scaffold(root);
+    assert!(build(root, &[]).status.success());
+    let zip = root.join("dist/test-pack.zip");
+    let archive = std::fs::read(&zip).unwrap();
+
+    assert!(
+        !build_rewrites_zip(root, &[]),
+        "unchanged build kept the archive"
+    );
+
+    std::fs::write(&zip, "tampered").unwrap();
+    assert!(build_rewrites_zip(root, &[]), "modified archive is rebuilt");
+    assert_eq!(std::fs::read(&zip).unwrap(), archive);
+
+    assert!(build_rewrites_zip(root, &["--no-cache"]));
+
+    let config = std::fs::read_to_string(root.join("rpp.config.ts")).unwrap();
+    std::fs::write(
+        root.join("rpp.config.ts"),
+        config.replace("png: false", "png: \"fast\""),
+    )
+    .unwrap();
+    assert!(build_rewrites_zip(root, &[]), "squash settings changed");
+    assert!(!build_rewrites_zip(root, &[]));
+
+    std::fs::write(
+        root.join("src/assets/minecraft/release.json"),
+        r#"{"edited":true}"#,
+    )
+    .unwrap();
+    assert!(build_rewrites_zip(root, &[]), "source edited");
+    assert_eq!(
+        read_zip_entry(
+            &std::fs::read(&zip).unwrap(),
+            "assets/minecraft/release.json"
+        ),
+        r#"{"edited":true}"#
+    );
+}
+
 #[test]
 fn no_squash_removes_stale_release_archive() {
     let dir = tempfile::tempdir().unwrap();
