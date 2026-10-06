@@ -127,3 +127,20 @@ fn sleeping_returns_immediately_on_fixed_clock() {
     assert!(started.elapsed() < Duration::from_secs(5));
     assert_eq!(results, vec![Value::U64(0)]);
 }
+
+#[test]
+fn lifts_byte_list_beyond_default_hostcall_fuel() {
+    let Some(fixture) = build_fixture(&fixture("math-component"), "math_component") else {
+        return;
+    };
+    let engine = WasmEngine::new(Limits::default(), None).unwrap();
+    let component = engine.load(&fixture.wasm).unwrap();
+    let mut instance = component.instantiate(Permissions::default()).unwrap();
+    // Wasmtime's default hostcall fuel lifts at most about 4 MiB of `list<u8>`.
+    let len = 5 << 20;
+    let results = instance.call("bytes", &[Value::U32(len)]).unwrap();
+    let [Value::List(bytes)] = results.as_slice() else {
+        panic!("expected one list, got {results:?}");
+    };
+    assert_eq!(bytes.len(), len as usize);
+}
