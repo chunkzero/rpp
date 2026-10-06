@@ -7,9 +7,7 @@ use anyhow::{Context, Result};
 use clap::Args;
 use rpp::config::{PngSetting, SquashEngine};
 use rpp::engine::{BuildResult, Engine};
-use rpp_squash::{
-    copy_tree, run_packsquash, squash_dir, write_zip, PngLevel, SquashOptions, SquashReport,
-};
+use rpp_squash::{run_packsquash, squash_zip, PngLevel, SquashOptions, SquashReport};
 
 use crate::codegen;
 use crate::project::Project;
@@ -165,23 +163,20 @@ fn squash_packsquash(project: &Project) -> Result<()> {
     Ok(())
 }
 
-/// Optimize a staged copy of the output and zip it.
+/// Zip the output with in-memory optimization, leaving the loose output unsquashed.
 fn squash_builtin(project: &Project) -> Result<()> {
     let squash = &project.config.build.squash;
     let zip_path = project.release_zip();
     ui::phase("Squashing (builtin)");
     let start = Instant::now();
-    let staging = stage_release(project, &zip_path)?;
     let opts = SquashOptions {
         json: squash.json,
         png: png_level(squash.png),
         strip: squash.strip.clone(),
     };
-    let report = squash_dir(staging.path(), &opts).context("optimizing release files")?;
-    report_squash(&report);
-
-    write_zip(staging.path(), &zip_path)
+    let report = squash_zip(&project.output_dir(), &zip_path, &opts)
         .with_context(|| format!("writing zip {}", zip_path.display()))?;
+    report_squash(&report);
     ui::detail(format!("zip -> {}", zip_path.display()));
     ui::detail(format!(
         "squash finished in {}",
@@ -202,19 +197,6 @@ fn report_squash(report: &SquashReport) {
     for warning in &report.warnings {
         ui::warn(warning);
     }
-}
-
-/// Copy the engine-owned loose output to a temporary release staging directory.
-fn stage_release(project: &Project, zip_path: &Path) -> Result<tempfile::TempDir> {
-    let temp_root = project.root.join(".rpp");
-    std::fs::create_dir_all(&temp_root)
-        .with_context(|| format!("creating {}", temp_root.display()))?;
-    let staging = tempfile::Builder::new()
-        .prefix("release-")
-        .tempdir_in(&temp_root)
-        .context("creating release staging directory")?;
-    copy_tree(&project.output_dir(), staging.path(), zip_path).context("staging release files")?;
-    Ok(staging)
 }
 
 fn png_level(setting: PngSetting) -> PngLevel {

@@ -1,4 +1,4 @@
-//! Regular-file discovery shared by directory squashing and zip creation.
+//! Regular-file discovery for archive creation.
 
 use std::path::{Path, PathBuf};
 
@@ -11,6 +11,8 @@ pub(crate) struct WalkedFile {
     pub(crate) abs: PathBuf,
     /// Forward-slash path relative to the walked root.
     pub(crate) rel: String,
+    /// Size in bytes when walked.
+    pub(crate) len: u64,
 }
 
 /// Collect every regular file under `root` (symlinks are not followed), sorted
@@ -23,9 +25,13 @@ pub(crate) fn walk_files(root: &Path) -> Result<Vec<WalkedFile>> {
             Error::io(path, err.into())
         })?;
         if entry.file_type().is_file() {
+            let len = entry
+                .metadata()
+                .map_err(|err| Error::io(entry.path(), err.into()))?
+                .len();
             let abs = entry.into_path();
             let rel = relative_forward_slash(root, &abs);
-            files.push(WalkedFile { abs, rel });
+            files.push(WalkedFile { abs, rel, len });
         }
     }
     files.sort_by(|a, b| a.rel.cmp(&b.rel));

@@ -553,12 +553,11 @@ pub struct SquashOptions { pub json: bool, pub png: PngLevel, pub strip: Vec<Str
 pub enum PngLevel { Off, Fast, Max }
 pub struct SquashReport { pub files_optimized: usize, pub files_stripped: usize, pub bytes_before: u64, pub bytes_after: u64, pub warnings: Vec<String> }
 
-/// Optimize files in-place in a release staging directory, honoring options.
-pub fn squash_dir(dir: &Path, opts: &SquashOptions) -> Result<SquashReport>;
-/// Write a deterministic zip of `dir` (sorted entries, fixed timestamps, deflate)
-/// atomically: staged in a temp file beside `zip_path`, mode 0644, then renamed.
-pub fn write_zip(dir: &Path, zip_path: &Path) -> Result<()>;
-/// The same deterministic zip bytes, built in memory.
+/// Write a deterministic release zip of `dir` (sorted entries, fixed timestamps, deflate),
+/// leaving out `strip` matches and optimizing files in memory; `dir` is not modified.
+/// Written atomically: staged in a temp file beside `zip_path`, mode 0644, then renamed.
+pub fn squash_zip(dir: &Path, zip_path: &Path, opts: &SquashOptions) -> Result<SquashReport>;
+/// The same deterministic layout without optimization, built in memory.
 pub fn zip_to_vec(dir: &Path) -> Result<Vec<u8>>;
 /// engine = "packsquash": invoke external binary with a generated/passthrough options file.
 pub fn run_packsquash(binary: &str, pack_dir: &Path, zip_path: &Path, options_file: Option<&Path>) -> Result<()>;
@@ -570,10 +569,10 @@ pub fn run_packsquash(binary: &str, pack_dir: &Path, zip_path: &Path, options_fi
   times sane); always strip safe metadata chunks.
 - Zip: `zip` crate, deflate, entries sorted by path, fixed DOS timestamp (1980-01-01),
   no extra fields → byte-reproducible builds. `pack.mcmeta` first in the archive.
-- `strip` patterns delete matching files from release staging before zipping.
+- `strip` patterns leave matching files out of the release archive.
 - Squashing is a release-archive operation. The engine-owned loose output remains
-  unsquashed; builtin squash operates on a temporary staging copy. PackSquash likewise
-  produces a release archive and is not run by `rpp dev`.
+  unsquashed; builtin squash reads it and optimizes each file in memory while writing the
+  archive. PackSquash likewise produces a release archive and is not run by `rpp dev`.
 
 ## 9. CLI (`crates/rpp-cli`, binary name `rpp`)
 
