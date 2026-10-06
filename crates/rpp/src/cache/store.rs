@@ -10,6 +10,7 @@ use crate::error::{Error, Result};
 use crate::util::hash::{u64_hex, xxh3};
 
 /// A handle to the CAS object directory.
+#[derive(Clone)]
 pub(crate) struct ObjectStore {
     dir: PathBuf,
 }
@@ -40,16 +41,9 @@ impl ObjectStore {
     }
 
     /// Path to a stored object, if present and valid. Reads and hashes the
-    /// object; a corrupt object is removed so it is rebuilt.
+    /// object; a corrupt object is left for the next `put` to replace.
     fn object_path_for(&self, key: u64) -> Option<PathBuf> {
-        let path = self.object_path(key);
-        let bytes = std::fs::read(&path).ok()?;
-        if xxh3(&bytes) == key {
-            Some(path)
-        } else {
-            let _ = std::fs::remove_file(path);
-            None
-        }
+        self.get(key).map(|_| self.object_path(key))
     }
 
     /// Whether a valid object exists for `key` (reads the object).
@@ -59,14 +53,9 @@ impl ObjectStore {
 
     /// Read an object by key, or `None` if it is missing or corrupt.
     pub(crate) fn get(&self, key: u64) -> Option<Vec<u8>> {
-        let path = self.object_path(key);
-        let bytes = std::fs::read(&path).ok()?;
-        if xxh3(&bytes) == key {
-            Some(bytes)
-        } else {
-            let _ = std::fs::remove_file(path);
-            None
-        }
+        std::fs::read(self.object_path(key))
+            .ok()
+            .filter(|bytes| xxh3(bytes) == key)
     }
 
     /// Copy an object to a mutable external destination without hard-linking

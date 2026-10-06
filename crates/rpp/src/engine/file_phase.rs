@@ -3,85 +3,85 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use crate::cache::{FileEntry, Fingerprint, ObjectStore, OutputRef};
+use crate::cache::FileEntry;
 use crate::error::{Error, Result};
-use crate::model::PackFile;
 use crate::source::SourceFile;
 
 use super::keys::{chain_for, chain_key};
 use super::output::OutputContent;
 use super::session::BuildSession;
-use super::worker::{Job, JobOutcome, WorkerPool};
+use super::worker::{Job, JobOutcome, WorkerContext, WorkerPool};
 
-/// Dirty files submitted to the pool, keyed by source path: their chain key and fingerprint.
-type Pending = BTreeMap<String, (u64, Fingerprint)>;
+/// Per-file results gathered from the pool, keyed by source path so they apply in source order.
+#[derive(Default)]
+struct Collected {
+    /// Chain keys of submitted files without a result yet.
+    pending: BTreeMap<String, u64>,
+    hits: BTreeMap<String, (FileEntry, Vec<OutputContent>)>,
+    processed: BTreeMap<String, FileEntry>,
+    /// The failure of the first source, in source order, among those that failed.
+    error: Option<(String, Error)>,
+}
 
 impl BuildSession<'_> {
     /// Serve each source from the cache or run its processor chain on the worker pool.
+    ///
+    /// Cache hits claim their output paths first, then processed results, each in source
+    /// order, independent of worker completion order.
     pub(super) fn process_files(&mut self, sources: Vec<SourceFile>) -> Result<()> {
         let engine = self.engine;
-        // At most one job per worker is outstanding. Receive and publish before
-        // reading another source, including bytes read during cache validation.
+        // At most one job per worker is outstanding, bounding the source and output
+        // bytes held for validation and processing.
         let limit = engine.worker_count();
         let mut pool_slot = engine.pool.lock();
-        let mut pool = pool_slot.take();
-        let mut pending = Pending::new();
-        let mut completed = BTreeMap::new();
+        let pool = pool_slot.take().unwrap_or_else(|| {
+            let context = WorkerContext {
+                factories: Arc::clone(&engine.factories),
+                store: self.store.clone(),
+                output_dir: engine.output.clone(),
+            };
+            WorkerPool::new(limit, Arc::new(context))
+        });
+        let mut collected = Collected::default();
 
-        for src in sources {
-            let chain = chain_for(&engine.compiled, &src.rel);
+        for source in sources {
+            if collected.error.is_some() {
+                break;
+            }
+            let chain = chain_for(&engine.compiled, &source.rel);
             let key = chain_key(&chain);
             let cacheable = chain.iter().all(|step| step.cacheable);
-            let Some((fingerprint, contents)) = self.replay_or_read(&src, key, cacheable)? else {
-                continue;
-            };
-            let pool =
-                pool.get_or_insert_with(|| WorkerPool::new(limit, Arc::clone(&engine.factories)));
-            pending.insert(src.rel.clone(), (key, fingerprint));
+            let cached = self
+                .prev
+                .and_then(|manifest| manifest.files.get(&source.rel))
+                .filter(|entry| cacheable && entry.chain_key == key)
+                .cloned();
+            collected.pending.insert(source.rel.clone(), key);
             pool.submit(Job {
-                file: PackFile::new(src.rel.clone(), contents),
-                rel: src.rel,
-                chain: Arc::new(chain),
+                source,
+                chain,
+                cached,
             })?;
-            if pending.len() == limit {
-                collect_result(pool, &self.store, &mut pending, &mut completed)?;
+            if collected.pending.len() == limit {
+                collected.receive(&pool)?;
             }
+        }
+        while !collected.pending.is_empty() {
+            collected.receive(&pool)?;
+        }
+        if let Some((_, error)) = collected.error {
+            return Err(error);
         }
 
-        if let Some(pool) = pool.as_ref() {
-            while !pending.is_empty() {
-                collect_result(pool, &self.store, &mut pending, &mut completed)?;
-            }
+        for (rel, (entry, contents)) in collected.hits {
+            self.apply_cached(rel, entry, contents)?;
         }
-        self.record_processed(completed)?;
-        *pool_slot = pool;
+        self.record_processed(collected.processed)?;
+        *pool_slot = Some(pool);
         Ok(())
     }
 
-    /// Serve `src` from the previous build when its chain and contents are unchanged.
-    ///
-    /// Returns the fingerprinted contents when the file must be processed instead.
-    fn replay_or_read(
-        &mut self,
-        src: &SourceFile,
-        chain_key: u64,
-        cacheable: bool,
-    ) -> Result<Option<(Fingerprint, Vec<u8>)>> {
-        let candidate = self
-            .prev
-            .and_then(|manifest| manifest.files.get(&src.rel))
-            .filter(|entry| cacheable && entry.chain_key == chain_key);
-        let (fingerprint, contents) = src.fingerprint()?;
-        if let Some(entry) = candidate {
-            if fingerprint.xxh3 == entry.fingerprint.xxh3 && self.replay_file(&src.rel, entry)? {
-                return Ok(None);
-            }
-        }
-        Ok(Some((fingerprint, contents)))
-    }
-
-    /// Add processed results to the output. Cache hits have claimed their paths first; dirty
-    /// results claim in source order, independent of worker completion order.
+    /// Add processed results to the output.
     fn record_processed(&mut self, completed: BTreeMap<String, FileEntry>) -> Result<()> {
         for (rel, entry) in completed {
             for out in &entry.outputs {
@@ -96,46 +96,46 @@ impl BuildSession<'_> {
     }
 }
 
-fn collect_result(
-    pool: &WorkerPool,
-    store: &ObjectStore,
-    pending: &mut Pending,
-    completed: &mut BTreeMap<String, FileEntry>,
-) -> Result<()> {
-    let outcome = pool
-        .recv()
-        .ok_or_else(|| Error::Build("worker pool closed early".into()))??;
-    let (rel, outputs) = match outcome {
-        JobOutcome::Produced { rel, file } => {
-            let object = store.put(&file.contents)?;
-            (
-                rel,
-                vec![OutputRef {
-                    path: file.path,
-                    object,
-                }],
-            )
+impl Collected {
+    /// Receive one result from `pool`.
+    fn receive(&mut self, pool: &WorkerPool) -> Result<()> {
+        let result = pool
+            .recv()
+            .ok_or_else(|| Error::Build("worker pool closed early".into()))?;
+        let rel = result.rel;
+        let chain_key = self
+            .pending
+            .remove(&rel)
+            .ok_or_else(|| Error::Build(format!("unknown result for {rel}")))?;
+        match result.outcome {
+            Ok(JobOutcome::Cached { entry, contents }) => {
+                self.hits.insert(rel, (entry, contents));
+            }
+            Ok(JobOutcome::Processed {
+                fingerprint,
+                outputs,
+            }) => {
+                let entry = FileEntry {
+                    fingerprint,
+                    chain_key,
+                    outputs,
+                };
+                self.processed.insert(rel, entry);
+            }
+            Err(error) => {
+                if self.error.as_ref().is_none_or(|(first, _)| rel < *first) {
+                    self.error = Some((rel, error));
+                }
+            }
         }
-        JobOutcome::Dropped { rel } => (rel, Vec::new()),
-    };
-    let (chain_key, fingerprint) = pending
-        .remove(&rel)
-        .ok_or_else(|| Error::Build(format!("unknown result for {rel}")))?;
-    completed.insert(
-        rel,
-        FileEntry {
-            fingerprint,
-            chain_key,
-            outputs,
-        },
-    );
-    Ok(())
+        Ok(())
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cache::Manifest;
+    use crate::cache::{Manifest, ObjectStore};
     use crate::engine::Engine;
 
     #[test]

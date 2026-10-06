@@ -2,6 +2,7 @@
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use rpp::model::{
@@ -27,6 +28,7 @@ pub struct MockFactory {
     overrides: Vec<String>,
     output_roots: BTreeMap<String, PathBuf>,
     authoring_source: Option<String>,
+    instantiations: Arc<AtomicUsize>,
 }
 
 impl MockFactory {
@@ -62,7 +64,14 @@ impl MockFactory {
             overrides: Vec::new(),
             output_roots: BTreeMap::new(),
             authoring_source: None,
+            instantiations: Arc::default(),
         }
+    }
+
+    /// Count every `instantiate` call in `counter`.
+    pub fn with_instantiations(mut self, counter: Arc<AtomicUsize>) -> Self {
+        self.instantiations = counter;
+        self
     }
 
     pub fn with_overrides(mut self, globs: &[&str]) -> Self {
@@ -154,6 +163,7 @@ impl PluginFactory for MockFactory {
     }
 
     fn instantiate(&self) -> rpp::Result<Box<dyn PluginInstance>> {
+        self.instantiations.fetch_add(1, Ordering::Relaxed);
         Ok(Box::new(MockInstance {
             id: self.id.clone(),
             behavior: Arc::clone(&self.behavior),

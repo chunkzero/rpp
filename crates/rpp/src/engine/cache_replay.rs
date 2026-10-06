@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use crate::cache::{FileEntry, GeneratorEntry, GeneratorMutation, ObjectStore};
+use crate::cache::{FileEntry, GeneratorEntry, GeneratorMutation, ObjectStore, OutputRef};
 use crate::error::{Error, Result};
 use crate::util::glob::GlobSet;
 use crate::util::hash::xxh3;
@@ -13,25 +13,20 @@ use super::output::OutputContent;
 use super::session::BuildSession;
 
 impl BuildSession<'_> {
-    /// Link a clean file's cached outputs and record its entry in the new manifest.
-    ///
-    /// Returns `Ok(false)`, changing nothing, when any referenced object is missing.
-    pub(super) fn replay_file(&mut self, rel: &str, entry: &FileEntry) -> Result<bool> {
-        let output_dir = &self.engine.output;
-        let mut contents = Vec::with_capacity(entry.outputs.len());
-        for out in &entry.outputs {
-            match cached_content(&self.store, output_dir, &out.path, out.object) {
-                Some(content) => contents.push(content),
-                None => return Ok(false),
-            }
-        }
+    /// Add a clean file's resolved cached outputs and record its entry in the new manifest.
+    pub(super) fn apply_cached(
+        &mut self,
+        rel: String,
+        entry: FileEntry,
+        contents: Vec<OutputContent>,
+    ) -> Result<()> {
         for (out, content) in entry.outputs.iter().zip(contents) {
-            self.output.insert_source(rel, &out.path, content)?;
+            self.output.insert_source(&rel, &out.path, content)?;
         }
         self.stats.cached += 1;
         self.stats.dropped += usize::from(entry.outputs.is_empty());
-        self.manifest.files.insert(rel.to_string(), entry.clone());
-        Ok(true)
+        self.manifest.files.insert(rel, entry);
+        Ok(())
     }
 
     /// Apply a generator's cached mutations in order and record its entry in the new manifest.
@@ -93,6 +88,18 @@ impl BuildSession<'_> {
         }
         Some(emits)
     }
+}
+
+/// Resolve every cached output in order, or `None` when any object is missing.
+pub(super) fn cached_outputs(
+    store: &ObjectStore,
+    output_dir: &Path,
+    outputs: &[OutputRef],
+) -> Option<Vec<OutputContent>> {
+    outputs
+        .iter()
+        .map(|out| cached_content(store, output_dir, &out.path, out.object))
+        .collect()
 }
 
 /// Resolve a cached object for `rel`: `Linked` when the output directory
