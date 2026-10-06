@@ -142,3 +142,25 @@ fn cached_symlink_output_is_replaced_even_without_cas() {
             .is_symlink());
     }
 }
+
+#[cfg(unix)]
+#[test]
+fn symlinked_output_subdirectory_is_rejected() {
+    let project = Project::new();
+    project.write_src("a/b/x.txt", "x");
+    project.write_src("a/c/y.txt", "y");
+    build(&project, Vec::new());
+
+    let outside = tempfile::tempdir().unwrap();
+    let nested = project.root().join("dist/a/c");
+    std::fs::remove_dir_all(&nested).unwrap();
+    std::os::unix::fs::symlink(outside.path(), &nested).unwrap();
+    project.write_src("a/c/y.txt", "changed");
+
+    let error = engine(&project, Vec::new())
+        .build()
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("must not contain symlinks"), "{error}");
+    assert!(std::fs::read_dir(outside.path()).unwrap().next().is_none());
+}

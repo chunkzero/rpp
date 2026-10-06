@@ -1,5 +1,6 @@
 //! Filesystem boundaries shared by build and clean.
 
+use std::collections::HashSet;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
@@ -9,32 +10,61 @@ use crate::model::PluginFactory;
 
 /// Lexically join `path` onto `base`, rejecting symlinks in components below `base`.
 pub(super) fn checked_path(base: &Path, path: &Path) -> Result<PathBuf> {
-    let mut resolved = base.to_path_buf();
-    for component in path.components() {
-        match component {
-            Component::CurDir => continue,
-            Component::ParentDir => {
-                resolved.pop();
-                continue;
-            }
-            other => resolved.push(other.as_os_str()),
-        }
-        if resolved == base || !resolved.starts_with(base) {
-            continue;
-        }
-        match std::fs::symlink_metadata(&resolved) {
-            Ok(metadata) if metadata.file_type().is_symlink() => {
-                return Err(Error::Build(format!(
-                    "filesystem boundary `{}` must not contain symlinks",
-                    resolved.display()
-                )));
-            }
-            Ok(_) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(Error::io(&resolved, error)),
+    BoundaryChecker::new(base).check(path)
+}
+
+/// Checks many paths below one base, examining each shared ancestor once.
+///
+/// Only use it while nothing below `base` is being mutated.
+pub(super) struct BoundaryChecker<'a> {
+    base: &'a Path,
+    checked: HashSet<PathBuf>,
+}
+
+impl<'a> BoundaryChecker<'a> {
+    pub(super) fn new(base: &'a Path) -> Self {
+        Self {
+            base,
+            checked: HashSet::new(),
         }
     }
-    Ok(resolved)
+
+    /// Like [`checked_path`], skipping components already checked by this checker.
+    pub(super) fn check(&mut self, path: &Path) -> Result<PathBuf> {
+        let base = self.base;
+        // Every checked path's ancestors are checked too, so a known directory needs no walk.
+        let joined = base.join(path);
+        if self.checked.contains(&joined) {
+            return Ok(joined);
+        }
+        let mut resolved = base.to_path_buf();
+        for component in path.components() {
+            match component {
+                Component::CurDir => continue,
+                Component::ParentDir => {
+                    resolved.pop();
+                    continue;
+                }
+                other => resolved.push(other.as_os_str()),
+            }
+            if resolved == base || !resolved.starts_with(base) || self.checked.contains(&resolved) {
+                continue;
+            }
+            match std::fs::symlink_metadata(&resolved) {
+                Ok(metadata) if metadata.file_type().is_symlink() => {
+                    return Err(Error::Build(format!(
+                        "filesystem boundary `{}` must not contain symlinks",
+                        resolved.display()
+                    )));
+                }
+                Ok(_) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(Error::io(&resolved, error)),
+            }
+            self.checked.insert(resolved.clone());
+        }
+        Ok(resolved)
+    }
 }
 
 /// Check that `build.source` and `build.output` are separate, normalized project-relative
