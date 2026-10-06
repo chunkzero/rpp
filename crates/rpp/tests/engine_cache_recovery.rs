@@ -75,3 +75,20 @@ fn truncated_and_missing_objects_are_rebuilt_and_repaired() {
     assert_eq!((replayed.processed, replayed.generated), (0, 0));
     assert_outputs(&project);
 }
+
+#[test]
+fn torn_outputs_are_rewritten_on_a_cache_hit() {
+    let project = Project::new();
+    project.write_src("a.txt", "a");
+    build(&project, vec![codegen()]);
+
+    let root = project.root();
+    std::fs::File::create(root.join("dist/a.txt")).unwrap();
+    std::fs::write(root.join("dist/gen.txt"), "gen").unwrap();
+    std::fs::File::create(root.join("generated/Gen.kt")).unwrap();
+    let hit = build(&project, vec![codegen()]);
+    assert_eq!((hit.processed, hit.generated), (0, 0));
+    assert_eq!(hit.changes.written.len(), 2);
+    assert_eq!(hit.changes.external.written.len(), 1);
+    assert_outputs(&project);
+}

@@ -123,8 +123,9 @@ impl StagedWrite {
         std::fs::create_dir_all(parent).map_err(|e| Error::io(parent, e))?;
         let mut file =
             crate::util::atomic::staging_file(parent).map_err(|e| Error::io(parent, e))?;
+        // Not fsynced: every build hashes owned destinations in `needs_write` and rewrites
+        // mismatches, so a file torn by a power failure is repaired by the next build.
         file.write_all(&bytes).map_err(|e| Error::io(&path, e))?;
-        file.as_file().sync_all().map_err(|e| Error::io(&path, e))?;
         Ok(Self {
             path,
             file,
