@@ -2,12 +2,14 @@
 
 mod common;
 
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use common::engine::{build, engine, noop};
 use common::mock::{cache_key, MockFactory};
 use common::Project;
-use rpp::model::ProcessOutcome;
+use rpp::engine::Engine;
+use rpp::model::{PluginFactory, ProcessOutcome};
 
 fn appender(id: &str, mark: &'static str) -> MockFactory {
     MockFactory::new(id, cache_key(id), move |_, file| {
@@ -219,4 +221,55 @@ fn failing_finish_hook_does_not_commit_outputs_or_manifest() {
     assert!(error.contains("finish failed"), "{error}");
     assert!(!project.root().join("dist/generated.txt").exists());
     assert!(!project.root().join(".rpp/cache/manifest.bin").exists());
+}
+
+#[test]
+fn workers_instantiate_plugins_only_for_chains_that_run() {
+    let project = Project::new();
+    project.write_src("a.txt", "a");
+    let count = Arc::new(AtomicUsize::new(0));
+    let plugin = || -> Arc<dyn PluginFactory> {
+        Arc::new(
+            appender("json", "!")
+                .with_patterns(&["**/*.json"])
+                .with_instantiations(Arc::clone(&count)),
+        )
+    };
+
+    build(&project, vec![plugin()]);
+    // Only the build's own lifecycle instance: `a.txt` has no chain.
+    assert_eq!(count.swap(0, Ordering::Relaxed), 1);
+
+    project.write_src("b.json", "{}");
+    build(&project, vec![plugin()]);
+    assert!(count.swap(0, Ordering::Relaxed) > 1);
+
+    let cached = build(&project, vec![plugin()]);
+    assert_eq!(cached.cached, 2);
+    assert_eq!(count.load(Ordering::Relaxed), 1);
+}
+
+#[test]
+fn first_failing_source_is_reported() {
+    let project = Project::new();
+    for index in 0..16 {
+        project.write_src(&format!("bad{index:02}.txt"), "bad");
+    }
+    let plugin = MockFactory::fallible("failing", 1, |id, file| {
+        Err(rpp::Error::Processor {
+            plugin: id.into(),
+            processor: "p".into(),
+            file: file.path.clone(),
+            message: "boom".into(),
+        })
+    });
+    let mut config = project.config();
+    config.build.workers = 4;
+    let engine = Engine::builder(config)
+        .project_root(project.root())
+        .plugin(Arc::new(plugin))
+        .build_engine()
+        .unwrap();
+    let error = engine.build().unwrap_err().to_string();
+    assert!(error.contains("bad00.txt"), "{error}");
 }
