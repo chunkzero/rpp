@@ -558,8 +558,9 @@ pub struct SquashReport { pub files_optimized: usize, pub files_stripped: usize,
 /// leaving out `strip` matches and optimizing files in memory; `dir` is not modified.
 /// Written atomically: staged in a temp file beside `zip_path`, mode 0644, then renamed.
 pub fn squash_zip(dir: &Path, zip_path: &Path, opts: &SquashOptions) -> Result<SquashReport>;
-/// The same deterministic layout without optimization, built in memory.
-pub fn zip_to_vec(dir: &Path) -> Result<Vec<u8>>;
+/// The same deterministic layout without optimization, built in memory, leaving out
+/// `release_zip` and its staging files when it is inside `dir`.
+pub fn zip_to_vec(dir: &Path, release_zip: Option<&Path>) -> Result<Vec<u8>>;
 /// engine = "packsquash": invoke external binary with a generated/passthrough options file.
 pub fn run_packsquash(binary: &str, pack_dir: &Path, zip_path: &Path, options_file: Option<&Path>) -> Result<()>;
 ```
@@ -670,7 +671,8 @@ event ID/replay history; disconnected clients catch up to the latest pack.
 
 After every successful build, dev creates a deterministic, unsquashed ZIP outside
 the engine-owned output and computes its SHA-1 (the Minecraft download hash).
-Release squash and ZIP settings do not disable this archive. The bytes and metadata
+Release squash and ZIP settings do not disable this archive, and it leaves out the
+release archive `rpp build` may have written to the output. The bytes and metadata
 are published together only after archive creation succeeds. Identical bytes do
 not produce a new pack update. External-output-only changes do not update the pack.
 The initial build must succeed before HTTP starts.

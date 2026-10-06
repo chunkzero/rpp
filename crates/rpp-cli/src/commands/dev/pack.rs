@@ -30,9 +30,11 @@ impl PackStore {
         })
     }
 
-    // Build the archive in memory, then swap only after every step succeeds.
-    pub fn publish(&self, output: &Path) -> Result<bool> {
-        let bytes = rpp_squash::zip_to_vec(output).context("creating dev pack archive")?;
+    /// Archive `output` in memory, leaving out `release_zip` and its staging files, then
+    /// swap only after every step succeeds.
+    pub fn publish(&self, output: &Path, release_zip: Option<&Path>) -> Result<bool> {
+        let bytes =
+            rpp_squash::zip_to_vec(output, release_zip).context("creating dev pack archive")?;
         let sha1 = format!("{:x}", Sha1::digest(&bytes));
         let mut current = self.0.write().unwrap();
         if current.as_ref().is_some_and(|pack| pack.sha1 == sha1) {
@@ -56,15 +58,15 @@ mod tests {
         let file = source.path().join("pack.mcmeta");
         std::fs::write(&file, "{}").unwrap();
         let store = PackStore::default();
-        assert!(store.publish(source.path()).unwrap());
+        assert!(store.publish(source.path(), None).unwrap());
         let first = store.current().unwrap();
         assert_eq!(first.sha1, format!("{:x}", Sha1::digest(&first.bytes)));
-        assert!(!store.publish(source.path()).unwrap());
+        assert!(!store.publish(source.path(), None).unwrap());
         std::fs::write(file, "changed").unwrap();
-        assert!(store.publish(source.path()).unwrap());
+        assert!(store.publish(source.path(), None).unwrap());
         let second = store.current().unwrap();
         assert_ne!(first.sha1, second.sha1);
-        assert!(store.publish(&source.path().join("missing")).is_err());
+        assert!(store.publish(&source.path().join("missing"), None).is_err());
         assert_eq!(store.current().unwrap().sha1, second.sha1);
     }
 }

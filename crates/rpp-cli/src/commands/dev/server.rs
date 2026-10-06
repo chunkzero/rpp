@@ -129,7 +129,7 @@ mod tests {
         let file = source.path().join("pack.mcmeta");
         std::fs::write(&file, "{}").unwrap();
         let packs = PackStore::default();
-        packs.publish(source.path()).unwrap();
+        packs.publish(source.path(), None).unwrap();
         let original = packs.current().unwrap();
         let (reloads, _) = broadcast::channel(2);
         let state = ServerState { reloads, packs };
@@ -142,7 +142,7 @@ mod tests {
         assert!(zip.by_name("pack.mcmeta").is_ok());
 
         std::fs::write(file, "changed").unwrap();
-        state.packs.publish(source.path()).unwrap();
+        state.packs.publish(source.path(), None).unwrap();
         let response = download(State(state), Path(format!("{}.zip", original.sha1))).await;
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
@@ -164,7 +164,7 @@ mod tests {
         let source = tempfile::tempdir().unwrap();
         std::fs::write(source.path().join("pack.mcmeta"), "{}").unwrap();
         let packs = PackStore::default();
-        packs.publish(source.path()).unwrap();
+        packs.publish(source.path(), None).unwrap();
         let metadata = packs.metadata();
         let (reloads, _) = broadcast::channel(2);
         let response = sse_handler(State(ServerState {
@@ -182,7 +182,7 @@ mod tests {
         assert!(text.lines().any(|line| line == "event: pack"));
 
         std::fs::write(source.path().join("pack.mcmeta"), "new pack").unwrap();
-        packs.publish(source.path()).unwrap();
+        packs.publish(source.path(), None).unwrap();
         let stale = serde_json::json!({
             "type": "reload", "changed": ["pack.mcmeta"], "pack": metadata
         });

@@ -2,7 +2,7 @@
 
 use std::fs;
 use std::io::{Cursor, Seek, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use rayon::prelude::*;
 use zip::write::SimpleFileOptions;
@@ -51,19 +51,9 @@ const BATCH_BYTES: u64 = 32 * 1024 * 1024;
 /// [`SquashReport`]; hard I/O failures abort with an [`Error`].
 pub fn squash_zip(dir: &Path, zip_path: &Path, opts: &SquashOptions) -> Result<SquashReport> {
     let strip = build_glob_set(&opts.strip)?;
-    let parent = zip_path
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-        .unwrap_or_else(|| Path::new("."));
-    let parent = parent
-        .canonicalize()
-        .map_err(|err| Error::io(parent, err))?;
-    let file_name = zip_path.file_name().ok_or_else(|| {
-        let err = std::io::Error::from(std::io::ErrorKind::InvalidInput);
-        Error::io(zip_path, err)
-    })?;
+    let (parent, destination) = canonical_destination(zip_path)?;
     let dir = dir.canonicalize().map_err(|err| Error::io(dir, err))?;
-    let (stripped, kept): (Vec<_>, Vec<_>) = archive_entries(&dir, Some(&parent.join(file_name)))?
+    let (stripped, kept): (Vec<_>, Vec<_>) = archive_entries(&dir, Some(&destination))?
         .into_iter()
         .partition(|file| strip.is_match(&file.rel));
 
@@ -95,15 +85,39 @@ pub fn squash_zip(dir: &Path, zip_path: &Path, opts: &SquashOptions) -> Result<S
 /// (1980-01-01 00:00:00) and identical unix permissions, and no extra fields are
 /// written. Two runs over an unchanged tree produce byte-identical archives.
 /// Directory entries are omitted. [`squash_zip`] uses the same layout.
-pub fn zip_to_vec(dir: &Path) -> Result<Vec<u8>> {
-    let dir = std::path::absolute(dir).map_err(|err| Error::io(dir, err))?;
-    let entries = archive_entries(&dir, None)?;
+///
+/// When `release_zip` names an archive [`squash_zip`] writes inside `dir`, it and
+/// any staging files beside it are left out, compared canonically as there.
+pub fn zip_to_vec(dir: &Path, release_zip: Option<&Path>) -> Result<Vec<u8>> {
+    let dir = dir.canonicalize().map_err(|err| Error::io(dir, err))?;
+    let exclude = release_zip
+        .map(|zip_path| canonical_destination(zip_path).map(|(_, destination)| destination))
+        .transpose()?;
+    let entries = archive_entries(&dir, exclude.as_deref())?;
     let read = |file: &WalkedFile| {
         let contents = fs::read(&file.abs).map_err(|err| Error::io(&file.abs, err))?;
         Ok((contents, Outcome::default()))
     };
     let (cursor, _) = write_archive(&entries, Cursor::new(Vec::new()), &dir, read)?;
     Ok(cursor.into_inner())
+}
+
+/// The canonical parent directory of `zip_path` and the canonical path of the
+/// archive inside it; the archive itself need not exist.
+fn canonical_destination(zip_path: &Path) -> Result<(PathBuf, PathBuf)> {
+    let parent = zip_path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let parent = parent
+        .canonicalize()
+        .map_err(|err| Error::io(parent, err))?;
+    let file_name = zip_path.file_name().ok_or_else(|| {
+        let err = std::io::Error::from(std::io::ErrorKind::InvalidInput);
+        Error::io(zip_path, err)
+    })?;
+    let destination = parent.join(file_name);
+    Ok((parent, destination))
 }
 
 /// Regular files under `dir` in archive order, skipping the destination archive
@@ -236,8 +250,6 @@ fn set_shareable_permissions(_file: &fs::File) -> std::io::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
-
     use super::*;
     use crate::file::squash_file;
     use crate::options::PngLevel;
@@ -344,7 +356,21 @@ mod tests {
         let out = tempfile::tempdir().unwrap();
         let path = out.path().join("pack.zip");
         write_zip(input.path(), &path).unwrap();
-        assert_eq!(zip_to_vec(input.path()).unwrap(), fs::read(path).unwrap());
+        assert_eq!(
+            zip_to_vec(input.path(), None).unwrap(),
+            fs::read(path).unwrap()
+        );
+    }
+
+    #[test]
+    fn in_memory_archive_excludes_release_archive() {
+        let input = pack_dir();
+        let path = input.path().join("pack.zip");
+        write_zip(input.path(), &path).unwrap();
+        fs::write(input.path().join(".rpp-release-a1B2c3.tmp"), "in flight").unwrap();
+        let bytes = zip_to_vec(input.path(), Some(&path)).unwrap();
+        let archive = zip::ZipArchive::new(Cursor::new(bytes)).unwrap();
+        assert_eq!(archive.file_names().collect::<Vec<_>>(), ["pack.mcmeta"]);
     }
 
     #[test]
