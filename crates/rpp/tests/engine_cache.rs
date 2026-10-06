@@ -137,3 +137,21 @@ fn removing_plugin_keeps_remaining_cache() {
     assert!(!project.out_exists("gone.txt"));
     assert_eq!(project.read_out("keep.txt").as_deref(), Some("k"));
 }
+
+#[test]
+fn warm_build_retains_the_config_owned_pack_metadata_object() {
+    let project = Project::new();
+    project.write_src("a.txt", "a");
+    let mcmeta_object = || {
+        let mcmeta = project.read_out("pack.mcmeta").unwrap();
+        std::fs::read_dir(project.root().join(".rpp/cache/objects"))
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .find(|path| std::fs::read(path).unwrap() == mcmeta.as_bytes())
+    };
+
+    build(&project, vec![upper(1)]);
+    assert!(mcmeta_object().is_some());
+    build(&project, vec![upper(1)]);
+    assert!(mcmeta_object().is_some());
+}
