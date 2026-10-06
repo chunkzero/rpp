@@ -40,4 +40,7 @@ pub struct BuildResult {
     pub duration: Duration,
     /// The set of output paths written/removed.
     pub changes: ChangeReport,
+    /// xxh3 over every pack output path and its content hash, in path order. It
+    /// identifies the engine's logical output set, not the files on disk.
+    pub output_digest: u64,
 }

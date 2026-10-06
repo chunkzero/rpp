@@ -181,6 +181,7 @@ impl Engine {
         for instance in &mut instances {
             instance.on_build_finish(&stats)?;
         }
+        let output_digest = session.output.digest();
         let changes = session.finish()?;
 
         Ok(BuildResult {
@@ -190,6 +191,7 @@ impl Engine {
             dropped: stats.dropped,
             duration: start.elapsed(),
             changes,
+            output_digest,
         })
     }
 

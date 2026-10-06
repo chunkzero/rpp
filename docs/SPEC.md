@@ -5,8 +5,8 @@ Read it before architectural changes, and update the relevant contract when beha
 changes. Contributor tooling and code conventions live in `AGENTS.md`.
 
 RPP is a build tool for Minecraft resource packs: it takes a source directory, runs it
-through a plugin pipeline (TypeScript and WASM plugins), and produces an optimized output
-directory and a distributable `.zip`.
+through a plugin pipeline (TypeScript and WASM plugins), and produces an output directory
+and an optimized, distributable `.zip`.
 
 ## Goals
 
@@ -79,7 +79,7 @@ export default defineConfig({
     squash: {
       enabled: true,
       engine: "builtin", // "builtin" | "packsquash"
-      json: true, // minify .json/.mcmeta in output
+      json: true, // minify .json/.mcmeta in the release archive
       png: "fast", // false | "off" | "fast" | "max" (oxipng levels)
       zip: true, // produce dist/<name>.zip
       strip: ["**/.DS_Store", "**/Thumbs.db", "**/*.psd", "**/*.xcf"],
@@ -543,8 +543,9 @@ These checks assume directories are not concurrently replaced by another process
 
 `BuildResult` reports processed/cached/generated/dropped counts + duration; the engine
 exposes what changed (paths written/removed) so dev-server can broadcast minimal
-reloads and squash can run incrementally. `generated` counts generator executions,
+reloads and `rpp build` can keep an unchanged release archive. `generated` counts generator executions,
 not individual emitted files. External written/removed paths are reported separately.
+`output_digest` is an xxh3 over the final output paths and their content hashes.
 
 ## 8. Squash (`crates/rpp-squash`)
 
@@ -557,8 +558,9 @@ pub struct SquashReport { pub files_optimized: usize, pub files_stripped: usize,
 /// leaving out `strip` matches and optimizing files in memory; `dir` is not modified.
 /// Written atomically: staged in a temp file beside `zip_path`, mode 0644, then renamed.
 pub fn squash_zip(dir: &Path, zip_path: &Path, opts: &SquashOptions) -> Result<SquashReport>;
-/// The same deterministic layout without optimization, built in memory.
-pub fn zip_to_vec(dir: &Path) -> Result<Vec<u8>>;
+/// The same deterministic layout without optimization, built in memory, leaving out
+/// `release_zip` and its staging files when it is inside `dir`.
+pub fn zip_to_vec(dir: &Path, release_zip: Option<&Path>) -> Result<Vec<u8>>;
 /// engine = "packsquash": invoke external binary with a generated/passthrough options file.
 pub fn run_packsquash(binary: &str, pack_dir: &Path, zip_path: &Path, options_file: Option<&Path>) -> Result<()>;
 ```
@@ -574,9 +576,10 @@ pub fn run_packsquash(binary: &str, pack_dir: &Path, zip_path: &Path, options_fi
   unsquashed; builtin squash reads it and optimizes each file in memory while writing the
   archive. PackSquash likewise produces a release archive and is not run by `rpp dev`.
 - `rpp build` keeps an existing builtin release archive when the build wrote and removed no
-  output and `.rpp/cache/release.json` records the same inputs (squash settings, rpp version,
-  archive path, cache manifest hash) and the archive's current size and xxh3. Otherwise, and
-  always after `--no-cache`, the archive is rewritten.
+  output and `.rpp/cache/release.json` records the same inputs (`json`, `png`, `strip`, rpp
+  version, and an xxh3 over the sorted output paths and content hashes) and the archive's
+  current size and xxh3. Otherwise, and always after `--no-cache`, the archive is
+  rewritten. Failing to save the record is only a warning.
 
 ## 9. CLI (`crates/rpp-cli`, binary name `rpp`)
 
@@ -668,7 +671,8 @@ event ID/replay history; disconnected clients catch up to the latest pack.
 
 After every successful build, dev creates a deterministic, unsquashed ZIP outside
 the engine-owned output and computes its SHA-1 (the Minecraft download hash).
-Release squash and ZIP settings do not disable this archive. The bytes and metadata
+Release squash and ZIP settings do not disable this archive, and it leaves out the
+release archive `rpp build` may have written to the output. The bytes and metadata
 are published together only after archive creation succeeds. Identical bytes do
 not produce a new pack update. External-output-only changes do not update the pack.
 The initial build must succeed before HTTP starts.

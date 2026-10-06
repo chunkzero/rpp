@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use crate::cache::ObjectStore;
 use crate::error::{Error, Result};
 use crate::util::glob::GlobSet;
-use crate::util::hash::xxh3;
+use crate::util::hash::{xxh3, HashWriter};
 use crate::util::path::validate_relative;
 
 /// Stored output contents: immutable CAS references or verified output paths.
@@ -26,6 +26,13 @@ impl OutputContent {
                 .ok()
                 .filter(|bytes| xxh3(bytes) == *key)
                 .or_else(|| store.get(*key)),
+        }
+    }
+
+    /// The CAS key of the contents.
+    pub(super) fn key(&self) -> u64 {
+        match self {
+            Self::Object(key) | Self::Linked { key, .. } => *key,
         }
     }
 
@@ -70,6 +77,16 @@ pub(super) struct OutputSet {
 impl OutputSet {
     pub(super) fn files(&self) -> &BTreeMap<String, OutputContent> {
         &self.files
+    }
+
+    /// xxh3 over every path and its content key, in path order.
+    pub(super) fn digest(&self) -> u64 {
+        let mut writer = HashWriter::new();
+        for (path, content) in &self.files {
+            writer.write_str(path);
+            writer.write_u64(content.key());
+        }
+        writer.finish()
     }
 
     /// Add `path` as generated from the config, before any source or generator output.

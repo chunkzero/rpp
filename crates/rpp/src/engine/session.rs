@@ -72,9 +72,7 @@ impl<'a> BuildSession<'a> {
 
         self.manifest.save(&engine.manifest_path())?;
         let mut live = self.manifest.live_objects();
-        live.extend(self.output.files().values().map(|content| match content {
-            OutputContent::Object(key) | OutputContent::Linked { key, .. } => *key,
-        }));
+        live.extend(self.output.files().values().map(OutputContent::key));
         self.store.gc(&live)?;
         Ok(changes)
     }

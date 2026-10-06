@@ -75,7 +75,7 @@ impl DevSession {
     pub fn initial_build(&mut self) -> Result<()> {
         self.rebuild_engine()?;
         let built = self.engine()?.build().context("initial build")?;
-        self.packs.publish(&self.project.output_dir())?;
+        self.publish_pack()?;
         tracing::info!(
             processed = built.processed,
             cached = built.cached,
@@ -83,6 +83,15 @@ impl DevSession {
             "Initial build complete"
         );
         Ok(())
+    }
+
+    /// Publish the output as the dev pack, leaving out the release archive output sync
+    /// keeps there for `rpp build`.
+    fn publish_pack(&self) -> Result<bool> {
+        let squash = &self.project.config.build.squash;
+        let release_zip = (squash.enabled && squash.zip).then(|| self.project.release_zip());
+        self.packs
+            .publish(&self.project.output_dir(), release_zip.as_deref())
     }
 
     fn engine(&self) -> Result<&Engine> {
@@ -194,7 +203,7 @@ impl DevSession {
 
         // Retry publication even on no-op builds: a previous archive failure may
         // have left the engine cache ahead of the last published pack.
-        let updated = self.packs.publish(&self.project.output_dir())?;
+        let updated = self.publish_pack()?;
         if changed.is_empty() && !updated {
             return Ok(None);
         }
@@ -270,10 +279,19 @@ export default defineConfig({ pack: { name: "test", format: 34 } });
         let project = Project::discover(root.path()).unwrap();
         let (tx, _rx) = mpsc::unbounded_channel();
         let watcher = spawn_watcher(root.path(), &source, &config, vec![], tx).unwrap();
+        let release_zip = project.release_zip();
+        std::fs::create_dir_all(release_zip.parent().unwrap()).unwrap();
+        std::fs::write(&release_zip, "left by rpp build").unwrap();
         let packs = PackStore::default();
         let mut session = DevSession::new(project, watcher, packs.clone());
         session.initial_build().unwrap();
         let original = packs.metadata();
+        let archive = zip::ZipArchive::new(std::io::Cursor::new(packs.current().unwrap().bytes));
+        assert!(release_zip.is_file());
+        assert_eq!(
+            archive.unwrap().file_names().collect::<Vec<_>>(),
+            ["pack.mcmeta", "a.json"]
+        );
 
         assert!(session
             .rebuild_once(&ChangeBatch::default())
