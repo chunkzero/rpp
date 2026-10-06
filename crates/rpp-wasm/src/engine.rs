@@ -11,7 +11,7 @@ use std::time::{Duration, SystemTime};
 
 use sha2::{Digest, Sha256};
 use twox_hash::XxHash3_128;
-use wasmtime::component::Component;
+use wasmtime::component::{Component, Val};
 use wasmtime::{Config, Engine, Store};
 
 use crate::store::StoreData;
@@ -172,6 +172,10 @@ impl WasmEngine {
         store.limiter(|data| &mut data.limits);
         store.epoch_deadline_trap();
         store.set_epoch_deadline(self.limits.epoch_ticks());
+        // Hostcall fuel counts the host bytes allocated when lifting one call's results, and a
+        // lifted `list<u8>` element costs a whole `Val`. Scaling by the memory limit lets any
+        // output that fits in guest memory lift, while aliased lists still hit a finite cap.
+        store.set_hostcall_fuel(self.limits.memory_bytes.saturating_mul(size_of::<Val>()));
         Ok(store)
     }
 }
