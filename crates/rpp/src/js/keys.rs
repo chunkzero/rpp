@@ -2,10 +2,11 @@
 
 use std::path::Path;
 
-use rpp_js::Bundle;
+use rpp_js::{Bundle, Limits};
 use serde_json::Value;
 
 use super::access::RuntimeAccess;
+use crate::config::WasmConfig;
 use crate::error::{Error, Result};
 use crate::manifest::PluginManifest;
 use crate::util::hash::HashWriter;
@@ -69,6 +70,19 @@ pub(super) fn cache_key(processor_key: u64, bundle: &Bundle) -> u64 {
     writer.write_str("rpp.js.plugin.v2");
     writer.write_u64(processor_key);
     writer.write(bundle.code.as_bytes());
+    writer.finish()
+}
+
+/// The key of a cached `describe` result: the generator key plus the runtime and component
+/// limits it ran under.
+pub(super) fn describe_key(cache_key: u64, limits: Limits, wasm: &WasmConfig) -> u64 {
+    let mut writer = HashWriter::new();
+    writer.write_str("rpp.js.describe.v1");
+    writer.write_u64(cache_key);
+    writer.write_u64(limits.heap_bytes as u64);
+    writer.write_u64(u64::try_from(limits.time.as_nanos()).unwrap_or(u64::MAX));
+    writer.write_u64(u64::from(wasm.memory_limit_mb));
+    writer.write_u64(wasm.execution_deadline_seconds);
     writer.finish()
 }
 

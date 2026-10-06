@@ -6,11 +6,12 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use rpp_js::{Bundle, Call, Cancellation, Limits};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use super::access::RuntimeAccess;
 use super::bundle::{bundle_plugin, PluginBundle};
+use super::bundle_cache::{load_entry, store_entry};
 use super::config::CONFIG_FILE;
 use super::discover::Discovery;
 use super::host::{JsHost, Phase};
@@ -21,6 +22,10 @@ use crate::error::{Error, Result};
 use crate::manifest::PluginManifest;
 use crate::model::{GeneratorHost, PluginFactory, PluginInstance, ProcessorDef};
 use crate::util::glob::GlobSet;
+use crate::util::versioned::Versioned;
+
+const DESCRIBE_CACHE_KIND: &str = "describe";
+const DESCRIBE_CACHE_VERSION: u32 = 1;
 
 /// One configured plugin for [`JsPluginFactory::load`].
 pub struct JsPluginSpec<'a> {
@@ -70,6 +75,23 @@ pub(super) struct Handlers {
     pub(super) on_finish: bool,
 }
 
+/// The `describe` result of a deterministic plugin, cached under `.rpp/cache/describe`.
+#[derive(Serialize, Deserialize)]
+struct DescribeCacheEntry {
+    version: u32,
+    key: u64,
+    /// The `describe` result as JSON text.
+    description: String,
+}
+
+impl Versioned for DescribeCacheEntry {
+    const VERSION: u32 = DESCRIBE_CACHE_VERSION;
+
+    fn version(&self) -> u32 {
+        self.version
+    }
+}
+
 #[derive(Deserialize)]
 struct Description {
     processors: Vec<ProcessorDescription>,
@@ -99,6 +121,9 @@ impl JsPluginFactory {
     /// module or adding or removing one reruns generators but not cached processor results.
     /// Top-level side effects of discovered modules are not tracked for processors.
     ///
+    /// A plugin without permissions reuses its `describe` result from `.rpp/cache/describe` while
+    /// the generator key, `build.limits` and `build.wasm` are unchanged, without evaluating it.
+    ///
     /// # Errors
     ///
     /// [`crate::Error::Config`] when `spec.plugin` is invalid, such as a sandboxed plugin
@@ -118,6 +143,7 @@ impl JsPluginFactory {
 
         let root = plugin_root(dir, &manifest)?;
         let discovery = Discovery::new(&manifest.discover).map_err(&load_error)?;
+        let cache_dir = project_root.join(".rpp/cache");
         let PluginBundle {
             bundle,
             authoring,
@@ -127,12 +153,10 @@ impl JsPluginFactory {
             &root,
             &project_root.join(&config.build.source),
             &discovery,
-            &project_root.join(".rpp/cache"),
+            &cache_dir,
         )?;
         let limits = runtime_limits(&config.build.limits);
         let access = RuntimeAccess::new(spec);
-        let description = describe(&id, &bundle, limits, &access).map_err(&load_error)?;
-        let processors = processor_defs(description.processors).map_err(&load_error)?;
         let options = keys::canonical_options(&plugin.options);
         let processor_key = keys::processor_key(
             &root,
@@ -143,11 +167,20 @@ impl JsPluginFactory {
             &options,
             &access,
         )?;
+        let cache_key = keys::cache_key(processor_key, &bundle);
+        let describe_key = access
+            .is_deterministic()
+            .then(|| keys::describe_key(cache_key, limits, &config.build.wasm));
+        let description = cached_description(&cache_dir, &id, describe_key, || {
+            describe(&id, &bundle, limits, &access)
+        })
+        .map_err(&load_error)?;
+        let processors = processor_defs(description.processors).map_err(&load_error)?;
 
         Ok(Self {
             shared: Arc::new(Shared {
                 init: init_args(&id, &config.pack, &options),
-                cache_key: keys::cache_key(processor_key, &bundle),
+                cache_key,
                 id,
                 bundle,
                 limits,
@@ -259,13 +292,44 @@ fn init_args(id: &str, pack: &PackConfig, options: &Value) -> Value {
     json!({ "plugin": id, "options": options, "pack": pack_json })
 }
 
-/// Evaluate the bundle once and read what the plugin registered.
+/// The description stored for plugin `id` under `key`, or the result of `describe`, which is
+/// stored when `key` is set. A missing, corrupt or stale entry is a miss.
+fn cached_description(
+    cache_dir: &Path,
+    id: &str,
+    key: Option<u64>,
+    describe: impl FnOnce() -> std::result::Result<Value, String>,
+) -> std::result::Result<Description, String> {
+    let cached = key.and_then(|key| {
+        let entry: DescribeCacheEntry = load_entry(cache_dir, DESCRIBE_CACHE_KIND, id)?;
+        (entry.key == key).then_some(entry.description)
+    });
+    if let Some(description) = cached.and_then(|text| serde_json::from_str(&text).ok()) {
+        return Ok(description);
+    }
+    let value = describe()?;
+    let description = serde_json::from_value(value.clone())
+        .map_err(|e| format!("invalid plugin description: {e}"))?;
+    if let Some(key) = key {
+        let entry = DescribeCacheEntry {
+            version: DESCRIBE_CACHE_VERSION,
+            key,
+            description: value.to_string(),
+        };
+        store_entry(cache_dir, DESCRIBE_CACHE_KIND, id, &entry);
+    }
+    Ok(description)
+}
+
+/// Evaluate the bundle once and return what the plugin registered.
 fn describe(
     id: &str,
     bundle: &Bundle,
     limits: Limits,
     access: &RuntimeAccess,
-) -> std::result::Result<Description, String> {
+) -> std::result::Result<Value, String> {
+    #[cfg(test)]
+    tests::DESCRIPTIONS.with(|count| count.set(count.get() + 1));
     let engine = instance::engine()?;
     let cancellation = Cancellation::new();
     let clock = instance::module_clock(id);
@@ -282,7 +346,7 @@ fn describe(
     let output = runtime
         .call(&engine, call, &mut host, &cancellation)
         .map_err(|e| e.to_string().trim_end().to_string())?;
-    serde_json::from_value(output.value).map_err(|e| format!("invalid plugin description: {e}"))
+    Ok(output.value)
 }
 
 fn processor_defs(
@@ -299,4 +363,105 @@ fn processor_defs(
             })
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::Cell;
+
+    use super::*;
+    use crate::config::{PluginPermissions, SecurityMode};
+
+    thread_local! {
+        pub(super) static DESCRIPTIONS: Cell<usize> = const { Cell::new(0) };
+    }
+
+    fn descriptions() -> usize {
+        DESCRIPTIONS.with(Cell::get)
+    }
+
+    fn write(root: &Path, rel: &str, contents: &str) {
+        let path = root.join(rel);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, contents).unwrap();
+    }
+
+    fn write_processor_name(root: &Path, name: &str) {
+        write(
+            root,
+            "src/name.ts",
+            &format!("export const name = \"{name}\";\n"),
+        );
+    }
+
+    /// A plugin whose processor name comes from the imported `src/name.ts`.
+    fn write_plugin(root: &Path) {
+        write(
+            root,
+            "rpp.json",
+            r#"{ "name": "ts-test", "version": "1.0.0", "entry": "src/plugin.ts" }"#,
+        );
+        write(
+            root,
+            "src/plugin.ts",
+            r##"import { definePlugin } from "#rpp";
+import { name } from "./name.ts";
+export default definePlugin({ processors: { [name]: { files: "**/*", run() {} } } });
+"##,
+        );
+        write_processor_name(root, "first");
+    }
+
+    fn processor_names(root: &Path) -> Vec<String> {
+        let config = Config::new("test-pack", 34);
+        let plugin = PluginConfig {
+            package: "ts-test".into(),
+            options: json!({}),
+            security: SecurityMode::Sandboxed,
+            permissions: PluginPermissions::default(),
+            outputs: BTreeMap::new(),
+        };
+        let factory = JsPluginFactory::load(JsPluginSpec {
+            dir: root,
+            project_root: root,
+            config: &config,
+            plugin: &plugin,
+            #[cfg(feature = "wasm")]
+            components: BTreeMap::new(),
+        })
+        .unwrap();
+        factory
+            .processors()
+            .iter()
+            .map(|processor| processor.name.clone())
+            .collect()
+    }
+
+    #[test]
+    fn reuses_description_until_a_plugin_module_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        write_plugin(dir.path());
+        assert_eq!(processor_names(dir.path()), ["first"]);
+        assert_eq!(processor_names(dir.path()), ["first"]);
+        assert_eq!(descriptions(), 1);
+
+        write_processor_name(dir.path(), "second");
+        assert_eq!(processor_names(dir.path()), ["second"]);
+        assert_eq!(descriptions(), 2);
+    }
+
+    #[test]
+    fn corrupt_description_is_a_miss() {
+        let dir = tempfile::tempdir().unwrap();
+        write_plugin(dir.path());
+        processor_names(dir.path());
+        let entries = dir.path().join(".rpp/cache").join(DESCRIBE_CACHE_KIND);
+        for entry in std::fs::read_dir(&entries).unwrap() {
+            std::fs::write(entry.unwrap().path(), b"garbage").unwrap();
+        }
+        assert_eq!(processor_names(dir.path()), ["first"]);
+        assert_eq!(descriptions(), 2);
+        processor_names(dir.path());
+        assert_eq!(descriptions(), 2);
+    }
 }

@@ -1,4 +1,5 @@
-//! On-disk cache of bundler output, so unchanged plugins skip the bundler on load.
+//! On-disk cache of bundler output, so unchanged plugins skip the bundler on load, and the
+//! entry storage shared with the plugin description cache.
 
 use std::path::{Path, PathBuf};
 
@@ -37,24 +38,44 @@ pub(crate) fn cached_bundle(
     request: &BundleRequest,
     build: impl FnOnce() -> Result<Bundle, String>,
 ) -> Result<Bundle, String> {
-    let bundles = dir.join("bundles");
-    let path = bundles.join(format!("{}.bin", u64_hex(xxh3(id.as_bytes()))));
     let request_key = request_key(request);
-
-    if real_dirs(dir, &bundles) {
-        if let Some(bundle) = load(&path, request_key) {
-            return Ok(bundle);
-        }
+    if let Some(bundle) = load(dir, id, request_key) {
+        return Ok(bundle);
     }
     let bundle = build()?;
-    store(&path, request_key, &bundle);
+    store(dir, id, request_key, &bundle);
     Ok(bundle)
 }
 
-/// Whether `.rpp` (the parent of `dir`), `dir` and `bundles` are all real directories, so
+/// Read the record at `<dir>/<kind>/<xxh3 hex of name>.bin`. Missing, corrupt and
+/// other-version records, and paths through a symlinked directory, are `None`.
+pub(super) fn load_entry<T: Versioned>(dir: &Path, kind: &str, name: &str) -> Option<T> {
+    let entries = dir.join(kind);
+    if !real_dirs(dir, &entries) {
+        return None;
+    }
+    versioned::load(&entries.join(entry_file(name)))
+        .ok()
+        .flatten()
+}
+
+/// Store `record` where [`load_entry`] reads it, ignoring failures.
+pub(super) fn store_entry<T: Versioned>(dir: &Path, kind: &str, name: &str, record: &T) {
+    let entries = dir.join(kind);
+    if std::fs::create_dir_all(&entries).is_err() || !real_dirs(dir, &entries) {
+        return;
+    }
+    let _ = versioned::save(&entries.join(entry_file(name)), record);
+}
+
+fn entry_file(name: &str) -> String {
+    format!("{}.bin", u64_hex(xxh3(name.as_bytes())))
+}
+
+/// Whether `.rpp` (the parent of `dir`), `dir` and `entries` are all real directories, so
 /// a symlink cannot redirect cache reads or writes.
-fn real_dirs(dir: &Path, bundles: &Path) -> bool {
-    [dir.parent(), Some(dir), Some(bundles)]
+fn real_dirs(dir: &Path, entries: &Path) -> bool {
+    [dir.parent(), Some(dir), Some(entries)]
         .into_iter()
         .flatten()
         .filter(|path| !path.as_os_str().is_empty())
@@ -63,8 +84,8 @@ fn real_dirs(dir: &Path, bundles: &Path) -> bool {
         })
 }
 
-fn load(path: &Path, request_key: u64) -> Option<Bundle> {
-    let entry: BundleCacheEntry = versioned::load(path).ok().flatten()?;
+fn load(dir: &Path, id: &str, request_key: u64) -> Option<Bundle> {
+    let entry: BundleCacheEntry = load_entry(dir, "bundles", id)?;
     if entry.request_key != request_key {
         return None;
     }
@@ -89,7 +110,7 @@ fn load(path: &Path, request_key: u64) -> Option<Bundle> {
     })
 }
 
-fn store(path: &Path, request_key: u64, bundle: &Bundle) {
+fn store(dir: &Path, id: &str, request_key: u64, bundle: &Bundle) {
     let mut inputs = Vec::with_capacity(bundle.input_hashes.len());
     for (input, hash) in &bundle.input_hashes {
         let Some(name) = input.to_str() else {
@@ -104,16 +125,7 @@ fn store(path: &Path, request_key: u64, bundle: &Bundle) {
         code: bundle.code.clone(),
         source_map: bundle.source_map.clone(),
     };
-    let Some(bundles) = path.parent() else {
-        return;
-    };
-    let Some(dir) = bundles.parent() else {
-        return;
-    };
-    if std::fs::create_dir_all(bundles).is_err() || !real_dirs(dir, bundles) {
-        return;
-    }
-    let _ = versioned::save(path, &entry);
+    store_entry(dir, "bundles", id, &entry);
 }
 
 fn request_key(request: &BundleRequest) -> u64 {

@@ -353,6 +353,11 @@ stderr }`. Requires `security: "trusted"` with the program in `permissions.proce
   list, packages) and the content hash of every file the bundle read. A corrupt or stale entry
   is a miss. A new file that changes import resolution without touching a recorded input needs
   `rpp clean`.
+- The load-time `describe` result of a plugin without permissions is cached at
+  `.rpp/cache/describe/<xxh3-hex of plugin id>.bin` (bincode), keyed by `cache_key`,
+  `build.limits` and `build.wasm`. `describe` receives no options, runs on the fixed module clock
+  and can make only deterministic host calls, so its result follows from those inputs. A hit skips
+  evaluating the bundle at load time; a corrupt or stale entry is a miss.
 
 ## 5. WASM component system (`crates/rpp-wasm`)
 
