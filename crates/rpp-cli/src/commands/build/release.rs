@@ -1,15 +1,17 @@
 //! Reuse of an unchanged builtin release archive across builds.
 //!
-//! After writing the archive, the build records its inputs (squash settings, rpp version,
-//! archive path, and the engine's digest of the pack output) together with the archive's
-//! size and xxh3. The record lives in the project cache, so `--no-cache` and `rpp clean`
-//! drop it.
+//! After writing the archive, the build records its inputs (builtin squash settings, rpp
+//! version, and the engine's digest of the pack output) together with the archive's size
+//! and xxh3. The record lives in the project cache, so `--no-cache` and
+//! `rpp clean` drop it. The record is only an optimization: a missing or unwritable record
+//! means the archive is rewritten.
 
 use std::hash::Hasher;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
+use rpp::config::PngSetting;
 use rpp::engine::BuildResult;
 use serde::{Deserialize, Serialize};
 use twox_hash::XxHash3_64;
@@ -25,8 +27,9 @@ const RECORD_FORMAT: u32 = 2;
 pub(super) struct ReleaseInputs {
     format: u32,
     rpp: String,
-    squash: serde_json::Value,
-    zip_path: PathBuf,
+    json: bool,
+    png: PngSetting,
+    strip: Vec<String>,
     /// The engine's digest of every output path and its contents, which the output
     /// directory holds after the build.
     output: u64,
@@ -41,14 +44,16 @@ struct ReleaseRecord {
 
 impl ReleaseInputs {
     /// The inputs of the archive for the output `result` produced.
-    pub(super) fn current(project: &Project, result: &BuildResult) -> Result<Self> {
-        Ok(Self {
+    pub(super) fn current(project: &Project, result: &BuildResult) -> Self {
+        let squash = &project.config.build.squash;
+        Self {
             format: RECORD_FORMAT,
             rpp: env!("CARGO_PKG_VERSION").to_owned(),
-            squash: serde_json::to_value(&project.config.build.squash)?,
-            zip_path: project.release_zip(),
+            json: squash.json,
+            png: squash.png,
+            strip: squash.strip.clone(),
             output: result.output_digest,
-        })
+        }
     }
 }
 
@@ -60,17 +65,6 @@ pub(super) fn is_current(project: &Project, inputs: &ReleaseInputs, zip_path: &P
     serde_json::from_slice::<ReleaseRecord>(&bytes).is_ok_and(|record| {
         record.inputs == *inputs && digest(zip_path).is_ok_and(|zip| zip == record.zip)
     })
-}
-
-/// Drop the record before the archive is rewritten, so a failed write cannot leave it stale.
-pub(super) fn forget(project: &Project) -> Result<()> {
-    let path = record_path(project);
-    match std::fs::remove_file(&path) {
-        Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
-            Err(error).with_context(|| format!("removing {}", path.display()))
-        }
-        _ => Ok(()),
-    }
 }
 
 /// Record that the archive at `zip_path` was just written for `inputs`.

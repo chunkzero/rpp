@@ -575,10 +575,10 @@ pub fn run_packsquash(binary: &str, pack_dir: &Path, zip_path: &Path, options_fi
   unsquashed; builtin squash reads it and optimizes each file in memory while writing the
   archive. PackSquash likewise produces a release archive and is not run by `rpp dev`.
 - `rpp build` keeps an existing builtin release archive when the build wrote and removed no
-  output and `.rpp/cache/release.json` records the same inputs (squash settings, rpp version,
-  archive path, and an xxh3 over the sorted output paths and content hashes) and the
-  archive's current size and xxh3. Otherwise, and always after `--no-cache`, the archive is
-  rewritten.
+  output and `.rpp/cache/release.json` records the same inputs (`json`, `png`, `strip`, rpp
+  version, and an xxh3 over the sorted output paths and content hashes) and the archive's
+  current size and xxh3. Otherwise, and always after `--no-cache`, the archive is
+  rewritten. Failing to save the record is only a warning.
 
 ## 9. CLI (`crates/rpp-cli`, binary name `rpp`)
 
