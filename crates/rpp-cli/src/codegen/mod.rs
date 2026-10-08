@@ -4,7 +4,6 @@
 mod component_dts;
 mod tsconfig;
 
-use std::collections::BTreeMap;
 use std::path::Path;
 
 use anyhow::{Context, Result};
@@ -33,7 +32,13 @@ pub fn write(root: &Path) -> Result<bool> {
                 .collect(),
         )
     } else if is_plugin_manifest(&root.join(PACKAGE_MANIFEST)) {
-        Some(BTreeMap::new())
+        let manifest = PluginManifest::load(root)?;
+        Some(
+            plugin_modules(&manifest.id, manifest.config.as_deref(), &manifest.exports)
+                .into_iter()
+                .map(|(specifier, module)| (specifier, root.join(module)))
+                .collect(),
+        )
     } else {
         None
     };

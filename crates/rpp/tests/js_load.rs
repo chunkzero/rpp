@@ -112,3 +112,29 @@ fn options_change_cache_key() {
         load(dir.path(), r#"{"a":2}"#).cache_key()
     );
 }
+
+#[test]
+fn plugin_imports_its_own_exports_by_specifier() {
+    let dir = write_plugin(
+        r##"
+import { definePlugin } from "rpp";
+import { mark } from "plugin:ts-test/raw";
+export default definePlugin({
+  processors: { mark: { files: "**/*", run(ctx, file) { file.text = mark(file.text); } } },
+});
+"##,
+    );
+    write_file(
+        dir.path(),
+        "rpp.json",
+        r#"{ "name": "ts-test", "version": "1.0.0", "exports": { "./raw": "src/raw.ts" } }"#,
+    );
+    write_file(
+        dir.path(),
+        "src/raw.ts",
+        "export const mark = (t: string) => t + \"!\";\n",
+    );
+    let mut instance = load(dir.path(), "{}").instantiate().unwrap();
+    let (file, _) = process(instance.as_mut(), "mark", "a.txt", "hi");
+    assert_eq!(text(&file), "hi!");
+}

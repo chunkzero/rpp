@@ -373,3 +373,14 @@ fn bundle_ignores_project_tsconfig() {
         );
     }
 }
+
+#[test]
+fn type_only_entry_bundles() {
+    let dir = TempDir::new().unwrap();
+    write(
+        dir.path(),
+        "types.ts",
+        "export interface Options { size: number }\n",
+    );
+    bundle(&request(dir.path(), "types.ts")).unwrap();
+}

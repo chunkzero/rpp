@@ -42,8 +42,8 @@ pub(super) fn bundle_plugin(
             root: root.to_path_buf(),
             entry: "rpp:internal/entry".into(),
             virtual_modules: virtual_modules(&format!("./{}", manifest.entry), false),
+            packages: self_packages(manifest, root),
             jsx_import_source: Some(JSX_IMPORT_SOURCE.to_string()),
-            ..Default::default()
         };
         let bundle = cached_bundle(cache_dir, &manifest.id, &request, || {
             rpp_js::bundle(&request).map_err(|e| hint_renamed_specifiers(e.to_string()))
@@ -100,6 +100,18 @@ fn virtual_modules(entry: &str, discovered: bool) -> BTreeMap<String, String> {
     .collect()
 }
 
+/// The plugin's own [`plugin_modules`], as packages rooted at `plugin_root`.
+fn self_packages(manifest: &PluginManifest, plugin_root: &Path) -> BTreeMap<String, BundlePackage> {
+    plugin_modules(&manifest.id, manifest.config.as_deref(), &manifest.exports)
+        .into_iter()
+        .map(|(specifier, module)| {
+            let dir = plugin_root.to_path_buf();
+            let entry = module.to_string();
+            (specifier, BundlePackage { dir, entry })
+        })
+        .collect()
+}
+
 /// Bundle the plugin together with the files its patterns match under `source`. The bundle
 /// root is `source`; the plugin's own files are the package `rpp:internal/plugin`.
 fn bundle_discovered(
@@ -117,17 +129,14 @@ fn bundle_discovered(
         "rpp:internal/discovered".into(),
         discovered_module("", discovery, &entries),
     );
-    let package = |entry: &str| BundlePackage {
-        dir: plugin_root.to_path_buf(),
-        entry: entry.to_string(),
-    };
-    let mut packages =
-        BTreeMap::from([("rpp:internal/plugin".to_string(), package(&manifest.entry))]);
-    for (specifier, module) in
-        plugin_modules(&manifest.id, manifest.config.as_deref(), &manifest.exports)
-    {
-        packages.insert(specifier, package(module));
-    }
+    let mut packages = self_packages(manifest, plugin_root);
+    packages.insert(
+        "rpp:internal/plugin".to_string(),
+        BundlePackage {
+            dir: plugin_root.to_path_buf(),
+            entry: manifest.entry.clone(),
+        },
+    );
     let request = BundleRequest {
         root: source.to_path_buf(),
         entry: "rpp:internal/entry".into(),

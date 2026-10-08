@@ -379,3 +379,34 @@ fn pack_bundles_exports_beside_the_config() {
     );
     assert!(output.declarations.contains_key("types/src/raw.d.ts"));
 }
+
+#[test]
+fn nested_export_maps_point_at_original_sources() {
+    let dir = TempDir::new().unwrap();
+    let root = dir.path();
+    write(
+        root,
+        "src/plugin.ts",
+        "export const run = (): number => 1;\n",
+    );
+    write(
+        root,
+        "src/raw.ts",
+        "export const raw = (): string => 'raw-marker';\n",
+    );
+    let mut request = request(root, "src/plugin.ts", None);
+    request
+        .exports
+        .insert("api/raw".to_string(), "src/raw.ts".to_string());
+
+    let output = pack(&request).unwrap();
+
+    let code = &output.files["dist/exports/api/raw.js"];
+    assert!(
+        code.ends_with("//# sourceMappingURL=raw.js.map\n"),
+        "{code}"
+    );
+    let map: serde_json::Value =
+        serde_json::from_str(&output.files["dist/exports/api/raw.js.map"]).unwrap();
+    assert_eq!(map["sources"], serde_json::json!(["../../../src/raw.ts"]));
+}

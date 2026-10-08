@@ -40,7 +40,8 @@ pub struct BundleRequest {
     /// Directories outside `root` that may also be bundled, keyed by an exact import
     /// specifier (e.g. `plugin:window`) that resolves to that package's entry file.
     /// Files inside a package directory may import each other relatively; source maps
-    /// show them as `<specifier>/<path relative to the package directory>`.
+    /// show them as `<specifier>/<path relative to the package directory>`, unless the
+    /// directory is `root`.
     pub packages: BTreeMap<String, BundlePackage>,
     /// Compile JSX with the automatic runtime imported from `<source>/jsx-runtime`. JSX
     /// pragma comments, which would replace it, are rejected.
@@ -96,9 +97,10 @@ pub fn bundle(request: &BundleRequest) -> Result<Bundle> {
     };
     Ok(Bundle {
         code: chunk.code,
-        source_map: chunk
-            .source_map
-            .ok_or_else(|| Error::Bundle("bundling produced no source map".to_string()))?,
+        // A module with nothing to run (e.g. only types) produces no map.
+        source_map: chunk.source_map.unwrap_or_else(|| {
+            r#"{"version":3,"sources":[],"names":[],"mappings":""}"#.to_string()
+        }),
         inputs: built.inputs,
         input_hashes: built.input_hashes,
     })
@@ -271,13 +273,17 @@ fn source_path_transform(
 ) -> SourceMapPathTransform {
     let root = root.to_path_buf();
     let packages = Arc::clone(packages);
-    SourceMapPathTransform::new(Arc::new(move |sources, _| {
+    SourceMapPathTransform::new(Arc::new(move |sources, map_path| {
         let root = root.clone();
         let packages = Arc::clone(&packages);
+        // Rolldown passes sources relative to the map's directory.
+        let map_dir = Path::new(map_path)
+            .parent()
+            .map_or_else(|| root.clone(), |dir| root.join(dir));
         Box::pin(async move {
             Ok(sources
                 .iter()
-                .map(|s| display_source(&root, &packages, allow_node_modules, s))
+                .map(|s| display_source(&root, &map_dir, &packages, allow_node_modules, s))
                 .collect())
         })
     }))
