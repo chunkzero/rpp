@@ -1,4 +1,4 @@
-// Project configuration types, imported as `#rpp/config` from `rpp.config.ts` and
+// Project configuration types, imported as `rpp:config` from `rpp.config.ts` and
 // from plugins' config modules.
 
 /** A resource pack format, or an inclusive range of them. */

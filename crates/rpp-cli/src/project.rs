@@ -291,6 +291,7 @@ fn load_ts(root: &Path) -> Result<(Config, TsProject)> {
                 ConfigPackage {
                     dir: package.dir.clone(),
                     config: package.manifest.config.clone(),
+                    exports: package.manifest.exports.clone(),
                 },
             )
         })

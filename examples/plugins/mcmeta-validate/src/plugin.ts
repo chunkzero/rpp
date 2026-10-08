@@ -1,4 +1,4 @@
-import { definePlugin } from "#rpp";
+import { definePlugin } from "rpp";
 
 import { validateAnimation } from "./rules.ts";
 

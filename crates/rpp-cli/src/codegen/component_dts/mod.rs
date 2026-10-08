@@ -51,7 +51,7 @@ pub fn generate(name: &str, resolve: &Resolve, world: WorldId) -> String {
     }
     out.push_str(&format!("export interface {exports_name} {exports}\n"));
     out.push_str(&format!(
-        "declare module \"#rpp\" {{\n  interface ComponentMap {{\n    {}: {exports_name};\n  }}\n}}\n",
+        "declare module \"rpp\" {{\n  interface ComponentMap {{\n    {}: {exports_name};\n  }}\n}}\n",
         quote_key(name)
     ));
     out
@@ -459,7 +459,7 @@ world w { export tools; export run: func(); }"#);
         assert!(out.contains("export interface Compiler {\n  run: () => void;\n  tools: {\n    frob: (n: bigint) => bigint;\n  };\n}"), "{out}");
         assert!(
             out.ends_with(
-                "declare module \"#rpp\" {\n  interface ComponentMap {\n    compiler: Compiler;\n  }\n}\n"
+                "declare module \"rpp\" {\n  interface ComponentMap {\n    compiler: Compiler;\n  }\n}\n"
             ),
             "{out}"
         );

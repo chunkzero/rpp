@@ -9,7 +9,7 @@ use rpp::model::{BuildStats, PluginFactory};
 use rpp::Error;
 
 const GENERATOR: &str = r##"
-import { definePlugin } from "#rpp";
+import { definePlugin } from "rpp";
 let calls = 0;
 export default definePlugin({
   async generate(ctx) {
@@ -73,7 +73,7 @@ fn generator_starts_from_fresh_module_state() {
 fn hooks_run() {
     let dir = write_plugin(
         r##"
-import { definePlugin } from "#rpp";
+import { definePlugin } from "rpp";
 export default definePlugin({
   onStart(ctx) { throw new Error(`start ${ctx.plugin}`); },
   async onFinish(ctx, stats) { throw new Error(`finish ${stats.processed}/${stats.cached}/${stats.generated}/${stats.dropped}`); },

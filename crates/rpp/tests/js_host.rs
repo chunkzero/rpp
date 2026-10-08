@@ -13,7 +13,7 @@ use rpp::Error;
 fn toml_and_hash_helpers() {
     let dir = write_plugin(
         r##"
-import { definePlugin, hash, path, toml } from "#rpp";
+import { definePlugin, hash, path, toml } from "rpp";
 export default definePlugin({
   processors: {
     info: {
@@ -53,7 +53,7 @@ export default definePlugin({
 fn process_requires_trusted_permission() {
     let dir = write_plugin(
         r##"
-import { definePlugin, process } from "#rpp";
+import { definePlugin, process } from "rpp";
 export default definePlugin({
   generate() { process.run({ program: "true" }); },
 });
@@ -74,7 +74,7 @@ export default definePlugin({
 fn process_cwd_must_stay_inside_project() {
     let dir = write_plugin(
         r##"
-import { definePlugin, process } from "#rpp";
+import { definePlugin, process } from "rpp";
 export default definePlugin({
   generate() { process.run({ program: "true", cwd: "../outside" }); },
 });
@@ -95,7 +95,7 @@ export default definePlugin({
 fn deterministic_random_per_file() {
     let dir = write_plugin(
         r##"
-import { definePlugin } from "#rpp";
+import { definePlugin } from "rpp";
 export default definePlugin({
   processors: { rand: { files: "**/*", run(ctx, file) { file.text = String(Math.random()); } } },
 });
@@ -114,7 +114,7 @@ export default definePlugin({
 fn module_level_randomness_validates_and_absent_description_is_empty() {
     let dir = write_plugin(
         r##"
-import { definePlugin } from "#rpp";
+import { definePlugin } from "rpp";
 export default definePlugin({
   processors: {
     [String(Math.random())]: {
@@ -136,7 +136,7 @@ export default definePlugin({
 fn clocks_alone_keep_randomness_fixed() {
     let dir = write_plugin(
         r##"
-import { definePlugin } from "#rpp";
+import { definePlugin } from "rpp";
 export default definePlugin({
   processors: { rand: { files: "**/*", run(ctx, file) { file.text = String(Math.random()); } } },
 });

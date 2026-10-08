@@ -1,7 +1,7 @@
-import { defineConfig, plugin } from "#rpp/config";
-import catalog from "#plugins/example-catalog";
-import hashRename from "#plugins/hash-rename";
-import jsonMinify from "#plugins/json-minify";
+import { defineConfig, plugin } from "rpp:config";
+import catalog from "plugin:example-catalog";
+import hashRename from "plugin:hash-rename";
+import jsonMinify from "plugin:json-minify";
 
 export default defineConfig({
   pack: {

@@ -13,8 +13,8 @@ same build and invalidation story.
 Projects declare named project-relative output roots per plugin in `rpp.config.ts`:
 
 ```ts
-import { defineConfig } from "#rpp/config";
-import window from "#plugins/window";
+import { defineConfig } from "rpp:config";
+import window from "plugin:window";
 
 export default defineConfig({
   pack: { name: "my-pack", format: 34 },

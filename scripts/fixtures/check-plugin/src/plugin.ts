@@ -1,4 +1,4 @@
-import { definePlugin, type Plugin } from "#rpp";
+import { definePlugin, type Plugin } from "rpp";
 
 const plugin: Plugin = definePlugin({
   processors: {

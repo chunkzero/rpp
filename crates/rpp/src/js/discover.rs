@@ -1,4 +1,4 @@
-//! Entry discovery: plugin-declared source patterns and the generated `rpp:discovered` module.
+//! Entry discovery: plugin-declared source patterns and the generated `rpp:internal/discovered` module.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -102,7 +102,7 @@ fn namespace_segment(pattern: &str) -> Option<usize> {
     None
 }
 
-/// The source of `rpp:discovered`: every declared name maps to its modules.
+/// The source of `rpp:internal/discovered`: every declared name maps to its modules.
 /// `source_from_root` is the source directory relative to the bundle root, or empty.
 pub(crate) fn discovered_module(
     source_from_root: &str,

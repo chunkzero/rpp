@@ -230,8 +230,8 @@ fn hash_rename_uses_processed_bytes() {
     write(
         root,
         "rpp.config.ts",
-        r##"import { defineConfig, plugin } from "#rpp/config";
-import hashRename from "#plugins/hash-rename";
+        r##"import { defineConfig, plugin } from "rpp:config";
+import hashRename from "plugin:hash-rename";
 
 export default defineConfig({
   pack: { name: "processed-hash", format: 34 },
@@ -248,7 +248,7 @@ export default defineConfig({
     write(
         root,
         "plugins/modify/plugin.ts",
-        r##"import { definePlugin } from "#rpp";
+        r##"import { definePlugin } from "rpp";
 
 export default definePlugin({
   processors: {

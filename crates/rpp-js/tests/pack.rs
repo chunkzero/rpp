@@ -25,6 +25,7 @@ fn request(root: &Path, plugin: &str, config: Option<&str>) -> PackRequest {
         config: config.map(str::to_string),
         self_specifier: None,
         jsx_import_source: None,
+        ..Default::default()
     }
 }
 
@@ -130,14 +131,14 @@ fn pack_keeps_rpp_external() {
     write(
         root,
         "plugin.ts",
-        "import { log } from '#rpp';\nimport { read } from '#rpp/fs';\nexport const run = (): void => { log(read()); };\n",
+        "import { log } from 'rpp';\nimport { read } from 'rpp:fs';\nexport const run = (): void => { log(read()); };\n",
     );
 
     let output = packed(root, "plugin.ts", None);
 
     let code = &output.files["dist/plugin.js"];
-    assert!(code.contains("from \"#rpp\""), "{code}");
-    assert!(code.contains("from \"#rpp/fs\""), "{code}");
+    assert!(code.contains("from \"rpp\""), "{code}");
+    assert!(code.contains("from \"rpp:fs\""), "{code}");
 }
 
 #[test]
@@ -199,7 +200,7 @@ fn pack_emits_isolated_declarations() {
     write(root, "src/plugin.ts", "export const run = () => 1;\n");
 
     let mut req = request(root, "src/plugin.ts", Some("src/config.ts"));
-    req.self_specifier = Some("#plugins/self".to_string());
+    req.self_specifier = Some("plugin:self".to_string());
     let output = pack(&req).unwrap();
 
     let keys: Vec<_> = output.declarations.keys().map(String::as_str).collect();
@@ -335,4 +336,77 @@ fn pack_stub_reexports_default_declared_by_specifier() {
         stub.contains("export { default } from \"../types/src/config.mjs\";"),
         "{stub}"
     );
+}
+
+#[test]
+fn pack_bundles_exports_beside_the_config() {
+    let dir = TempDir::new().unwrap();
+    let root = dir.path();
+    write(
+        root,
+        "src/shared.ts",
+        "export const shared = (): string => 'shared-marker';\n",
+    );
+    write(
+        root,
+        "src/plugin.ts",
+        "export const run = (): number => 1;\n",
+    );
+    write(
+        root,
+        "src/config.ts",
+        "import { raw } from 'plugin:window/raw';\nexport const name: string = raw();\n",
+    );
+    write(
+        root,
+        "src/raw.ts",
+        "import { shared } from './shared';\nexport const raw = (): string => shared();\n",
+    );
+    let mut request = request(root, "src/plugin.ts", Some("src/config.ts"));
+    request.self_specifier = Some("plugin:window".to_string());
+    request
+        .exports
+        .insert("raw".to_string(), "src/raw.ts".to_string());
+
+    let output = pack(&request).unwrap();
+
+    assert_eq!(output.exports["raw"], "dist/exports/raw.js");
+    assert!(output.files["dist/exports/raw.js"].contains("../chunk-"));
+    assert!(output.files["dist/config.js"].contains("./chunk-"));
+    assert_eq!(
+        output.files["dist/exports/raw.d.ts"],
+        "export * from \"../../types/src/raw.js\";\n"
+    );
+    assert!(output.declarations.contains_key("types/src/raw.d.ts"));
+}
+
+#[test]
+fn nested_export_maps_point_at_original_sources() {
+    let dir = TempDir::new().unwrap();
+    let root = dir.path();
+    write(
+        root,
+        "src/plugin.ts",
+        "export const run = (): number => 1;\n",
+    );
+    write(
+        root,
+        "src/raw.ts",
+        "export const raw = (): string => 'raw-marker';\n",
+    );
+    let mut request = request(root, "src/plugin.ts", None);
+    request
+        .exports
+        .insert("api/raw".to_string(), "src/raw.ts".to_string());
+
+    let output = pack(&request).unwrap();
+
+    let code = &output.files["dist/exports/api/raw.js"];
+    assert!(
+        code.ends_with("//# sourceMappingURL=raw.js.map\n"),
+        "{code}"
+    );
+    let map: serde_json::Value =
+        serde_json::from_str(&output.files["dist/exports/api/raw.js.map"]).unwrap();
+    assert_eq!(map["sources"], serde_json::json!(["../../../src/raw.ts"]));
 }

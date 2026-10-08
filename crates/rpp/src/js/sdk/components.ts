@@ -1,6 +1,6 @@
 /// <reference path="./bridge.d.ts" />
 // WASM components for plugins: `components.load` and the wire codec for component values.
-// rpp appends this file to `index.ts` to form `#rpp`, so it shares that module's scope.
+// rpp appends this file to `index.ts` to form `rpp`, so it shares that module's scope.
 
 /** Wire form of a component value type. */
 type TypeDesc =

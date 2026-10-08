@@ -1,5 +1,5 @@
 /// <reference path="./bridge.d.ts" />
-// The rpp plugin SDK, imported as `#rpp`. Embedded in rpp and written to
+// The rpp plugin SDK, imported as `rpp`. Embedded in rpp and written to
 // `.rpp/sdk/index.ts` by `rpp codegen`, so it always matches the running rpp.
 
 const encoder = new TextEncoder();

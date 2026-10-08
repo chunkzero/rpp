@@ -404,7 +404,7 @@ mod tests {
         write(
             root,
             "src/plugin.ts",
-            r##"import { definePlugin } from "#rpp";
+            r##"import { definePlugin } from "rpp";
 import { name } from "./name.ts";
 export default definePlugin({ processors: { [name]: { files: "**/*", run() {} } } });
 "##,

@@ -97,10 +97,23 @@ fn pack_requires_rpp_range() {
 }
 
 #[test]
-fn pack_rewrites_manifest_entry_and_config() {
+fn pack_rewrites_manifest_entries() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
     plugin(root);
+    write(
+        root,
+        "rpp.json",
+        PLUGIN_MANIFEST.replace(
+            r#""config": "src/config.ts","#,
+            r#""config": "src/config.ts", "exports": { "./raw": "src/raw.ts" },"#,
+        ),
+    );
+    write(
+        root,
+        "src/raw.ts",
+        "import { definePlugin } from \"rpp\";\nexport const raw: typeof definePlugin = definePlugin;\n",
+    );
     pack(root, "out");
 
     let files = entries(&std::fs::read(root.join("out/packed-1.2.3.rpp.tgz")).unwrap());
@@ -115,9 +128,12 @@ fn pack_rewrites_manifest_entry_and_config() {
             "rpp": ">=0.1",
             "entry": "dist/plugin.js",
             "config": "dist/config.js",
+            "exports": { "./raw": "dist/exports/raw.js" },
             "components": { "tool": "tool.wasm" },
         })
     );
+    assert!(files.contains_key("dist/exports/raw.js"));
+    assert!(files.contains_key("dist/exports/raw.d.ts"));
 }
 
 #[test]
@@ -128,7 +144,7 @@ fn pack_rejects_config_importing_the_plugin_sdk() {
     write(
         root,
         "src/config.ts",
-        "import { definePlugin } from \"#rpp\";\nexport const config: typeof definePlugin = definePlugin;\n",
+        "import { definePlugin } from \"rpp\";\nexport const config: typeof definePlugin = definePlugin;\n",
     );
 
     let out = run(root, &["plugin", "pack", "--out", "out"]);

@@ -8,9 +8,9 @@ use serde_json::Value;
 
 use super::bundle_cache::cached_bundle;
 use super::discover::{discovered_module, Discovery};
-use super::{jsx_modules, JSX_IMPORT_SOURCE, SDK_CONFIG, SDK_INDEX};
+use super::{hint_renamed_specifiers, jsx_modules, JSX_IMPORT_SOURCE, SDK_CONFIG, SDK_INDEX};
 use crate::error::{Error, Result};
-use crate::manifest::PluginManifest;
+use crate::manifest::{plugin_modules, PluginManifest};
 use crate::util::path::to_forward_slash;
 
 const RUNTIME_SOURCE: &str = include_str!("sdk/runtime.ts");
@@ -40,13 +40,13 @@ pub(super) fn bundle_plugin(
     if discovery.is_empty() {
         let request = BundleRequest {
             root: root.to_path_buf(),
-            entry: "rpp:entry".into(),
+            entry: "rpp:internal/entry".into(),
             virtual_modules: virtual_modules(&format!("./{}", manifest.entry), false),
+            packages: self_packages(manifest, root),
             jsx_import_source: Some(JSX_IMPORT_SOURCE.to_string()),
-            ..Default::default()
         };
         let bundle = cached_bundle(cache_dir, &manifest.id, &request, || {
-            rpp_js::bundle(&request).map_err(|e| e.to_string())
+            rpp_js::bundle(&request).map_err(|e| hint_renamed_specifiers(e.to_string()))
         })
         .map_err(load_error)?;
         return Ok(PluginBundle {
@@ -77,28 +77,44 @@ pub(super) fn bundle_plugin(
 fn virtual_modules(entry: &str, discovered: bool) -> BTreeMap<String, String> {
     let (import, register) = if discovered {
         (
-            "import discovered from \"rpp:discovered\";\n",
+            "import discovered from \"rpp:internal/discovered\";\n",
             "register(plugin, discovered);",
         )
     } else {
         ("", "register(plugin);")
     };
     let entry_module = format!(
-        "import plugin from {};\nimport {{ register }} from \"rpp:runtime\";\n{import}{register}\nexport * from \"rpp:runtime\";\n",
+        "import plugin from {};\nimport {{ register }} from \"rpp:internal/runtime\";\n{import}{register}\nexport * from \"rpp:internal/runtime\";\n",
         Value::String(entry.to_string())
     );
     [
-        ("#rpp".to_string(), SDK_INDEX.to_string()),
-        ("rpp:runtime".to_string(), RUNTIME_SOURCE.to_string()),
-        ("rpp:entry".to_string(), entry_module),
+        ("rpp".to_string(), SDK_INDEX.to_string()),
+        ("rpp:config".to_string(), SDK_CONFIG.to_string()),
+        (
+            "rpp:internal/runtime".to_string(),
+            RUNTIME_SOURCE.to_string(),
+        ),
+        ("rpp:internal/entry".to_string(), entry_module),
     ]
     .into_iter()
     .chain(jsx_modules())
     .collect()
 }
 
+/// The plugin's own [`plugin_modules`], as packages rooted at `plugin_root`.
+fn self_packages(manifest: &PluginManifest, plugin_root: &Path) -> BTreeMap<String, BundlePackage> {
+    plugin_modules(&manifest.id, manifest.config.as_deref(), &manifest.exports)
+        .into_iter()
+        .map(|(specifier, module)| {
+            let dir = plugin_root.to_path_buf();
+            let entry = module.to_string();
+            (specifier, BundlePackage { dir, entry })
+        })
+        .collect()
+}
+
 /// Bundle the plugin together with the files its patterns match under `source`. The bundle
-/// root is `source`; the plugin's own files are the package `#plugin`.
+/// root is `source`; the plugin's own files are the package `rpp:internal/plugin`.
 fn bundle_discovered(
     manifest: &PluginManifest,
     plugin_root: &Path,
@@ -108,29 +124,28 @@ fn bundle_discovered(
 ) -> std::result::Result<(Bundle, BTreeSet<String>), String> {
     let entries = discovery.discover(source)?;
 
-    let mut virtual_modules = virtual_modules("#plugin", true);
-    virtual_modules.insert("#rpp/config".into(), SDK_CONFIG.into());
+    let mut virtual_modules = virtual_modules("rpp:internal/plugin", true);
     virtual_modules.insert(
-        "rpp:discovered".into(),
+        "rpp:internal/discovered".into(),
         discovered_module("", discovery, &entries),
     );
-    let package = |entry: &str| BundlePackage {
-        dir: plugin_root.to_path_buf(),
-        entry: entry.to_string(),
-    };
-    let mut packages = BTreeMap::from([("#plugin".to_string(), package(&manifest.entry))]);
-    if let Some(config) = &manifest.config {
-        packages.insert(format!("#plugins/{}", manifest.id), package(config));
-    }
+    let mut packages = self_packages(manifest, plugin_root);
+    packages.insert(
+        "rpp:internal/plugin".to_string(),
+        BundlePackage {
+            dir: plugin_root.to_path_buf(),
+            entry: manifest.entry.clone(),
+        },
+    );
     let request = BundleRequest {
         root: source.to_path_buf(),
-        entry: "rpp:entry".into(),
+        entry: "rpp:internal/entry".into(),
         virtual_modules,
         packages,
         jsx_import_source: Some(JSX_IMPORT_SOURCE.to_string()),
     };
     let bundle = cached_bundle(cache_dir, &manifest.id, &request, || {
-        rpp_js::bundle(&request).map_err(|e| e.to_string())
+        rpp_js::bundle(&request).map_err(|e| hint_renamed_specifiers(e.to_string()))
     })?;
 
     let authoring = bundle

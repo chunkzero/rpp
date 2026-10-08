@@ -37,7 +37,8 @@ Rust tooling for building Minecraft resource packs with incremental TypeScript a
 - Use `pub(crate)` for internals, `///` for public APIs, and `dep:` for optional dependencies.
 - Keep shared dependency versions in `[workspace.dependencies]`.
 - Write focused behavior tests. Keep comments sparse and about current behavior.
-- TypeScript plugins run on V8 and import the SDK as `#rpp`; config uses `#rpp/config`.
+- TypeScript plugins run on V8 and import the SDK as `rpp`; config uses `rpp:config`.
+  Plugin modules are imported as `plugin:<name>` and `plugin:<name>/<subpath>`.
 
 ## Git
 

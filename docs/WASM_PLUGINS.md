@@ -14,7 +14,7 @@ A TypeScript plugin may ship named WASIp2 components and call them with
 ```
 
 ```ts
-import { components, definePlugin } from "#rpp";
+import { components, definePlugin } from "rpp";
 
 export default definePlugin({
   generate(ctx) {

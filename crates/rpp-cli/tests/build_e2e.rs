@@ -12,12 +12,12 @@ use common::{build, stderr, write};
 /// An `rpp.config.ts` whose `defineConfig` object body is `body`.
 fn config_ts(body: &str) -> String {
     format!(
-        "import {{ defineConfig, plugin }} from \"#rpp/config\";\n\nexport default defineConfig({{\n{body}\n}});\n"
+        "import {{ defineConfig, plugin }} from \"rpp:config\";\n\nexport default defineConfig({{\n{body}\n}});\n"
     )
 }
 
 /// A plugin that minifies every `data.json`.
-const MINIFY_PLUGIN: &str = r##"import { definePlugin } from "#rpp";
+const MINIFY_PLUGIN: &str = r##"import { definePlugin } from "rpp";
 
 export default definePlugin({
   processors: {

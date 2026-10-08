@@ -231,16 +231,17 @@ mod tests {
         let f = Fixture::new();
         f.get(&f.cache, &f.request);
         let mut changed = f.request.clone();
-        changed
-            .virtual_modules
-            .insert("rpp:discovered".into(), "export default {};".into());
+        changed.virtual_modules.insert(
+            "rpp:internal/discovered".into(),
+            "export default {};".into(),
+        );
         f.get(&f.cache, &changed);
         assert_eq!(f.builds.get(), 2);
-        changed.jsx_import_source = Some("#plugins/ui".into());
+        changed.jsx_import_source = Some("plugin:ui".into());
         f.get(&f.cache, &changed);
         f.get(&f.cache, &changed);
         assert_eq!(f.builds.get(), 3);
-        changed.jsx_import_source = Some("#plugins/other".into());
+        changed.jsx_import_source = Some("plugin:other".into());
         f.get(&f.cache, &changed);
         assert_eq!(f.builds.get(), 4);
     }

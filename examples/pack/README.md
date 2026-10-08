@@ -83,7 +83,7 @@ Edit `src/items/ember_gem.ts` to change its display name, or add
 `src/items/frost_gem.ts`:
 
 ```ts
-import type { Item } from "#plugins/example-catalog";
+import type { Item } from "plugin:example-catalog";
 
 export default { name: "Frost Gem", texture: "minecraft:custom/gem" } satisfies Item;
 ```

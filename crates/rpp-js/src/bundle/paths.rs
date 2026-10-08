@@ -4,10 +4,11 @@ use rolldown_sourcemap::{JSONSourceMap, SourceMap};
 
 use super::{Package, NODE_MODULES, VIRTUAL_PREFIX};
 
-/// Turns a source path relative to `root` (as Rolldown reports it) into the form
-/// listed in the source map.
+/// Turns a source path relative to `map_dir` (as Rolldown reports it) into the form listed
+/// in the source map: relative to `root`, under `node_modules/`, or under a package specifier.
 pub(super) fn display_source(
     root: &Path,
+    map_dir: &Path,
     packages: &[Package],
     allow_node_modules: bool,
     source: &str,
@@ -15,7 +16,7 @@ pub(super) fn display_source(
     if let Some(at) = source.find(VIRTUAL_PREFIX) {
         return source[at + VIRTUAL_PREFIX.len()..].to_string();
     }
-    let absolute = normalize(&root.join(source));
+    let absolute = normalize(&map_dir.join(source));
     if allow_node_modules {
         let components: Vec<_> = absolute.components().collect();
         if let Some(at) = components
@@ -26,13 +27,16 @@ pub(super) fn display_source(
             return tail.to_string_lossy().replace('\\', "/");
         }
     }
-    for package in packages {
+    for package in packages.iter().filter(|package| package.dir != root) {
         if let Ok(relative) = absolute.strip_prefix(&package.dir) {
             let relative = relative.to_string_lossy().replace('\\', "/");
             return format!("{}/{relative}", package.specifier);
         }
     }
-    source.replace('\\', "/")
+    match absolute.strip_prefix(root) {
+        Ok(relative) => relative.to_string_lossy().replace('\\', "/"),
+        Err(_) => source.replace('\\', "/"),
+    }
 }
 
 /// Resolves `.` and `..` components without touching the filesystem.

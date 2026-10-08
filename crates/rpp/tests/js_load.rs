@@ -13,7 +13,7 @@ use tempfile::TempDir;
 fn options_reach_plugins_in_canonical_key_order() {
     let dir = write_plugin(
         r##"
-import { definePlugin } from "#rpp";
+import { definePlugin } from "rpp";
 export default definePlugin({
   processors: {
     dump: { files: "**/*", run(ctx, file) { file.text = JSON.stringify(ctx.options); } },
@@ -77,7 +77,7 @@ fn missing_default_export_fails_to_load() {
 fn helper_plugin(constant: &str) -> TempDir {
     let dir = write_plugin(
         r##"
-import { definePlugin } from "#rpp";
+import { definePlugin } from "rpp";
 import { value } from "./helper";
 export default definePlugin({
   processors: { set: { files: "**/*", run(ctx, file) { file.text = value; } } },
@@ -111,4 +111,58 @@ fn options_change_cache_key() {
         load(dir.path(), r#"{"a":1}"#).cache_key(),
         load(dir.path(), r#"{"a":2}"#).cache_key()
     );
+}
+
+#[test]
+fn plugin_imports_its_own_exports_by_specifier() {
+    let dir = write_plugin(
+        r##"
+import { definePlugin } from "rpp";
+import { mark } from "plugin:ts-test/raw";
+export default definePlugin({
+  processors: { mark: { files: "**/*", run(ctx, file) { file.text = mark(file.text); } } },
+});
+"##,
+    );
+    write_file(
+        dir.path(),
+        "rpp.json",
+        r#"{ "name": "ts-test", "version": "1.0.0", "exports": { "./raw": "src/raw.ts" } }"#,
+    );
+    write_file(
+        dir.path(),
+        "src/raw.ts",
+        "export const mark = (t: string) => t + \"!\";\n",
+    );
+    let mut instance = load(dir.path(), "{}").instantiate().unwrap();
+    let (file, _) = process(instance.as_mut(), "mark", "a.txt", "hi");
+    assert_eq!(text(&file), "hi!");
+}
+
+#[test]
+fn plugin_imports_its_own_config_factory() {
+    let dir = write_plugin(
+        r##"
+import { definePlugin } from "rpp";
+import config from "plugin:ts-test";
+export default definePlugin({
+  processors: {
+    id: { files: "**/*", run(ctx, file) { file.text = config({}).plugin; } },
+  },
+});
+"##,
+    );
+    write_file(
+        dir.path(),
+        "rpp.json",
+        r#"{ "name": "ts-test", "version": "1.0.0", "config": "src/config.ts" }"#,
+    );
+    write_file(
+        dir.path(),
+        "src/config.ts",
+        "import { definePluginConfig } from \"rpp:config\";\nexport default definePluginConfig<{}>(\"ts-test\");\n",
+    );
+    let mut instance = load(dir.path(), "{}").instantiate().unwrap();
+    let (file, _) = process(instance.as_mut(), "id", "a.txt", "");
+    assert_eq!(text(&file), "ts-test");
 }

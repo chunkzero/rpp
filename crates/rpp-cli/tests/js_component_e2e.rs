@@ -34,7 +34,7 @@ fn scaffold(root: &Path, plugin_ts: &str) {
     write(
         root,
         "rpp.config.ts",
-        r##"import { defineConfig, plugin } from "#rpp/config";
+        r##"import { defineConfig, plugin } from "rpp:config";
 
 export default defineConfig({
   pack: { name: "js-component", format: 34 },
@@ -58,7 +58,7 @@ export default defineConfig({
 /// Build a generator plugin whose `generate` body is `body`.
 fn generate(body: &str) -> anyhow::Result<tempfile::TempDir> {
     let plugin = format!(
-        r##"import {{ components, definePlugin, ComponentError, ComponentTimeoutError }} from "#rpp";
+        r##"import {{ components, definePlugin, ComponentError, ComponentTimeoutError }} from "rpp";
 const json = (value: unknown) =>
   JSON.stringify(value, (_key, v) => (typeof v === "bigint" ? `${{v}}n` : v));
 export default definePlugin({{
@@ -212,7 +212,7 @@ fn spin_throws_component_timeout_error() {
 fn handle_released_between_processor_files() {
     require_wasip2!();
     let error = build(
-        r##"import { components, definePlugin } from "#rpp";
+        r##"import { components, definePlugin } from "rpp";
 let c: ReturnType<typeof components.load> | undefined;
 export default definePlugin({
   processors: {
@@ -248,7 +248,7 @@ fn compiled_components_are_cached_outside_the_project() {
     let root = dir.path();
     scaffold(
         root,
-        r##"import { components, definePlugin } from "#rpp";
+        r##"import { components, definePlugin } from "rpp";
 export default definePlugin({ generate(ctx) { ctx.emit("out.txt", String(components.load("c").exports.parse("1"))); } });
 "##,
     );

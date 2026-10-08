@@ -17,11 +17,11 @@ const TSCONFIG_HEAD: &str = r##"{
     "skipLibCheck": true,
     "types": [],
     "jsx": "react-jsx",
-    "jsxImportSource": "#rpp/jsx",
+    "jsxImportSource": "rpp:jsx",
     "paths": {
-      "#rpp": ["./sdk/index.ts"],
-      "#rpp/jsx": ["./sdk/jsx.ts"],
-      "#rpp/jsx/jsx-runtime": ["./sdk/jsx.ts"]"##;
+      "rpp": ["./sdk/index.ts"],
+      "rpp:jsx": ["./sdk/jsx.ts"],
+      "rpp:jsx/jsx-runtime": ["./sdk/jsx.ts"]"##;
 
 const TSCONFIG_TAIL: &str = r#"
     }
@@ -36,14 +36,14 @@ pub(super) const ROOT_TSCONFIG: &str = r#"{
 }
 "#;
 
-/// The `.rpp/tsconfig.json` contents. `plugin_configs` maps dependency names to their
-/// config modules; it is `Some` for `rpp.config.ts` and plugin projects, which also map
-/// `#rpp/config`.
-pub(super) fn tsconfig(plugin_configs: Option<&BTreeMap<String, PathBuf>>) -> String {
+/// The `.rpp/tsconfig.json` contents. `plugin_modules` maps dependency module specifiers
+/// (`plugin:<name>[/<subpath>]`) to their files; it is `Some` for `rpp.config.ts` and plugin
+/// projects, which also map `rpp:config`.
+pub(super) fn tsconfig(plugin_modules: Option<&BTreeMap<String, PathBuf>>) -> String {
     let mut text = TSCONFIG_HEAD.to_string();
-    if let Some(plugin_configs) = plugin_configs {
-        text.push_str(",\n      \"#rpp/config\": [\"./sdk/config.ts\"]");
-        for (name, path) in plugin_configs {
+    if let Some(plugin_modules) = plugin_modules {
+        text.push_str(",\n      \"rpp:config\": [\"./sdk/config.ts\"]");
+        for (specifier, path) in plugin_modules {
             let declaration = match path.extension().and_then(|extension| extension.to_str()) {
                 Some("js") => path.with_extension("d.ts"),
                 Some("mjs") => path.with_extension("d.mts"),
@@ -61,7 +61,7 @@ pub(super) fn tsconfig(plugin_configs: Option<&BTreeMap<String, PathBuf>>) -> St
                 .strip_prefix(r"\\?\")
                 .unwrap_or(&path)
                 .replace('\\', "/");
-            text.push_str(&format!(",\n      \"#plugins/{name}\": [{path:?}]"));
+            text.push_str(&format!(",\n      {specifier:?}: [{path:?}]"));
         }
     }
     text.push_str(TSCONFIG_TAIL);
@@ -78,7 +78,7 @@ mod tests {
         let options = &generated["compilerOptions"];
         assert_eq!(options["jsxImportSource"], rpp::js::JSX_IMPORT_SOURCE);
         assert_eq!(
-            options["paths"]["#rpp/jsx/jsx-runtime"],
+            options["paths"]["rpp:jsx/jsx-runtime"],
             serde_json::json!(["./sdk/jsx.ts"])
         );
     }
@@ -88,7 +88,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let config = root.path().join("config.js");
         std::fs::write(&config, "export default () => {};\n").unwrap();
-        let configs = BTreeMap::from([("packed".to_string(), config.clone())]);
+        let configs = BTreeMap::from([("plugin:packed".to_string(), config.clone())]);
         assert!(tsconfig(Some(&configs)).contains("config.js"));
         std::fs::write(
             config.with_extension("d.ts"),
@@ -103,10 +103,10 @@ mod tests {
     #[test]
     fn verbatim_windows_paths_are_mapped_as_drive_paths() {
         let configs = BTreeMap::from([(
-            "local".to_string(),
+            "plugin:local".to_string(),
             PathBuf::from(r"\\?\C:\plugins\local\config.ts"),
         )]);
         assert!(tsconfig(Some(&configs))
-            .contains(r##""#plugins/local": ["C:/plugins/local/config.ts"]"##));
+            .contains(r##""plugin:local": ["C:/plugins/local/config.ts"]"##));
     }
 }

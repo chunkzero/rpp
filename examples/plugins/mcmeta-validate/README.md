@@ -36,7 +36,7 @@ This plugin emits no output files; it is a pure correctness gate.
 `rpp.config.ts`:
 
 ```ts
-import { defineConfig, plugin } from "#rpp/config";
+import { defineConfig, plugin } from "rpp:config";
 
 export default defineConfig({
   pack: { name: "my-pack", format: 34 },

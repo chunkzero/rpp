@@ -1,4 +1,4 @@
-import { definePlugin, hash, path } from "#rpp";
+import { definePlugin, hash, path } from "rpp";
 
 import type { Options } from "./config.ts";
 

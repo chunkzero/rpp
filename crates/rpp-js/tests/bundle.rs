@@ -113,13 +113,13 @@ fn virtual_entry_imports_virtual_and_real_modules() {
         "src/real.ts",
         "export function real(): string { return 'real'; }\n",
     );
-    let mut req = request(&root, "rpp:entry");
+    let mut req = request(&root, "rpp:internal/entry");
     req.virtual_modules.insert(
-        "rpp:entry".to_string(),
-        "import { host } from '#rpp';\nimport { real } from './src/real';\nexport const out: string = host() + real();\n".to_string(),
+        "rpp:internal/entry".to_string(),
+        "import { host } from 'rpp';\nimport { real } from './src/real';\nexport const out: string = host() + real();\n".to_string(),
     );
     req.virtual_modules.insert(
-        "#rpp".to_string(),
+        "rpp".to_string(),
         "export function host(): string { return 'host'; }\n".to_string(),
     );
 
@@ -129,8 +129,11 @@ fn virtual_entry_imports_virtual_and_real_modules() {
     assert!(bundle.code.contains("'host'") || bundle.code.contains("\"host\""));
     assert_eq!(bundle.inputs, vec![root.join("src/real.ts")]);
     let sources = source_list(&bundle.source_map);
-    assert!(sources.contains(&"#rpp".to_string()), "{sources:?}");
-    assert!(sources.contains(&"rpp:entry".to_string()), "{sources:?}");
+    assert!(sources.contains(&"rpp".to_string()), "{sources:?}");
+    assert!(
+        sources.contains(&"rpp:internal/entry".to_string()),
+        "{sources:?}"
+    );
     assert!(sources.contains(&"src/real.ts".to_string()), "{sources:?}");
 }
 
@@ -369,4 +372,15 @@ fn bundle_ignores_project_tsconfig() {
             output.code
         );
     }
+}
+
+#[test]
+fn type_only_entry_bundles() {
+    let dir = TempDir::new().unwrap();
+    write(
+        dir.path(),
+        "types.ts",
+        "export interface Options { size: number }\n",
+    );
+    bundle(&request(dir.path(), "types.ts")).unwrap();
 }

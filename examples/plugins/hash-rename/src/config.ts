@@ -1,4 +1,4 @@
-import { definePluginConfig } from "#rpp/config";
+import { definePluginConfig } from "rpp:config";
 
 export interface Options {
   /**

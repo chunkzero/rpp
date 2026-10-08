@@ -81,8 +81,8 @@ A project has two files at its root. `rpp.config.ts` describes the pack and the
 plugins it runs:
 
 ```ts
-import { defineConfig } from "#rpp/config";
-import jsonMinify from "#plugins/json-minify";
+import { defineConfig } from "rpp:config";
+import jsonMinify from "plugin:json-minify";
 
 export default defineConfig({
   pack: { name: "my-pack", description: "My resource pack", format: 34 },
@@ -106,7 +106,7 @@ version ranges or local directories:
 A plugin is a directory with an `rpp.json` manifest and a TypeScript entry point:
 
 ```ts
-import { definePlugin } from "#rpp";
+import { definePlugin } from "rpp";
 
 export default definePlugin<{ greeting?: string }>({
   // Processors run on every matching file.
