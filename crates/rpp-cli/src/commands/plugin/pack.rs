@@ -134,7 +134,7 @@ fn write_outputs(out: &Path, file: &str, archive: &[u8]) -> Result<(PathBuf, Str
 
 /// Unpacks the archive as installs do and bundles each entry with only the SDK modules
 /// its loader provides: `rpp:config` for the config, and `rpp` too for the plugin and
-/// exports (pack sources and `rpp.config.ts` import them), plus `rpp:jsx`.
+/// exports (pack sources import them), plus `rpp:jsx`.
 fn self_check(archive: &[u8]) -> Result<()> {
     let dir = tempfile::tempdir()?;
     rpp_archive::unpack(archive, dir.path()).context("unpacking the archive")?;
