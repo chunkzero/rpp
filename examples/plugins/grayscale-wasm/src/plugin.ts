@@ -1,4 +1,4 @@
-import { components, definePlugin } from "#rpp";
+import { components, definePlugin } from "rpp";
 
 // Heavy per-file work (here, PNG decode/encode) lives in the component; TypeScript only
 // routes bytes. Processor component calls get a fresh guest instance per file, so the guest

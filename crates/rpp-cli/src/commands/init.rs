@@ -142,7 +142,7 @@ fn rpp_config(name: &str, description: &str, pack_format: u32) -> String {
     let name = ts_string(name);
     let description = ts_string(description);
     format!(
-        r##"import {{ defineConfig, plugin }} from "#rpp/config";
+        r##"import {{ defineConfig, plugin }} from "rpp:config";
 
 export default defineConfig({{
   pack: {{
@@ -180,7 +180,7 @@ const HELLO_MANIFEST: &str = r#"{
 }
 "#;
 
-const HELLO_PLUGIN: &str = r##"import { definePlugin } from "#rpp";
+const HELLO_PLUGIN: &str = r##"import { definePlugin } from "rpp";
 
 // Processor: minify every JSON / mcmeta file in the pack.
 // Generator: emit a tiny build marker listing the pack name and greeting.

@@ -27,7 +27,7 @@ Keys become camelCase and sections become objects:
 rejected. Plugin permissions need `security: "trusted"`.
 
 ```ts
-import { defineConfig, plugin } from "#rpp/config";
+import { defineConfig, plugin } from "rpp:config";
 
 export default defineConfig({
   pack: { name: "my-pack", format: 34 },
@@ -40,7 +40,7 @@ rpp generates `pack.mcmeta` from `pack`. Move the fields of `src/pack.mcmeta` in
 `pack.mcmeta` fails the build. `pack.packFormat` is rejected in favor of `pack.format`.
 
 A plugin that ships a config module is configured through its factory instead, with typed and
-validated options: `import minify from "#plugins/minify"` then `minify({ pretty: false })`.
+validated options: `import minify from "plugin:minify"` then `minify({ pretty: false })`.
 
 ## Plugin sources to `rpp.json`
 
@@ -72,7 +72,7 @@ factory module) and `discover` (globs of authoring modules, replacing `ctx:sourc
 
 ## Lua API to the TypeScript SDK
 
-Import from `#rpp` and default-export `definePlugin({ ... })`.
+Import from `rpp` and default-export `definePlugin({ ... })`.
 
 | Lua                                               | TypeScript                                                     |
 | ------------------------------------------------- | -------------------------------------------------------------- |

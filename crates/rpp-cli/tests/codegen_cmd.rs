@@ -35,7 +35,7 @@ fn codegen_writes_sdk_and_tsconfig() {
     assert!(globals.contains("declare var crypto"));
     assert!(!globals.contains("structuredClone"));
     let tsconfig = std::fs::read_to_string(root.join(".rpp/tsconfig.json")).unwrap();
-    assert!(tsconfig.contains("\"#rpp\": [\"./sdk/index.ts\"]"));
+    assert!(tsconfig.contains("\"rpp\": [\"./sdk/index.ts\"]"));
     let root_config = std::fs::read_to_string(root.join("tsconfig.json")).unwrap();
     assert!(root_config.contains("./.rpp/tsconfig.json"));
     assert!(root_config.contains("**/*.mts"));
@@ -71,7 +71,7 @@ fn codegen_works_in_json_plugin_dir() {
     );
     let tsconfig = std::fs::read_to_string(plugin.join(".rpp/tsconfig.json")).unwrap();
     assert!(
-        tsconfig.contains("\"#rpp/config\": [\"./sdk/config.ts\"]"),
+        tsconfig.contains("\"rpp:config\": [\"./sdk/config.ts\"]"),
         "{tsconfig}"
     );
 }
@@ -264,7 +264,7 @@ fn build_runs_typescript_plugin() {
     let root = dir.path();
     std::fs::write(
         root.join("rpp.config.ts"),
-        "import { defineConfig, plugin } from \"#rpp/config\";\n\
+        "import { defineConfig, plugin } from \"rpp:config\";\n\
          export default defineConfig({ pack: { name: \"p\", format: 34 }, plugins: [plugin(\"upper\")] });\n",
     )
     .unwrap();
@@ -284,7 +284,7 @@ fn build_runs_typescript_plugin() {
     .unwrap();
     std::fs::write(
         plugin.join("src/plugin.ts"),
-        r##"import { definePlugin } from "#rpp";
+        r##"import { definePlugin } from "rpp";
 
 export default definePlugin({
   processors: {

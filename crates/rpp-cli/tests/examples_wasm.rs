@@ -59,7 +59,7 @@ fn grayscale_project(tmp: &Path) -> PathBuf {
     write(
         &root,
         "rpp.config.ts",
-        br##"import { defineConfig, plugin } from "#rpp/config";
+        br##"import { defineConfig, plugin } from "rpp:config";
 
 export default defineConfig({
   pack: { name: "gray", format: 34 },

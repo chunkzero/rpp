@@ -13,7 +13,7 @@ use tempfile::TempDir;
 fn options_reach_plugins_in_canonical_key_order() {
     let dir = write_plugin(
         r##"
-import { definePlugin } from "#rpp";
+import { definePlugin } from "rpp";
 export default definePlugin({
   processors: {
     dump: { files: "**/*", run(ctx, file) { file.text = JSON.stringify(ctx.options); } },
@@ -77,7 +77,7 @@ fn missing_default_export_fails_to_load() {
 fn helper_plugin(constant: &str) -> TempDir {
     let dir = write_plugin(
         r##"
-import { definePlugin } from "#rpp";
+import { definePlugin } from "rpp";
 import { value } from "./helper";
 export default definePlugin({
   processors: { set: { files: "**/*", run(ctx, file) { file.text = value; } } },

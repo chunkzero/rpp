@@ -120,8 +120,8 @@ fn consumer(dir: &Path, server: &Server, source: &str) {
     write(
         &project,
         "rpp.config.ts",
-        r##"import { defineConfig } from "#rpp/config";
-import packed from "#plugins/packed";
+        r##"import { defineConfig } from "rpp:config";
+import packed from "plugin:packed";
 
 export default defineConfig({
   pack: { name: "p", format: 34 },

@@ -1,5 +1,5 @@
 //! TypeScript editor and type-checker support: the SDK under `.rpp/sdk` and the
-//! tsconfig files that map `#rpp` onto it.
+//! tsconfig files that map `rpp` onto it.
 
 mod component_dts;
 mod tsconfig;
@@ -9,7 +9,7 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 
-use rpp::manifest::PluginManifest;
+use rpp::manifest::{plugin_modules, PluginManifest};
 use rpp_fetch::registry::PACKAGE_MANIFEST;
 
 use self::tsconfig::{tsconfig, ROOT_TSCONFIG};
@@ -19,14 +19,16 @@ use crate::project::{is_plugin_manifest, resolve_ts_packages, CONFIG_FILE};
 /// Returns whether any file changed.
 pub fn write(root: &Path) -> Result<bool> {
     let ts_project = root.join(CONFIG_FILE).is_file();
-    let plugin_configs = if ts_project {
+    let plugin_modules = if ts_project {
         let packages = resolve_ts_packages(root)?;
         Some(
             packages
-                .into_iter()
-                .filter_map(|(name, package)| {
-                    let config = package.manifest.config?;
-                    Some((name, package.dir.join(config)))
+                .iter()
+                .flat_map(|(name, package)| {
+                    let manifest = &package.manifest;
+                    plugin_modules(name, manifest.config.as_deref(), &manifest.exports)
+                        .into_iter()
+                        .map(|(specifier, module)| (specifier, package.dir.join(module)))
                 })
                 .collect(),
         )
@@ -43,7 +45,7 @@ pub fn write(root: &Path) -> Result<bool> {
     changed |= write_if_changed(&rpp_dir.join("sdk/globals.d.ts"), rpp_js::GLOBALS_DTS)?;
     changed |= write_if_changed(
         &rpp_dir.join("tsconfig.json"),
-        &tsconfig(plugin_configs.as_ref()),
+        &tsconfig(plugin_modules.as_ref()),
     )?;
 
     changed |= write_component_dts(root)?;

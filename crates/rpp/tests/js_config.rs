@@ -27,7 +27,7 @@ fn demo_package(root: &Path, validate: &str) -> BTreeMap<String, ConfigPackage> 
     write_file(
         &dir,
         "src/config.ts",
-        &r##"import { definePluginConfig } from "#rpp/config";
+        &r##"import { definePluginConfig } from "rpp:config";
 export default definePluginConfig<{ level?: number }>("demo", {
   normalize: (options) => ({ level: 1, ...options }),
   validate: (options) => VALIDATE,
@@ -40,6 +40,7 @@ export default definePluginConfig<{ level?: number }>("demo", {
         ConfigPackage {
             dir,
             config: Some("src/config.ts".into()),
+            exports: BTreeMap::new(),
         },
     )])
 }
@@ -50,7 +51,7 @@ fn evaluates_minimal_config() {
     write_file(
         dir.path(),
         "rpp.config.ts",
-        r##"import { defineConfig } from "#rpp/config";
+        r##"import { defineConfig } from "rpp:config";
 export default defineConfig({ pack: { name: "mini", format: 34 } });
 "##,
     );
@@ -70,8 +71,8 @@ fn plugin_config_factory_types_options() {
     write_file(
         dir.path(),
         "rpp.config.ts",
-        r##"import { defineConfig } from "#rpp/config";
-import demo from "#plugins/demo";
+        r##"import { defineConfig } from "rpp:config";
+import demo from "plugin:demo";
 export default defineConfig({
   pack: { name: "p", format: 34 },
   plugins: [demo({}), demo({ level: 5 })],
@@ -97,7 +98,7 @@ fn factory_validation_errors_name_plugin() {
     write_file(
         dir.path(),
         "rpp.config.ts",
-        r##"import demo from "#plugins/demo";
+        r##"import demo from "plugin:demo";
 export default { pack: { name: "p", format: 34 }, plugins: [demo({ level: -1 })] };
 "##,
     );

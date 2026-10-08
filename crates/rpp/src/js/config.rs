@@ -6,9 +6,13 @@ use std::path::{Path, PathBuf};
 use rpp_js::{Bundle, BundlePackage, BundleRequest, Call, Cancellation, Clock, Host, HostReply};
 use serde_json::Value;
 
-use super::{instance, jsx_modules, log, runtime_limits, JSX_IMPORT_SOURCE, SDK_CONFIG};
+use super::{
+    hint_renamed_specifiers, instance, jsx_modules, log, runtime_limits, JSX_IMPORT_SOURCE,
+    SDK_CONFIG,
+};
 use crate::config::{Config, LimitsConfig};
 use crate::error::{Error, Result};
+use crate::manifest::plugin_modules;
 
 const ENTRY_MODULE: &str =
     "import config from \"./rpp.config.ts\";\nexport function main() { return config; }\n";
@@ -18,14 +22,16 @@ const EVALUATION_DEADLINE_SECONDS: u64 = 30;
 /// The project config file name.
 pub const CONFIG_FILE: &str = "rpp.config.ts";
 
-/// A resolved dependency whose config module `rpp.config.ts` may import as
-/// `#plugins/<name>`.
+/// A resolved dependency whose modules `rpp.config.ts` may import as `plugin:<name>` and
+/// `plugin:<name>/<subpath>`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConfigPackage {
     /// The package root.
     pub dir: PathBuf,
     /// Its config module, relative to `dir` ([`crate::manifest::PluginManifest::config`]).
     pub config: Option<String>,
+    /// Its extra modules by subpath ([`crate::manifest::PluginManifest::exports`]).
+    pub exports: BTreeMap<String, String>,
 }
 
 /// An evaluated project config.
@@ -37,8 +43,8 @@ pub struct EvaluatedConfig {
     pub inputs: Vec<PathBuf>,
 }
 
-/// Bundle `<project_root>/rpp.config.ts` with `#rpp/config` (the embedded
-/// `sdk/config.ts`) and `#plugins/<name>` for each package that has a config module,
+/// Bundle `<project_root>/rpp.config.ts` with `rpp:config` (the embedded
+/// `sdk/config.ts`) and each package's [`plugin_modules`],
 /// evaluate it with a fixed clock, the default `build.limits` (with a 30-second deadline) and no
 /// host functions, and
 /// convert its default export with [`Config::from_ts_json`].
@@ -58,7 +64,8 @@ pub fn evaluate_config(
         message: message.trim_end().to_string(),
     };
 
-    let bundle = bundle_config(project_root, packages).map_err(|e| fail(e.to_string()))?;
+    let bundle = bundle_config(project_root, packages)
+        .map_err(|e| fail(hint_renamed_specifiers(e.to_string())))?;
 
     let limits = runtime_limits(&config_limits());
     let clock = Clock::Fixed {
@@ -111,20 +118,27 @@ fn bundle_config(
 ) -> rpp_js::Result<Bundle> {
     rpp_js::bundle(&BundleRequest {
         root: project_root.to_path_buf(),
-        entry: "rpp:config-entry".into(),
+        entry: "rpp:internal/config-entry".into(),
         virtual_modules: [
-            ("rpp:config-entry".to_string(), ENTRY_MODULE.to_string()),
-            ("#rpp/config".to_string(), SDK_CONFIG.to_string()),
+            (
+                "rpp:internal/config-entry".to_string(),
+                ENTRY_MODULE.to_string(),
+            ),
+            ("rpp:config".to_string(), SDK_CONFIG.to_string()),
         ]
         .into_iter()
         .chain(jsx_modules())
         .collect(),
         packages: packages
             .iter()
-            .filter_map(|(name, package)| {
-                let entry = package.config.clone()?;
-                let dir = package.dir.clone();
-                Some((format!("#plugins/{name}"), BundlePackage { dir, entry }))
+            .flat_map(|(name, package)| {
+                plugin_modules(name, package.config.as_deref(), &package.exports)
+                    .into_iter()
+                    .map(|(specifier, entry)| {
+                        let dir = package.dir.clone();
+                        let entry = entry.to_string();
+                        (specifier, BundlePackage { dir, entry })
+                    })
             })
             .collect(),
         jsx_import_source: Some(JSX_IMPORT_SOURCE.to_string()),

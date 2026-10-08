@@ -30,7 +30,7 @@ pack is as small as possible.
 `rpp.config.ts`:
 
 ```ts
-import jsonMinify from "#plugins/json-minify";
+import jsonMinify from "plugin:json-minify";
 
 export default defineConfig({
   pack: { name: "my-pack", format: 34 },

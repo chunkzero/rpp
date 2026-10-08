@@ -30,7 +30,7 @@ renaming a vanilla texture would break the fixed name a model or blockstate
 points at, but `custom/` assets are referenced only through the rename map.
 
 ```ts
-import hashRename from "#plugins/hash-rename";
+import hashRename from "plugin:hash-rename";
 
 export default defineConfig({
   pack: { name: "my-pack", format: 34 },

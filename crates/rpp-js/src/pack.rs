@@ -29,8 +29,10 @@ pub struct PackRequest {
     pub plugin: String,
     /// The config entry module, relative to `root`.
     pub config: Option<String>,
-    /// The specifier other plugins use to import this plugin's config (e.g.
-    /// `#plugins/window`); it resolves to the `config` entry.
+    /// Extra entry modules by subpath, relative to `root`.
+    pub exports: BTreeMap<String, String>,
+    /// The specifier other code uses to import this plugin's config (e.g. `plugin:window`);
+    /// it resolves to the `config` entry, and `<self_specifier>/<subpath>` to each export.
     pub self_specifier: Option<String>,
     /// See [`BundleRequest::jsx_import_source`]; the import source stays an import.
     pub jsx_import_source: Option<String>,
@@ -43,17 +45,20 @@ pub struct PackOutput {
     pub plugin: String,
     /// The archive path of the bundled config entry, `dist/config.js`.
     pub config: Option<String>,
-    /// `dist/*.js` chunks, their `.js.map` files and `dist/config.d.ts`.
+    /// The archive path of each bundled export by subpath, `dist/exports/<subpath>.js`.
+    pub exports: BTreeMap<String, String>,
+    /// `dist/**.js` chunks, their `.js.map` files, and a `.d.ts` stub beside each TypeScript
+    /// config or export entry.
     pub files: BTreeMap<String, String>,
-    /// `types/**.d.ts`, one per TypeScript file of the config's import graph outside
-    /// `node_modules`.
+    /// `types/**.d.ts`, one per TypeScript file of the config's and exports' import graphs
+    /// outside `node_modules`.
     pub declarations: BTreeMap<String, String>,
 }
 
 /// Bundle a plugin's entries into self-contained ES modules with npm dependencies
 /// inlined from `node_modules` (including hoisted ones outside `root`).
 ///
-/// `#rpp` and `#rpp/*` stay as imports. Source map sources are relative to the map
+/// `rpp` and `rpp:*` stay as imports. Source map sources are relative to the map
 /// file (`../src/plugin.ts`), with dependency files under `node_modules/`.
 ///
 /// # Errors
@@ -70,31 +75,51 @@ pub fn pack(request: &PackRequest) -> Result<PackOutput> {
         ..Default::default()
     };
     let mut settings = settings(request);
-    let inputs = request
+    let modules: Vec<(String, &str)> = request
         .config
         .iter()
-        .map(|config| input(CONFIG, config))
+        .map(|config| (CONFIG.to_string(), config.as_str()))
+        .chain(
+            request
+                .exports
+                .iter()
+                .map(|(subpath, module)| (format!("exports/{subpath}"), module.as_str())),
+        )
+        .collect();
+    let inputs = modules
+        .iter()
+        .map(|(name, module)| input(name, module))
         .chain([input(PLUGIN, &request.plugin)])
         .collect();
     let built = build(&bundle_request, &settings, inputs)?;
     let mut files = chunk_files(built.chunks)?;
 
-    let mut declarations = BTreeMap::new();
-    if let Some(config) = request.config.as_deref().filter(|c| is_typescript(c)) {
-        settings.split = false;
-        let Built { inputs, .. } = build(&bundle_request, &settings, vec![input(CONFIG, config)])?;
-        let declared = declare(&request.root, &inputs)?;
-        if let Some(stub) = config_stub(config, &declared) {
-            files.insert("dist/config.d.ts".to_string(), stub);
-        }
-        declarations = declared
-            .into_iter()
-            .map(|(path, declaration)| (path, declaration.text))
-            .collect();
+    settings.split = false;
+    let mut declared_inputs = BTreeSet::new();
+    let typed: Vec<_> = modules.iter().filter(|(_, m)| is_typescript(m)).collect();
+    for (name, module) in &typed {
+        let Built { inputs, .. } = build(&bundle_request, &settings, vec![input(name, module)])?;
+        declared_inputs.extend(inputs);
     }
+    let declared_inputs: Vec<_> = declared_inputs.into_iter().collect();
+    let declared = declare(&request.root, &declared_inputs)?;
+    for (name, module) in typed {
+        if let Some(stub) = entry_stub(name, module, &declared) {
+            files.insert(format!("dist/{name}.d.ts"), stub);
+        }
+    }
+    let declarations = declared
+        .into_iter()
+        .map(|(path, declaration)| (path, declaration.text))
+        .collect();
     Ok(PackOutput {
         plugin: entry_path(PLUGIN),
         config: request.config.as_ref().map(|_| entry_path(CONFIG)),
+        exports: request
+            .exports
+            .keys()
+            .map(|subpath| (subpath.clone(), entry_path(&format!("exports/{subpath}"))))
+            .collect(),
         files,
         declarations,
     })
@@ -102,14 +127,21 @@ pub fn pack(request: &PackRequest) -> Result<PackOutput> {
 
 fn settings(request: &PackRequest) -> Settings {
     let mut settings = Settings {
-        externals: vec!["#rpp".to_string(), "#rpp/".to_string()],
+        externals: vec!["rpp".to_string(), "rpp:".to_string()],
         allow_node_modules: true,
         main_fields: Some(vec!["module".to_string(), "main".to_string()]),
         split: true,
         ..Default::default()
     };
-    if let (Some(specifier), Some(config)) = (&request.self_specifier, &request.config) {
-        settings.aliases.insert(specifier.clone(), config.clone());
+    if let Some(specifier) = &request.self_specifier {
+        if let Some(config) = &request.config {
+            settings.aliases.insert(specifier.clone(), config.clone());
+        }
+        for (subpath, module) in &request.exports {
+            settings
+                .aliases
+                .insert(format!("{specifier}/{subpath}"), module.clone());
+        }
     }
     settings
 }
@@ -126,21 +158,24 @@ fn entry_path(name: &str) -> String {
     format!("dist/{name}.js")
 }
 
-/// `dist/` files for each chunk: its code, linked to a `.js.map` beside it.
+/// `dist/` files for each chunk: its code, linked to a `.js.map` beside it when it has one.
 fn chunk_files(chunks: Vec<Chunk>) -> Result<BTreeMap<String, String>> {
     let mut files = BTreeMap::new();
     for chunk in chunks {
-        let map_name = format!("{}.map", chunk.file_name);
         let mut code = chunk.code;
         if !code.ends_with('\n') {
             code.push('\n');
         }
-        code.push_str(&format!("//# sourceMappingURL={map_name}\n"));
+        if let Some(source_map) = &chunk.source_map {
+            let map_path = format!("{}.map", chunk.file_name);
+            let map_name = map_path.rsplit('/').next().unwrap_or(&map_path);
+            code.push_str(&format!("//# sourceMappingURL={map_name}\n"));
+            files.insert(
+                format!("dist/{map_path}"),
+                relative_to_dist(source_map, &chunk.file_name)?,
+            );
+        }
         files.insert(format!("dist/{}", chunk.file_name), code);
-        files.insert(
-            format!("dist/{map_name}"),
-            relative_to_dist(&chunk.source_map)?,
-        );
     }
     Ok(files)
 }
@@ -166,13 +201,18 @@ fn declaration_path(relative: &str) -> String {
     }
 }
 
-/// `dist/config.d.ts`, re-exporting the config's generated declaration.
-fn config_stub(config: &str, declarations: &BTreeMap<String, Declaration>) -> Option<String> {
-    let config = config.trim_start_matches("./");
-    let declaration = declarations.get(&declaration_path(config))?;
-    let target = match config.strip_suffix(".mts") {
-        Some(stem) => format!("../types/{stem}.mjs"),
-        None => format!("../types/{}.js", ts_stem(config)),
+/// `dist/<name>.d.ts`, re-exporting the generated declaration of the entry `module`.
+fn entry_stub(
+    name: &str,
+    module: &str,
+    declarations: &BTreeMap<String, Declaration>,
+) -> Option<String> {
+    let module = module.trim_start_matches("./");
+    let declaration = declarations.get(&declaration_path(module))?;
+    let up = "../".repeat(name.matches('/').count() + 1);
+    let target = match module.strip_suffix(".mts") {
+        Some(stem) => format!("{up}types/{stem}.mjs"),
+        None => format!("{up}types/{}.js", ts_stem(module)),
     };
     let mut stub = format!("export * from \"{target}\";\n");
     if declaration.has_default {
@@ -182,14 +222,15 @@ fn config_stub(config: &str, declarations: &BTreeMap<String, Declaration>) -> Op
 }
 
 /// Rewrites the map's sources (relative to the plugin directory) to be relative to
-/// `dist/`.
-fn relative_to_dist(source_map: &str) -> Result<String> {
+/// `dist/<file_name>`.
+fn relative_to_dist(source_map: &str, file_name: &str) -> Result<String> {
+    let up = "../".repeat(file_name.matches('/').count() + 1);
     let mut map: serde_json::Value = serde_json::from_str(source_map)
         .map_err(|e| Error::Bundle(format!("invalid source map: {e}")))?;
     if let Some(sources) = map["sources"].as_array_mut() {
         for source in sources {
             if let Some(text) = source.as_str() {
-                *source = format!("../{text}").into();
+                *source = format!("{up}{text}").into();
             }
         }
     }

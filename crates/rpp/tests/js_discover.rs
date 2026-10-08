@@ -13,7 +13,7 @@ use rpp::model::{PackFile, PluginFactory, ProcessOutcome};
 use tempfile::TempDir;
 
 const PLUGIN: &str = r##"
-import { definePlugin } from "#rpp";
+import { definePlugin } from "rpp";
 export default definePlugin({
   generate(ctx) {
     const found = ctx.discovered("windows").map((d) => ({
@@ -171,9 +171,35 @@ fn definitions_import_plugin_api_via_plugins_specifier() {
     let project = Project::new(PLUGIN);
     project.write(
         "src/shop/window/window.ts",
-        "import { label } from \"#plugins/shop-ui\";\nexport const title = label(\"Api\");\n",
+        "import { label } from \"plugin:shop-ui\";\nexport const title = label(\"Api\");\n",
     );
     assert_eq!(project.found().unwrap()[0]["title"], "Api");
+}
+
+#[test]
+fn definitions_import_plugin_exports_by_subpath() {
+    let project = Project::new(PLUGIN);
+    project.write(
+        "plugin/rpp.json",
+        r#"{"name":"shop-ui","version":"1.0.0","config":"src/config.ts",
+            "exports":{"./raw":"src/raw.ts"},"discover":{"windows":"*/window/**/window.ts"}}"#,
+    );
+    project.write(
+        "plugin/src/raw.ts",
+        "import { label } from \"./config.ts\";\nexport const raw = (t: string) => label(t) + \"!\";\n",
+    );
+    project.write(
+        "src/shop/window/window.ts",
+        "import { raw } from \"plugin:shop-ui/raw\";\nexport const title = raw(\"Raw\");\n",
+    );
+    assert_eq!(project.found().unwrap()[0]["title"], "Raw!");
+
+    project.write(
+        "src/shop/window/window.ts",
+        "import { label } from \"#plugins/shop-ui\";\nexport const title = label(\"Old\");\n",
+    );
+    let err = project.load().err().unwrap().to_string();
+    assert!(err.contains("`plugin:<name>`"), "{err}");
 }
 
 #[test]
@@ -190,25 +216,25 @@ fn tsx_definitions_compile_against_the_sdk_jsx_runtime() {
     );
     project.write(
         "plugin/src/shop.tsx",
-        "import type { Child } from \"#rpp/jsx\";\n\
+        "import type { Child } from \"rpp:jsx\";\n\
          const Label = (props: { children?: Child }) => [props.children].flat().join(\",\");\n\
          export const Shop = (props: { key?: string; children?: Child }): string =>\n\
            `${\"key\" in props ? props.key : \"none\"}:${<Label>{props.children}</Label>}`;\n",
     );
     project.write(
         "src/shop/window/window.tsx",
-        "import { Shop } from \"#plugins/shop-ui\";\n\
+        "import { Shop } from \"plugin:shop-ui\";\n\
          const parts = <>{\"a\"}{false}{[\"b\", null]}</>;\n\
          export const title = <Shop key=\"k\">{parts}</Shop>;\n",
     );
     project.write(
         "src/spread/window/window.tsx",
-        "import { Shop } from \"#plugins/shop-ui\";\n\
+        "import { Shop } from \"plugin:shop-ui\";\n\
          export const title = <Shop key=\"first\" {...{ key: \"last\" }}>x</Shop>;\n",
     );
     project.write(
         "src/undefined/window/window.tsx",
-        "import { Shop } from \"#plugins/shop-ui\";\n\
+        "import { Shop } from \"plugin:shop-ui\";\n\
          export const title = <Shop key={undefined}>x</Shop>;\n",
     );
     let found = project.found().unwrap();
@@ -220,8 +246,9 @@ fn tsx_definitions_compile_against_the_sdk_jsx_runtime() {
         root: project.dir.path().join("plugin"),
         plugin: "src/plugin.ts".into(),
         config: Some("src/config.ts".into()),
-        self_specifier: Some("#plugins/shop-ui".into()),
+        self_specifier: Some("plugin:shop-ui".into()),
         jsx_import_source: Some(rpp::js::JSX_IMPORT_SOURCE.into()),
+        ..Default::default()
     })
     .unwrap();
     assert!(packed.declarations.contains_key("types/src/shop.d.ts"));
@@ -257,7 +284,7 @@ fn intrinsic_jsx_tags_are_rejected() {
 #[test]
 fn undeclared_discover_name_throws() {
     let project = Project::new(
-        "import { definePlugin } from \"#rpp\";\n\
+        "import { definePlugin } from \"rpp\";\n\
          export default definePlugin({ generate(ctx) { ctx.discovered(\"doors\"); } });\n",
     );
     let error = project.found().unwrap_err().to_string();
@@ -270,7 +297,7 @@ fn undeclared_discover_name_throws() {
 #[test]
 fn confined_to_source_dir_while_plugin_keeps_its_own_imports() {
     let project = Project::new(
-        "import { definePlugin } from \"#rpp\";\nimport { note } from \"./helper.ts\";\n\
+        "import { definePlugin } from \"rpp\";\nimport { note } from \"./helper.ts\";\n\
          export default definePlugin({ generate(ctx) { ctx.emit(\"found.json\", JSON.stringify([note])); } });\n",
     );
     project.write("plugin/src/helper.ts", "export const note = \"helped\";\n");
@@ -342,7 +369,7 @@ fn helper_edit_changes_generator_key_only() {
 #[test]
 fn processor_cannot_read_discovered() {
     let project = Project::new(
-        "import { definePlugin } from \"#rpp\";\n\
+        "import { definePlugin } from \"rpp\";\n\
          export default definePlugin({ processors: { p: { files: \"**/*\", \
          run(ctx: any) { ctx.discovered(\"windows\"); } } } });\n",
     );

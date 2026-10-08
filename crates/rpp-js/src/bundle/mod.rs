@@ -33,12 +33,12 @@ pub struct BundleRequest {
     /// The entry specifier: a key of `virtual_modules`, or a path relative to `root`.
     pub entry: String,
     /// Modules that exist only in memory, keyed by the exact import specifier
-    /// (e.g. `#rpp`, `rpp:entry`). They take precedence over filesystem resolution,
+    /// (e.g. `rpp`, `rpp:internal/entry`). They take precedence over filesystem resolution,
     /// are parsed as TypeScript, and may import each other or files under `root`
     /// (relative imports from a virtual module resolve against `root`).
     pub virtual_modules: BTreeMap<String, String>,
     /// Directories outside `root` that may also be bundled, keyed by an exact import
-    /// specifier (e.g. `#plugins/window`) that resolves to that package's entry file.
+    /// specifier (e.g. `plugin:window`) that resolves to that package's entry file.
     /// Files inside a package directory may import each other relatively; source maps
     /// show them as `<specifier>/<path relative to the package directory>`.
     pub packages: BTreeMap<String, BundlePackage>,
@@ -96,7 +96,9 @@ pub fn bundle(request: &BundleRequest) -> Result<Bundle> {
     };
     Ok(Bundle {
         code: chunk.code,
-        source_map: chunk.source_map,
+        source_map: chunk
+            .source_map
+            .ok_or_else(|| Error::Bundle("bundling produced no source map".to_string()))?,
         inputs: built.inputs,
         input_hashes: built.input_hashes,
     })
@@ -105,7 +107,7 @@ pub fn bundle(request: &BundleRequest) -> Result<Bundle> {
 /// Behaviour that differs between [`bundle`] and [`crate::pack`].
 #[derive(Debug, Default)]
 pub(crate) struct Settings {
-    /// Specifiers left as imports; one ending in `/` matches every specifier under it.
+    /// Specifiers left as imports; one ending in `/` or `:` matches every specifier under it.
     pub externals: Vec<String>,
     /// Specifiers that resolve to a file relative to `root`.
     pub aliases: BTreeMap<String, String>,
@@ -120,7 +122,8 @@ pub(crate) struct Settings {
 pub(crate) struct Chunk {
     pub file_name: String,
     pub code: String,
-    pub source_map: String,
+    /// `None` for a facade chunk that only re-exports other chunks.
+    pub source_map: Option<String>,
 }
 
 pub(crate) struct Built {
@@ -325,11 +328,7 @@ fn collect_chunks(assets: &[Output]) -> Result<Vec<Chunk>> {
         let Output::Chunk(chunk) = asset else {
             continue;
         };
-        let source_map = chunk
-            .map
-            .as_ref()
-            .ok_or_else(|| Error::Bundle("bundling produced no source map".to_string()))?
-            .to_json_string();
+        let source_map = chunk.map.as_ref().map(|map| map.to_json_string());
         chunks.push(Chunk {
             file_name: chunk.filename.to_string(),
             code: chunk.code.clone(),

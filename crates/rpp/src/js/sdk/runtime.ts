@@ -1,5 +1,5 @@
 /// <reference path="./bridge.d.ts" />
-// The dispatcher bundled with every plugin as `rpp:runtime`. Its exports are the functions rpp calls.
+// The dispatcher bundled with every plugin as `rpp:internal/runtime`. Its exports are the functions rpp calls.
 
 import type {
   BuildStats,
@@ -11,7 +11,7 @@ import type {
   Pack,
   Plugin,
   Processor,
-} from "#rpp";
+} from "rpp";
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();

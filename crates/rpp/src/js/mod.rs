@@ -3,19 +3,20 @@
 //! A plugin whose `rpp.json` `entry` ends in `.ts`, `.mts`, `.js` or `.mjs` is bundled with
 //! three virtual modules:
 //!
-//! - `#rpp`: the SDK, `sdk/index.ts` followed by `sdk/components.ts`. [`SDK_FILES`] also
+//! - `rpp`: the SDK, `sdk/index.ts` followed by `sdk/components.ts`. [`SDK_FILES`] also
 //!   carries `sdk/bridge.d.ts`, the `__rpp` type declaration the sources reference; bundles
 //!   never include it.
-//! - `rpp:runtime`: `sdk/runtime.ts`, the dispatcher below.
-//! - `rpp:entry`: `import plugin from "./<entry>"; import { register } from "rpp:runtime";
-//!   register(plugin); export * from "rpp:runtime";`
+//! - `rpp:internal/runtime`: `sdk/runtime.ts`, the dispatcher below.
+//! - `rpp:internal/entry`: `import plugin from "./<entry>"; import { register } from "rpp:internal/runtime";
+//!   register(plugin); export * from "rpp:internal/runtime";`
 //!
-//! Every bundle also gets `#rpp/jsx` and `#rpp/jsx/jsx-runtime` (`sdk/jsx.ts`), the import
+//! Every bundle also gets `rpp:jsx` and `rpp:jsx/jsx-runtime` (`sdk/jsx.ts`), the import
 //! source that `.tsx` files compile against.
 //!
-//! A manifest with `discover` patterns also gets `#rpp/config`, a `#plugins/<id>` package for
-//! its config module, `#plugin` (the entry) and `rpp:discovered` (the matched files' namespace
-//! objects); the bundle root is the source dir. `rpp:entry` then calls
+//! A manifest with `discover` patterns also gets `rpp:config`, `plugin:<id>` and
+//! `plugin:<id>/<subpath>` packages for its config module and exports, `rpp:internal/plugin`
+//! (the entry) and `rpp:internal/discovered` (the matched files' namespace objects); the
+//! bundle root is the source dir. `rpp:internal/entry` then calls
 //! `register(plugin, discovered)`. Processors cannot read `ctx.discovered()`.
 //!
 //! Bundles are cached under `<cache dir>/bundles` and reused while the request and every
@@ -87,18 +88,18 @@ use crate::config::LimitsConfig;
 pub use config::{evaluate_config, ConfigPackage, EvaluatedConfig, CONFIG_FILE};
 pub use factory::{JsPluginFactory, JsPluginSpec};
 
-/// The plugin SDK imported as `#rpp`: `sdk/index.ts` with `sdk/components.ts` appended.
+/// The plugin SDK imported as `rpp`: `sdk/index.ts` with `sdk/components.ts` appended.
 pub const SDK_INDEX: &str = concat!(
     include_str!("sdk/index.ts"),
     "\n",
     include_str!("sdk/components.ts")
 );
-/// `sdk/config.ts`, the config SDK imported as `#rpp/config`.
+/// `sdk/config.ts`, the config SDK imported as `rpp:config`.
 pub const SDK_CONFIG: &str = include_str!("sdk/config.ts");
-/// `sdk/jsx.ts`, the JSX runtime imported as `#rpp/jsx` and `#rpp/jsx/jsx-runtime`.
+/// `sdk/jsx.ts`, the JSX runtime imported as `rpp:jsx` and `rpp:jsx/jsx-runtime`.
 pub const SDK_JSX: &str = include_str!("sdk/jsx.ts");
 /// The JSX import source of `.tsx` files.
-pub const JSX_IMPORT_SOURCE: &str = "#rpp/jsx";
+pub const JSX_IMPORT_SOURCE: &str = "rpp:jsx";
 /// `sdk/bridge.d.ts`, the `__rpp` declaration the SDK sources reference. Not a bundled module.
 const SDK_BRIDGE: &str = include_str!("sdk/bridge.d.ts");
 
@@ -112,7 +113,7 @@ pub const SDK_FILES: &[(&str, &str)] = &[
 ];
 
 /// The runtime limits `build.limits` sets for each plugin runtime and call.
-/// The `#rpp/jsx` and `#rpp/jsx/jsx-runtime` virtual modules.
+/// The `rpp:jsx` and `rpp:jsx/jsx-runtime` virtual modules.
 pub fn jsx_modules() -> [(String, String); 2] {
     [
         (JSX_IMPORT_SOURCE.to_string(), SDK_JSX.to_string()),
@@ -121,6 +122,19 @@ pub fn jsx_modules() -> [(String, String); 2] {
             SDK_JSX.to_string(),
         ),
     ]
+}
+
+/// `message` with a pointer to the current specifiers when it reports an unresolved `#rpp`
+/// or `#plugins/` import.
+pub(crate) fn hint_renamed_specifiers(message: String) -> String {
+    if message.contains("cannot import `#rpp") || message.contains("cannot import `#plugins/") {
+        format!(
+            "{message}\nthe SDK is imported as `rpp`, `rpp:config` and `rpp:jsx`, and plugin \
+             modules as `plugin:<name>`"
+        )
+    } else {
+        message
+    }
 }
 
 fn runtime_limits(limits: &LimitsConfig) -> rpp_js::Limits {

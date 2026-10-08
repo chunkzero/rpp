@@ -12,7 +12,7 @@ use rpp::Error;
 fn processor_mutates_text() {
     let dir = write_plugin(
         r##"
-import { definePlugin } from "#rpp";
+import { definePlugin } from "rpp";
 export default definePlugin({
   processors: {
     up: { files: "**/*.txt", run(ctx, file) { file.text = file.text.toUpperCase(); } },
@@ -36,7 +36,7 @@ export default definePlugin({
 fn processor_renames_and_drops() {
     let dir = write_plugin(
         r##"
-import { definePlugin, path } from "#rpp";
+import { definePlugin, path } from "rpp";
 export default definePlugin({
   processors: {
     rename: { files: "**/*.txt", run(ctx, file) { file.path = path.withExt(file.path, "md"); } },
@@ -58,7 +58,7 @@ export default definePlugin({
 fn processor_receives_options_and_pack() {
     let dir = write_plugin(
         r##"
-import { definePlugin } from "#rpp";
+import { definePlugin } from "rpp";
 export default definePlugin<{ suffix: string }>({
   processors: {
     tag: {
@@ -81,7 +81,7 @@ export default definePlugin<{ suffix: string }>({
 fn module_state_persists_across_files_on_one_instance() {
     let dir = write_plugin(
         r##"
-import { definePlugin } from "#rpp";
+import { definePlugin } from "rpp";
 let count = 0;
 export default definePlugin({
   processors: { count: { files: "**/*", run(ctx, file) { file.text = String(++count); } } },
@@ -100,7 +100,7 @@ export default definePlugin({
 fn errors_show_typescript_locations() {
     let dir = write_plugin(
         r##"
-import { definePlugin } from "#rpp";
+import { definePlugin } from "rpp";
 export default definePlugin({
   processors: { boom: { files: "**/*", run() { throw new Error("boom"); } } },
 });

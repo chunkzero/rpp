@@ -10,7 +10,7 @@ use common::{bundle_error, request, source_list, write};
 fn package_request(root: &Path, pkg: &Path) -> BundleRequest {
     let mut req = request(root, "main.ts");
     req.packages.insert(
-        "#plugins/window".to_string(),
+        "plugin:window".to_string(),
         BundlePackage {
             dir: pkg.to_path_buf(),
             entry: "index.ts".to_string(),
@@ -28,12 +28,12 @@ fn package_specifier_resolves_outside_root() {
     write(
         &root,
         "main.ts",
-        "import { win } from '#plugins/window';\nexport const out: string = win();\n",
+        "import { win } from 'plugin:window';\nexport const out: string = win();\n",
     );
     write(
         &pkg,
         "index.ts",
-        "import { host } from '#rpp';\nimport { name } from './lib/name';\nexport const win = (): string => host() + name;\n",
+        "import { host } from 'rpp';\nimport { name } from './lib/name';\nexport const win = (): string => host() + name;\n",
     );
     write(
         &pkg,
@@ -42,7 +42,7 @@ fn package_specifier_resolves_outside_root() {
     );
     let mut req = package_request(&root, &pkg);
     req.virtual_modules.insert(
-        "#rpp".to_string(),
+        "rpp".to_string(),
         "export function host(): string { return 'host'; }\n".to_string(),
     );
 
@@ -68,7 +68,7 @@ fn package_files_cannot_escape_their_dir() {
     write(
         &root,
         "main.ts",
-        "import { win } from '#plugins/window';\nexport const out = win;\n",
+        "import { win } from 'plugin:window';\nexport const out = win;\n",
     );
     write(
         &pkg,
@@ -91,7 +91,7 @@ fn package_sources_are_labelled_by_specifier() {
     write(
         &root,
         "main.ts",
-        "import { win } from '#plugins/window';\nexport const out = win;\n",
+        "import { win } from 'plugin:window';\nexport const out = win;\n",
     );
     write(
         &pkg,
@@ -111,9 +111,9 @@ fn package_sources_are_labelled_by_specifier() {
     assert_eq!(
         sources,
         vec![
-            "#plugins/window/index.ts",
-            "#plugins/window/lib/n.ts",
-            "main.ts"
+            "main.ts",
+            "plugin:window/index.ts",
+            "plugin:window/lib/n.ts"
         ]
     );
 }
@@ -156,4 +156,37 @@ fn bundle_records_source_map_inputs() {
     let bundle = bundle(&req).unwrap();
 
     assert!(bundle.inputs.contains(&root.join("dist/lib.js.map")));
+}
+
+#[test]
+fn package_subpaths_share_modules() {
+    let root_dir = TempDir::new().unwrap();
+    let pkg_dir = TempDir::new().unwrap();
+    let root = root_dir.path().canonicalize().unwrap();
+    let pkg = pkg_dir.path().canonicalize().unwrap();
+    write(
+        &root,
+        "main.ts",
+        "import { a } from 'plugin:window';\nimport { b } from 'plugin:window/raw';\nexport const same: boolean = a === b;\n",
+    );
+    write(&pkg, "state.ts", "export const state = {};\n");
+    write(&pkg, "index.ts", "export { state as a } from './state';\n");
+    write(&pkg, "raw.ts", "export { state as b } from './state';\n");
+    let mut req = package_request(&root, &pkg);
+    req.packages.insert(
+        "plugin:window/raw".to_string(),
+        BundlePackage {
+            dir: pkg.clone(),
+            entry: "raw.ts".to_string(),
+        },
+    );
+
+    let bundle = bundle(&req).unwrap();
+
+    assert_eq!(
+        bundle.code.matches("const state").count(),
+        1,
+        "{}",
+        bundle.code
+    );
 }

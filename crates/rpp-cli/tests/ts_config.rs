@@ -21,7 +21,7 @@ fn project(root: &Path, validate: &str, plugin_call: &str) {
     write(
         root,
         "plugins/suffix/src/config.ts",
-        r##"import { definePluginConfig } from "#rpp/config";
+        r##"import { definePluginConfig } from "rpp:config";
 
 export default definePluginConfig<{ text: string }>("suffix", {
   validate: (options) => VALIDATE,
@@ -32,7 +32,7 @@ export default definePluginConfig<{ text: string }>("suffix", {
     write(
         root,
         "plugins/suffix/src/plugin.ts",
-        r##"import { definePlugin } from "#rpp";
+        r##"import { definePlugin } from "rpp";
 
 export default definePlugin<{ text: string }>({
   processors: {
@@ -49,8 +49,8 @@ export default definePlugin<{ text: string }>({
     write(
         root,
         "rpp.config.ts",
-        r##"import { defineConfig } from "#rpp/config";
-import suffix from "#plugins/suffix";
+        r##"import { defineConfig } from "rpp:config";
+import suffix from "plugin:suffix";
 
 export default defineConfig({
   pack: { name: "p", format: 34 },
@@ -83,7 +83,7 @@ fn unknown_plugin_package_errors() {
     write(
         root,
         "rpp.config.ts",
-        r##"import { defineConfig, plugin } from "#rpp/config";
+        r##"import { defineConfig, plugin } from "rpp:config";
 
 export default defineConfig({ pack: { name: "p", format: 34 }, plugins: [plugin("missing")] });
 "##,
@@ -114,22 +114,33 @@ fn config_errors_point_at_rpp_config_ts() {
 }
 
 #[test]
-fn codegen_maps_plugin_config_paths() {
+fn codegen_maps_plugin_module_paths() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
     project(root, "undefined", r#"suffix({ text: "!" })"#);
+    write(
+        root,
+        "plugins/suffix/rpp.json",
+        r#"{ "name": "suffix", "version": "0.1.0", "entry": "src/plugin.ts", "config": "src/config.ts",
+            "exports": { "./raw": "src/raw.ts" } }"#,
+    );
 
     let out = run(root, &["codegen"]);
     assert!(out.status.success(), "{}", stderr(&out));
 
     let tsconfig = std::fs::read_to_string(root.join(".rpp/tsconfig.json")).unwrap();
     assert!(
-        tsconfig.contains("\"#rpp/config\": [\"./sdk/config.ts\"]"),
+        tsconfig.contains("\"rpp:config\": [\"./sdk/config.ts\"]"),
         "{tsconfig}"
     );
-    assert!(tsconfig.contains("\"#plugins/suffix\""), "{tsconfig}");
+    assert!(tsconfig.contains("\"plugin:suffix\""), "{tsconfig}");
     assert!(
         tsconfig.contains("plugins/suffix/src/config.ts"),
+        "{tsconfig}"
+    );
+    assert!(
+        tsconfig.contains("\"plugin:suffix/raw\": [")
+            && tsconfig.contains("plugins/suffix/src/raw.ts"),
         "{tsconfig}"
     );
     assert!(root.join(".rpp/sdk/config.ts").is_file());

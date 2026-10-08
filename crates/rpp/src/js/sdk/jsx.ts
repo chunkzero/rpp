@@ -1,4 +1,4 @@
-// The JSX runtime for `.tsx` sources, imported as `#rpp/jsx` and `#rpp/jsx/jsx-runtime`.
+// The JSX runtime for `.tsx` sources, imported as `rpp:jsx` and `rpp:jsx/jsx-runtime`.
 // A tag is a component: a function called with its props whose result is the element.
 
 /** Anything JSX accepts as a child. */

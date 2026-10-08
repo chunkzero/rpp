@@ -263,7 +263,7 @@ mod tests {
     use super::super::watch::spawn_watcher;
     use super::*;
 
-    const CONFIG: &str = r##"import { defineConfig } from "#rpp/config";
+    const CONFIG: &str = r##"import { defineConfig } from "rpp:config";
 export default defineConfig({ pack: { name: "test", format: 34 } });
 "##;
 

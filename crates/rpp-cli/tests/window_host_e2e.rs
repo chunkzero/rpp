@@ -68,7 +68,7 @@ fn build_component(target_dir: &Path, v2: bool) -> PathBuf {
 
 fn config(hud_shaders: bool) -> String {
     format!(
-        r##"import {{ defineConfig, plugin }} from "#rpp/config";
+        r##"import {{ defineConfig, plugin }} from "rpp:config";
 
 export default defineConfig({{
   pack: {{ name: "window-host-fixture", format: 84 }},
@@ -86,7 +86,7 @@ export default defineConfig({{
 }
 
 /// A plugin that compiles `window/**` sources through the `compiler` component.
-const COMPILE_PLUGIN: &str = r##"import { components, definePlugin } from "#rpp";
+const COMPILE_PLUGIN: &str = r##"import { components, definePlugin } from "rpp";
 
 interface Options {
   namespace: string;
@@ -282,7 +282,7 @@ fn window_component_diagnostic_keeps_stable_plugin_context() {
 }
 
 /// A plugin that round-trips option-shaped values through the component twice.
-const ROUND_TRIP_PLUGIN: &str = r##"import { components, definePlugin } from "#rpp";
+const ROUND_TRIP_PLUGIN: &str = r##"import { components, definePlugin } from "rpp";
 
 const check = (condition: boolean, message: string): void => {
   if (!condition) throw new Error(message);

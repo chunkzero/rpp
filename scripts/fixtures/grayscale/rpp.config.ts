@@ -1,4 +1,4 @@
-import { defineConfig, plugin } from "#rpp/config";
+import { defineConfig, plugin } from "rpp:config";
 
 export default defineConfig({
   pack: { name: "grayscale-fixture", description: "Release consumer", format: 34 },

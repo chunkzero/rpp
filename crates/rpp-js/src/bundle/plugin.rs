@@ -86,9 +86,9 @@ impl VirtualModules {
     }
 
     fn is_external(&self, specifier: &str) -> bool {
-        self.externals
-            .iter()
-            .any(|e| specifier == e || (e.ends_with('/') && specifier.starts_with(e.as_str())))
+        self.externals.iter().any(|e| {
+            specifier == e || (e.ends_with(['/', ':']) && specifier.starts_with(e.as_str()))
+        })
     }
 
     /// Specifiers the plugin answers itself, without Rolldown's resolver.

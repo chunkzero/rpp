@@ -41,7 +41,7 @@ pub fn plugin(root: &Path) {
     write(
         root,
         "src/config.ts",
-        r##"import { definePluginConfig, type Access, type PluginEntry } from "#rpp/config";
+        r##"import { definePluginConfig, type Access, type PluginEntry } from "rpp:config";
 
 type Options = { text: string };
 const config: (options: Options, access?: Access) => PluginEntry = definePluginConfig<Options>(
@@ -53,7 +53,7 @@ export default config;
     write(
         root,
         "src/plugin.ts",
-        r##"import { definePlugin } from "#rpp";
+        r##"import { definePlugin } from "rpp";
 import { mark } from "dep";
 import { check } from "./helper";
 

@@ -22,6 +22,24 @@ pub(crate) fn is_valid_id(name: &str) -> bool {
         && bytes.all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'_' | b'-'))
 }
 
+/// The modules a plugin exposes under `name`, as `(specifier, module)`: `plugin:<name>` for
+/// its `config` module and `plugin:<name>/<subpath>` for each of its `exports`.
+pub fn plugin_modules<'a>(
+    name: &str,
+    config: Option<&'a str>,
+    exports: &'a BTreeMap<String, String>,
+) -> Vec<(String, &'a str)> {
+    config
+        .map(|config| (format!("plugin:{name}"), config))
+        .into_iter()
+        .chain(
+            exports
+                .iter()
+                .map(|(subpath, module)| (format!("plugin:{name}/{subpath}"), module.as_str())),
+        )
+        .collect()
+}
+
 /// A validated `rpp.json` manifest.
 #[derive(Debug, Clone)]
 pub struct PluginManifest {
@@ -38,6 +56,8 @@ pub struct PluginManifest {
     /// Config module (relative to the plugin root) whose default export is the
     /// plugin's config factory.
     pub config: Option<String>,
+    /// Extra modules by subpath (`raw` for the `./raw` key), relative to the plugin root.
+    pub exports: BTreeMap<String, String>,
     /// Required rpp version range.
     pub rpp: Option<VersionReq>,
     /// Entry discovery patterns by name, relative to the pack source directory.
@@ -67,6 +87,8 @@ struct RawJsonManifest {
     entry: Option<String>,
     #[serde(default)]
     config: Option<String>,
+    #[serde(default)]
+    exports: BTreeMap<String, String>,
     #[serde(default)]
     components: BTreeMap<String, String>,
     #[serde(default)]
@@ -135,6 +157,21 @@ fn parse_components(raw: BTreeMap<String, String>) -> Check<BTreeMap<String, Com
         .collect()
 }
 
+fn parse_exports(raw: BTreeMap<String, String>) -> Check<BTreeMap<String, String>> {
+    raw.into_iter()
+        .map(|(key, module)| {
+            let subpath = key
+                .strip_prefix("./")
+                .filter(|subpath| validate_relative(subpath).is_ok())
+                .ok_or_else(|| {
+                    format!("`exports` key `{key}` must be `./` followed by a relative path")
+                })?;
+            validate_relative(&module).map_err(|m| format!("invalid module for `{key}`: {m}"))?;
+            Ok((subpath.to_string(), module))
+        })
+        .collect()
+}
+
 fn validate_discover(discover: &BTreeMap<String, String>) -> Check<()> {
     for (name, pattern) in discover {
         validate_id("discover name", name)?;
@@ -165,6 +202,7 @@ impl PluginManifest {
     ///   "rpp": ">=0.2",
     ///   "entry": "src/plugin.ts",
     ///   "config": "src/config.ts",
+    ///   "exports": { "./raw": "src/raw.ts" },
     ///   "components": { "compiler": "window.wasm" },
     ///   "discover": { "windows": "*/window/**/window.ts" }
     /// }
@@ -172,8 +210,8 @@ impl PluginManifest {
     ///
     /// `discover` maps names (same grammar) to one glob each, relative to the pack source
     /// directory. `name` becomes [`PluginManifest::id`] (same grammar). `entry` defaults to
-    /// `src/plugin.ts` and must be a JavaScript entry; `entry`, `config` and component
-    /// paths must be relative. `rpp` is a version requirement checked by
+    /// `src/plugin.ts` and must be a JavaScript entry; `entry`, `config`, `exports` and
+    /// component paths must be relative, and `exports` keys start with `./`. `rpp` is a version requirement checked by
     /// [`PluginManifest::load`]. Unknown keys are rejected, except `dependencies`, which is
     /// ignored.
     pub fn parse_json(text: &str, path: impl Into<PathBuf>) -> Result<Self> {
@@ -191,6 +229,7 @@ impl PluginManifest {
         if let Some(config) = &raw.config {
             validate_relative(config).map_err(|m| format!("invalid `config`: {m}"))?;
         }
+        let exports = parse_exports(raw.exports)?;
         let components = parse_components(raw.components)?;
         validate_discover(&raw.discover)?;
         validate_overrides(&raw.overrides)?;
@@ -201,6 +240,7 @@ impl PluginManifest {
             entry,
             components,
             config: raw.config,
+            exports,
             rpp,
             discover: raw.discover,
             overrides: raw.overrides,
@@ -264,6 +304,35 @@ mod tests {
         assert_eq!(m.entry, "src/plugin.ts");
         assert_eq!(m.config.as_deref(), Some("src/config.ts"));
         assert_eq!(m.components["compiler"].module, "window.wasm");
+    }
+
+    #[test]
+    fn exports_become_plugin_subpaths() {
+        let m = PluginManifest::parse_json(
+            r#"{"name":"window","version":"1.0.0","config":"src/config.ts",
+                "exports":{"./raw":"src/raw.ts","./a/b":"src/b.ts"}}"#,
+            "rpp.json",
+        )
+        .unwrap();
+        assert_eq!(
+            plugin_modules("window", m.config.as_deref(), &m.exports),
+            [
+                ("plugin:window".to_string(), "src/config.ts"),
+                ("plugin:window/a/b".to_string(), "src/b.ts"),
+                ("plugin:window/raw".to_string(), "src/raw.ts"),
+            ]
+        );
+        for exports in [
+            r#"{"raw":"a.ts"}"#,
+            r#"{"./":"a.ts"}"#,
+            r#"{".":"a.ts"}"#,
+            r#"{"./../x":"a.ts"}"#,
+            r#"{"./raw":"../a.ts"}"#,
+        ] {
+            let text = format!(r#"{{"name":"x","version":"1.0.0","exports":{exports}}}"#);
+            let err = PluginManifest::parse_json(&text, "rpp.json").unwrap_err();
+            assert!(matches!(err, Error::Manifest { .. }), "{exports}");
+        }
     }
 
     #[test]

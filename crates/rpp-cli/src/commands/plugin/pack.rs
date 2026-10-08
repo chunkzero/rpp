@@ -51,7 +51,8 @@ pub fn pack(dir: &Path, out: &Path) -> Result<Packed> {
         root: dir.to_path_buf(),
         plugin: manifest.entry.clone(),
         config: manifest.config.clone(),
-        self_specifier: Some(format!("#plugins/{}", manifest.id)),
+        exports: manifest.exports.clone(),
+        self_specifier: Some(format!("plugin:{}", manifest.id)),
         jsx_import_source: Some(JSX_IMPORT_SOURCE.to_string()),
     })?;
     let files = collect_files(dir, &text, &manifest, bundled)?;
@@ -107,6 +108,14 @@ fn packed_manifest(text: &str, bundled: &PackOutput) -> Result<Vec<u8>> {
     if let Some(config) = &bundled.config {
         object.insert("config".into(), config.clone().into());
     }
+    if !bundled.exports.is_empty() {
+        let exports = bundled
+            .exports
+            .iter()
+            .map(|(subpath, path)| (format!("./{subpath}"), Value::from(path.clone())))
+            .collect();
+        object.insert("exports".into(), Value::Object(exports));
+    }
     Ok(format!("{}\n", serde_json::to_string_pretty(&raw)?).into_bytes())
 }
 
@@ -124,21 +133,31 @@ fn write_outputs(out: &Path, file: &str, archive: &[u8]) -> Result<(PathBuf, Str
 }
 
 /// Unpacks the archive as installs do and bundles each entry with only the SDK modules
-/// its loader provides: `#rpp` for the plugin, `#rpp/config` for the config, and `#rpp/jsx`.
+/// its loader provides: `rpp` for the plugin, `rpp:config` for the config, both for exports
+/// (pack sources and `rpp.config.ts` import them), and `rpp:jsx`.
 fn self_check(archive: &[u8]) -> Result<()> {
     let dir = tempfile::tempdir()?;
     rpp_archive::unpack(archive, dir.path()).context("unpacking the archive")?;
     let manifest = PluginManifest::load(dir.path()).context("checking the packed manifest")?;
-    let mut entries = vec![(manifest.entry, "#rpp", SDK_INDEX)];
+    let sdk = ("rpp", SDK_INDEX);
+    let config_sdk = ("rpp:config", SDK_CONFIG);
+    let mut entries = vec![(manifest.entry, vec![sdk])];
     if let Some(config) = manifest.config {
-        entries.push((config, "#rpp/config", SDK_CONFIG));
+        entries.push((config, vec![config_sdk]));
     }
-    for (entry, specifier, source) in entries {
+    entries.extend(
+        manifest
+            .exports
+            .into_values()
+            .map(|module| (module, vec![sdk, config_sdk])),
+    );
+    for (entry, sdk_modules) in entries {
         let request = BundleRequest {
             root: dir.path().to_path_buf(),
             entry: entry.clone(),
-            virtual_modules: [(specifier.to_string(), source.to_string())]
+            virtual_modules: sdk_modules
                 .into_iter()
+                .map(|(specifier, source)| (specifier.to_string(), source.to_string()))
                 .chain(jsx_modules())
                 .collect(),
             jsx_import_source: Some(JSX_IMPORT_SOURCE.to_string()),
