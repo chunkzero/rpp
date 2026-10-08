@@ -13,8 +13,10 @@
 //! Every bundle also gets `rpp:jsx` and `rpp:jsx/jsx-runtime` (`sdk/jsx.ts`), the import
 //! source that `.tsx` files compile against.
 //!
-//! A manifest with `discover` patterns also gets `rpp:config`, `plugin:<id>` and
-//! `plugin:<id>/<subpath>` packages for its config module and exports, `rpp:internal/plugin`
+//! Every bundle also gets `rpp:config` and the plugin's own `plugin:<id>` and
+//! `plugin:<id>/<subpath>` packages for its config module and exports.
+//!
+//! A manifest with `discover` patterns also gets `rpp:internal/plugin`
 //! (the entry) and `rpp:internal/discovered` (the matched files' namespace objects); the
 //! bundle root is the source dir. `rpp:internal/entry` then calls
 //! `register(plugin, discovered)`. Processors cannot read `ctx.discovered()`.

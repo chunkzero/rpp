@@ -89,6 +89,7 @@ fn virtual_modules(entry: &str, discovered: bool) -> BTreeMap<String, String> {
     );
     [
         ("rpp".to_string(), SDK_INDEX.to_string()),
+        ("rpp:config".to_string(), SDK_CONFIG.to_string()),
         (
             "rpp:internal/runtime".to_string(),
             RUNTIME_SOURCE.to_string(),
@@ -124,7 +125,6 @@ fn bundle_discovered(
     let entries = discovery.discover(source)?;
 
     let mut virtual_modules = virtual_modules("rpp:internal/plugin", true);
-    virtual_modules.insert("rpp:config".into(), SDK_CONFIG.into());
     virtual_modules.insert(
         "rpp:internal/discovered".into(),
         discovered_module("", discovery, &entries),

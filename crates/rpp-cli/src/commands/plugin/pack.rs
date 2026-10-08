@@ -133,15 +133,15 @@ fn write_outputs(out: &Path, file: &str, archive: &[u8]) -> Result<(PathBuf, Str
 }
 
 /// Unpacks the archive as installs do and bundles each entry with only the SDK modules
-/// its loader provides: `rpp` for the plugin, `rpp:config` for the config, both for exports
-/// (pack sources and `rpp.config.ts` import them), and `rpp:jsx`.
+/// its loader provides: `rpp:config` for the config, and `rpp` too for the plugin and
+/// exports (pack sources and `rpp.config.ts` import them), plus `rpp:jsx`.
 fn self_check(archive: &[u8]) -> Result<()> {
     let dir = tempfile::tempdir()?;
     rpp_archive::unpack(archive, dir.path()).context("unpacking the archive")?;
     let manifest = PluginManifest::load(dir.path()).context("checking the packed manifest")?;
     let sdk = ("rpp", SDK_INDEX);
     let config_sdk = ("rpp:config", SDK_CONFIG);
-    let mut entries = vec![(manifest.entry, vec![sdk])];
+    let mut entries = vec![(manifest.entry, vec![sdk, config_sdk])];
     if let Some(config) = manifest.config {
         entries.push((config, vec![config_sdk]));
     }

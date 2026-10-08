@@ -138,3 +138,31 @@ export default definePlugin({
     let (file, _) = process(instance.as_mut(), "mark", "a.txt", "hi");
     assert_eq!(text(&file), "hi!");
 }
+
+#[test]
+fn plugin_imports_its_own_config_factory() {
+    let dir = write_plugin(
+        r##"
+import { definePlugin } from "rpp";
+import config from "plugin:ts-test";
+export default definePlugin({
+  processors: {
+    id: { files: "**/*", run(ctx, file) { file.text = config({}).plugin; } },
+  },
+});
+"##,
+    );
+    write_file(
+        dir.path(),
+        "rpp.json",
+        r#"{ "name": "ts-test", "version": "1.0.0", "config": "src/config.ts" }"#,
+    );
+    write_file(
+        dir.path(),
+        "src/config.ts",
+        "import { definePluginConfig } from \"rpp:config\";\nexport default definePluginConfig<{}>(\"ts-test\");\n",
+    );
+    let mut instance = load(dir.path(), "{}").instantiate().unwrap();
+    let (file, _) = process(instance.as_mut(), "id", "a.txt", "");
+    assert_eq!(text(&file), "ts-test");
+}
